@@ -536,6 +536,39 @@ mod backup_tests {
             );
         }
     }
+
+    /// One panic under the run ledger's guard used to end the backup surface for
+    /// the life of the process: `backup_runs().lock().unwrap()` on a poisoned
+    /// lock is a second panic, in `backups_handler` and in both writers.
+    ///
+    /// This poisons the real process-wide ledger deliberately. Every other test
+    /// in this binary that touches it keeps passing afterwards, which is the
+    /// assertion underneath the explicit ones.
+    #[test]
+    fn a_poisoned_run_ledger_is_still_readable_and_writable() {
+        let poisoning = std::thread::spawn(|| {
+            let _guard = backup_runs();
+            panic!("something panicked while holding the run ledger");
+        })
+        .join();
+        assert!(poisoning.is_err(), "the helper thread must actually panic");
+
+        backup_runs().insert(
+            "poison-probe".into(),
+            BackupRun {
+                state: "running",
+                started_at: 1,
+                finished_at: None,
+                detail: String::new(),
+            },
+        );
+        assert_eq!(
+            backup_runs().get("poison-probe").map(|run| run.state),
+            Some("running"),
+            "a recovered lock must still answer the read backups_handler does"
+        );
+        backup_runs().remove("poison-probe");
+    }
 }
 
 #[cfg(test)]

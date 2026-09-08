@@ -1184,6 +1184,32 @@ mod tests {
         assert_eq!(a.stand.len(), AUFTRAEGE_MAX, "und keiner ist verschwunden");
         assert!((0..AUFTRAEGE_MAX as u64).all(|id| a.stand.contains_key(&id)));
     }
+
+    /// Eine einzige Panik unter der Sperre beendete bis hierher die drei Wege, die
+    /// die Karte anfassen: `expect("Auftragskarte")` auf einem vergifteten Schloss
+    /// ist die zweite Panik, und `map_err(boom)` im Abholer waere 500 fuer die
+    /// Lebensdauer des Prozesses gewesen.
+    ///
+    /// Das vergiftet die echte prozessweite Karte mit Absicht. Dass jeder andere
+    /// Test in dieser Binaerdatei danach weiterlaeuft, ist die Zusage unter den
+    /// ausgeschriebenen.
+    #[test]
+    fn eine_vergiftete_auftragskarte_legt_weiter_an_und_liest_weiter() {
+        let vergiften = std::thread::spawn(|| {
+            let _sperre = super::auftraege();
+            panic!("jemand ist mit der Auftragskarte in der Hand gestuerzt");
+        })
+        .join();
+        assert!(vergiften.is_err(), "der Hilfsfaden muss wirklich stuerzen");
+
+        let id = super::auftraege()
+            .anlegen()
+            .expect("die Karte legt weiter an");
+        assert!(
+            super::auftraege().stand.contains_key(&id),
+            "eine erholte Sperre muss den Eintrag noch zeigen"
+        );
+    }
 }
 
 // ---------------------------------------------------------------- lange Rechnungen
@@ -1258,9 +1284,34 @@ impl Auftraege {
     }
 }
 
-fn auftraege() -> &'static std::sync::Mutex<Auftraege> {
+/// Die Auftragskarte, gesperrt, mit einem vergifteten Schloss erholt statt weitergereicht.
+///
+/// Sie gibt die Sperre zurueck und nicht den `Mutex`: drei Aufrufstellen schrieben je eine
+/// eigene Behandlung — zweimal `expect("Auftragskarte")`, einmal `map_err(boom)` — und eine
+/// Entscheidung, die an jeder Aufrufstelle wiederholt wird, faellt an der vierten anders aus.
+/// Jetzt sperrt nur diese Stelle, also muss auch nur diese Stelle stimmen.
+///
+/// **Erholen, nicht toedlich.** Vergiftet ist das Schloss, wenn jemand mit der Sperre in der
+/// Hand in Panik geraten ist. Unter der Sperre liegt nichts Dauerhaftes: `Auftraege` ist eine
+/// `BTreeMap` von Nummern auf Zustaende im Prozess, sicheres Rust kann sie nicht halb
+/// beschrieben hinterlassen, und der schlechteste Fall ist ein Eintrag, der `Laeuft` sagt,
+/// waehrend sein Faden weg ist — genau der Zustand, den `anlegen` schon kennt und nicht
+/// verdraengt.
+///
+/// Die Kosten der Gegenrichtung sind das Argument. Ein `expect` auf ein vergiftetes Schloss
+/// ist eine zweite Panik, also wuerden `POST /api/search`, `POST /api/compose` und
+/// `GET /api/auftraege/:id` fuer die Lebensdauer des Prozesses umfallen, weil irgendwann
+/// einmal jemand mit der Sperre gestuerzt ist — und das Ergebnis einer Suche, die Minuten
+/// gelaufen ist, waere unerreichbar. Dieselbe Wahl trifft
+/// `capabilities/scouting/src/config.rs`' `env_lock` mit derselben Begruendung.
+///
+/// Was das ausdruecklich NICHT tut: die erste Panik verstecken. Die laeuft weiter auf, landet
+/// in der Standardfehlerausgabe des Runners und bleibt das, was man liest.
+fn auftraege() -> std::sync::MutexGuard<'static, Auftraege> {
     static A: std::sync::OnceLock<std::sync::Mutex<Auftraege>> = std::sync::OnceLock::new();
     A.get_or_init(|| std::sync::Mutex::new(Auftraege::default()))
+        .lock()
+        .unwrap_or_else(|vergiftet| vergiftet.into_inner())
 }
 
 /// Eine Rechnung im Hintergrund starten und sofort ihre Nummer zurueckgeben.
@@ -1273,13 +1324,11 @@ where
     F: FnOnce() -> Result<serde_json::Value, String> + Send + 'static,
 {
     let id = auftraege()
-        .lock()
-        .expect("Auftragskarte")
         .anlegen()
         .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e))?;
     tokio::task::spawn_blocking(move || {
         let ergebnis = f();
-        let mut a = auftraege().lock().expect("Auftragskarte");
+        let mut a = auftraege();
         if let Some((_, stand)) = a.stand.get_mut(&id) {
             *stand = match ergebnis {
                 Ok(v) => Auftragsstand::Fertig { ergebnis: v },
@@ -1291,7 +1340,7 @@ where
 }
 
 async fn api_auftrag(Path(id): Path<u64>) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let a = auftraege().lock().map_err(boom)?;
+    let a = auftraege();
     let (start, stand) = a
         .stand
         .get(&id)

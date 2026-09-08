@@ -83,8 +83,35 @@ pub(crate) struct BackupRun {
 
 pub(crate) static BACKUP_RUNS: OnceLock<Mutex<HashMap<String, BackupRun>>> = OnceLock::new();
 
-pub(crate) fn backup_runs() -> &'static Mutex<HashMap<String, BackupRun>> {
-    BACKUP_RUNS.get_or_init(|| Mutex::new(HashMap::new()))
+/// The run ledger, locked, with a poisoned lock recovered rather than propagated.
+///
+/// It returns the guard rather than the `Mutex` on purpose: three call sites each wrote
+/// `.lock().unwrap()`, and a decision about poisoning that has to be repeated at every call
+/// site is a decision the fourth call site will get wrong. This is the only place that locks
+/// it, so it is the only place that has to be right.
+///
+/// **Recover, not fatal**, and the reason is what this map is. It holds one `BackupRun` per
+/// capability — a state word, two timestamps and `backup.sh`'s stderr. Nothing on the other
+/// side of the lock is a durable invariant: the map is a report about runs, and the runs
+/// themselves are subprocesses that outlive any panic here. A `HashMap` cannot be left half
+/// updated in safe Rust either, so the value a poisoned lock guards is the value that was
+/// there before or after one `insert`, and both are readable.
+///
+/// The cost of the alternative is the argument. `unwrap()` on a poisoned lock is a second
+/// panic, so one panic anywhere under this guard would make `GET /api/axon-status/backups`
+/// answer 500 for the life of the process, and every later `POST .../backup` with it — a
+/// backup page that reports nothing, forever, because something once panicked while it was
+/// being drawn. `capabilities/scouting/src/config.rs`'s `env_lock` made the same call for
+/// the same reason: refusing "would turn one failure into every later [call] failing for a
+/// different reason".
+///
+/// What this deliberately does NOT do is hide the first panic. That one still unwinds, still
+/// reaches the runner's captured stderr, and is still the thing to read.
+pub(crate) fn backup_runs() -> std::sync::MutexGuard<'static, HashMap<String, BackupRun>> {
+    BACKUP_RUNS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Age against the capability's own two thresholds.
@@ -127,7 +154,7 @@ pub(crate) async fn backups_handler() -> Result<Json<Value>, (StatusCode, Json<V
     let services = registry().await.map_err(bad_gateway)?;
     let overlay = overlay_root().map_err(bad_gateway)?;
     let now = now_epoch();
-    let runs = backup_runs().lock().unwrap().clone();
+    let runs = backup_runs().clone();
 
     let mut out = Vec::new();
     for service in services {
@@ -197,7 +224,7 @@ pub(crate) async fn backup_handler(
         // wasted fork: for a SQLite contract both runs drive the same maintenance hold,
         // and the first to finish resumes the capability out from under the second,
         // which is how a "coherent cold snapshot" stops being either.
-        let mut runs = backup_runs().lock().unwrap();
+        let mut runs = backup_runs();
         if let Some(existing) = runs.get(&name).filter(|r| r.state == "running") {
             return Err((
                 StatusCode::CONFLICT,
@@ -232,7 +259,7 @@ pub(crate) async fn backup_handler(
             ),
             Err(e) => ("failed", format!("could not run tools/backup.sh: {e}")),
         };
-        let mut runs = backup_runs().lock().unwrap();
+        let mut runs = backup_runs();
         runs.insert(
             task_name,
             BackupRun {
