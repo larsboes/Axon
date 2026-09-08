@@ -3,17 +3,18 @@
 //! ## Why resolution is a hashmap and not a search
 //!
 //! Obsidian resolves a bare `[[Name]]` by shortest-unique-path, which sounds
-//! like it needs the whole tree. Measured on this vault it does not: 2,233
-//! distinct basenames, 14 of them duplicated. So a map keyed on basename
-//! answers 99.4% of links exactly, and the remaining 14 are reported as
-//! ambiguous rather than silently resolved to whichever the walk hit first.
-//! That is the honest shape — a resolver that picks one and says nothing turns
-//! a wrong target into a passing check, which is worse than a broken link
-//! because nothing flags it.
+//! like it needs the whole tree. Measured on this vault it mostly does not:
+//! 2,757 notes over 2,659 distinct basenames, **89 of those names duplicated**
+//! (2026-09-08; it was 14 when this was written, and that growth is the reason
+//! the rung below matters more than it used to). A map keyed on basename
+//! answers the rest exactly, and the 89 are reported as ambiguous rather than
+//! silently resolved to whichever the walk hit first. That is the honest shape —
+//! a resolver that picks one and says nothing turns a wrong target into a
+//! passing check, which is worse than a broken link because nothing flags it.
 //!
 //! ## Why frontmatter links are counted, and counted separately
 //!
-//! Roughly 11,000 of this vault's 18,000 wikilinks do not sit in prose at all.
+//! 10,995 of this vault's 22,344 wikilinks do not sit in prose at all.
 //! They sit in `categories:`, `related:` and `sources:` — which is to say the
 //! membership graph every MOC is fed by, and the provenance edges the whole
 //! four-bucket model rests on. A link check that reads only the body misses
@@ -48,7 +49,8 @@
 //! 5,211 after, 2,823 of them recovered by this rung alone** — 2,763 attachments
 //! and 60 notes. No file moved. PRD D4 had attributed 2,739 of those to "image
 //! links whose files are not in the vault"; the files are in the vault, one
-//! folder below the note that names them.
+//! folder below the note that names them. (5,184 once the bracket rule in
+//! `targets_in` stopped counting Mermaid nodes and NumPy literals as links.)
 //!
 //! This is not the same act as guessing at an ambiguous basename, and the
 //! difference is why it belongs here while that still does not: a relative path
@@ -119,7 +121,13 @@ fn targets_in(text: &str, body_start: usize) -> Vec<(String, bool)> {
                 let inner = &text[i + 2..i + 2 + rel];
                 // Newlines never appear inside a wikilink; hitting one means the
                 // opening brackets were something else (a code sample, a table).
-                if !inner.contains('\n') {
+                // Neither does a bracket: Obsidian forbids `[` and `]` in a note
+                // name, so `np.array([[1, 2], [3, 4]])` in a fenced block is a
+                // list literal and `<% tp.date.now('yyyy-[W]ww') %>` is a
+                // Templater expression. Both were counted as links and then as
+                // dead links — 17 of them in this vault, found by an independent
+                // probe that used a `[[([^]\n]+)]]` regex and could not see them.
+                if !inner.contains('\n') && !inner.contains('[') && !inner.contains(']') {
                     let head = inner.split('|').next().unwrap_or(inner);
                     let head = head.split('#').next().unwrap_or(head);
                     let t = head.trim();
@@ -196,6 +204,65 @@ fn relative_to(source_id: &str, target: &str) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("/"))
 }
 
+/// The note index a link is resolved against. Two maps, because a link may name either
+/// identity: the path from the vault root, or the file name alone.
+struct NoteIndex {
+    by_basename: HashMap<String, Vec<usize>>,
+    by_id: HashMap<String, usize>,
+}
+
+/// What each of the three rungs answered, kept apart rather than folded to the first hit.
+///
+/// The caller needs to know WHICH rung answered, not only that one did: `links_relative` is
+/// the count of links no rung but the middle one can see.
+struct NoteRungs {
+    by_path: Option<usize>,
+    by_relative: Option<usize>,
+    by_name: Option<usize>,
+}
+
+impl NoteRungs {
+    /// Obsidian's order: the path as written, then the path from the linking note, then the
+    /// name.
+    fn hit(&self) -> Option<usize> {
+        self.by_path.or(self.by_relative).or(self.by_name)
+    }
+}
+
+impl NoteIndex {
+    fn build(notes: &[Note]) -> Self {
+        let mut by_basename: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut by_id: HashMap<String, usize> = HashMap::new();
+        for (i, n) in notes.iter().enumerate() {
+            by_basename.entry(key(&n.basename)).or_default().push(i);
+            by_id.insert(key(n.id.trim_end_matches(".md")), i);
+        }
+        Self { by_basename, by_id }
+    }
+
+    /// One target, against all three rungs. `report` and `inbound` both go through here: two
+    /// resolvers over one vault would drift apart, and the second one was wrong for a year.
+    fn rungs(&self, source_id: &str, target: &str) -> NoteRungs {
+        let base = target.rsplit('/').next().unwrap_or(target);
+        NoteRungs {
+            by_path: target
+                .contains('/')
+                .then(|| {
+                    self.by_id
+                        .get(&key(target.trim_end_matches(".md")))
+                        .copied()
+                })
+                .flatten(),
+            by_relative: relative_to(source_id, target)
+                .and_then(|rel| self.by_id.get(&key(rel.trim_end_matches(".md"))).copied()),
+            by_name: self
+                .by_basename
+                .get(&key(base.trim_end_matches(".md")))
+                .and_then(|v| (v.len() == 1).then(|| v[0])),
+        }
+    }
+}
+
 /// The link report.
 ///
 /// `attachments` are the vault's non-note files as root-relative ids — PDFs, images, `.base`
@@ -205,13 +272,8 @@ fn relative_to(source_id: &str, target: &str) -> Option<String> {
 /// are counted separately, because "resolved to a note" and "resolved to a file" are different
 /// facts and the second one is the one a reader is surprised by.
 pub fn report(notes: &[Note], attachments: &[String], include_dead: bool) -> LinkReport {
-    // Two indexes, because a link may name either identity.
-    let mut by_basename: HashMap<String, Vec<usize>> = HashMap::new();
-    let mut by_id: HashMap<String, usize> = HashMap::new();
-    for (i, n) in notes.iter().enumerate() {
-        by_basename.entry(key(&n.basename)).or_default().push(i);
-        by_id.insert(key(n.id.trim_end_matches(".md")), i);
-    }
+    let index = NoteIndex::build(notes);
+    let by_basename = &index.by_basename;
 
     let mut ambiguous: Vec<Ambiguity> = by_basename
         .iter()
@@ -260,22 +322,11 @@ pub fn report(notes: &[Note], attachments: &[String], include_dead: bool) -> Lin
             // that stops at the first hit cannot answer that.
             let relative = relative_to(&n.id, &target);
             let base = target.rsplit('/').next().unwrap_or(&target);
-
-            // Rung 1, the path as written from the vault root. Bare names skip it: a name is
-            // not a path, and `by_id` is keyed on paths.
-            let by_path = if path_form {
-                by_id.get(&key(target.trim_end_matches(".md"))).copied()
-            } else {
-                None
-            };
-            // Rung 2, the same text read from the folder of the note that carries the link.
-            let by_relative = relative
-                .as_deref()
-                .and_then(|rel| by_id.get(&key(rel.trim_end_matches(".md"))).copied());
-            // Rung 3, the name alone, and only when one note answers to it.
-            let by_name = by_basename
-                .get(&key(base.trim_end_matches(".md")))
-                .and_then(|v| (v.len() == 1).then(|| v[0]));
+            let NoteRungs {
+                by_path,
+                by_relative,
+                by_name,
+            } = index.rungs(&n.id, &target);
 
             // The same three rungs against the files that are not notes.
             let file_by_path = attachment_by_path.contains_key(&key(&target));
@@ -347,31 +398,36 @@ pub fn report(notes: &[Note], attachments: &[String], include_dead: bool) -> Lin
     }
 }
 
-/// Which notes outside `folder` link INTO it.
+/// Which notes inside `folder` are linked from outside it.
 ///
-/// The question a folder move has to answer before it runs: what breaks that is
-/// not already broken. Returns the distinct targets, because a move rewrites a
-/// target once however many times it is referenced.
+/// The question a folder move has to answer before it runs: what breaks that is not already
+/// broken. Returns distinct note ids, because a move rewrites a target once however many times
+/// it is referenced.
+///
+/// Two things were wrong here until 2026-09-08, both of them the same shape as D4.
+///
+/// It compared `note.folder`, which is only the FIRST path segment, so `--inbound Atlas/People`
+/// found nothing at all and said so as "0 distinct notes" rather than as an error. And it
+/// matched targets by basename against the folder's basenames, which counts a link as inbound
+/// when some other note of the same name is the one it actually resolves to — 139 against 134
+/// on the operator's vault, five links that name a note in `Knowledge/` and open one somewhere
+/// else. It now resolves through `NoteIndex::rungs`, the same ladder `report` uses, and asks
+/// where the link actually lands.
 pub fn inbound(notes: &[Note], folder: &str) -> Vec<String> {
-    let inside: HashMap<String, ()> = notes
-        .iter()
-        .filter(|n| n.folder == folder)
-        .map(|n| (key(&n.basename), ()))
-        .collect();
+    let index = NoteIndex::build(notes);
+    let prefix = format!("{}/", folder.trim_end_matches('/'));
 
-    let mut hits: HashMap<String, ()> = HashMap::new();
-    for n in notes.iter().filter(|n| n.folder != folder) {
+    let mut hits: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for n in notes.iter().filter(|n| !n.id.starts_with(&prefix)) {
         for (target, _) in targets_in(&n.text, n.body_start) {
-            let base = target.rsplit('/').next().unwrap_or(&target);
-            let k = key(base.trim_end_matches(".md"));
-            if inside.contains_key(&k) {
-                hits.insert(k, ());
+            if let Some(i) = index.rungs(&n.id, &target).hit() {
+                if notes[i].id.starts_with(&prefix) {
+                    hits.insert(notes[i].id.clone());
+                }
             }
         }
     }
-    let mut out: Vec<String> = hits.into_keys().collect();
-    out.sort();
-    out
+    hits.into_iter().collect()
 }
 
 #[cfg(test)]
@@ -519,6 +575,78 @@ mod tests {
             (1, 0),
             "dead: {:?}",
             rep.dead
+        );
+    }
+
+    /// A bracket inside the span means the outer brackets were not a link. Obsidian forbids
+    /// `[` and `]` in a note name, so both of these are the surrounding syntax and neither is
+    /// a dead link. Both shapes are taken verbatim from the vault.
+    #[test]
+    fn a_bracket_inside_the_span_means_it_was_never_a_wikilink() {
+        let notes = vec![note(
+            "Knowledge/NumPy.md",
+            "np.array([[1, 2], [3, 4]])\n<% tp.date.now('yyyy-[W]ww', 0) %>\nand [[Real Link]]",
+        )];
+        let rep = report(&notes, &[], true);
+        assert_eq!(
+            (rep.links_total, rep.links_dead),
+            (1, 1),
+            "dead: {:?}",
+            rep.dead
+        );
+        assert_eq!(rep.dead[0].target, "Real Link");
+    }
+
+    /// `inbound` over a nested folder. The old comparison was against `note.folder`, the first
+    /// path segment only, so this question answered zero — and answered it as a fact.
+    #[test]
+    fn inbound_answers_for_a_nested_folder() {
+        let notes = vec![
+            note("Atlas/People/Erika.md", ""),
+            note("Journal/2026-01-05.md", "coffee with [[Erika]]"),
+        ];
+        assert_eq!(
+            inbound(&notes, "Atlas/People"),
+            vec!["Atlas/People/Erika.md"]
+        );
+    }
+
+    /// A link is inbound when it OPENS a note in the folder, not when it shares a name with
+    /// one. Two notes called `Communication`, and the linking note sits beside the one that is
+    /// not in `Knowledge/` — so the link resolves to its sibling and `Knowledge/` gains nothing.
+    #[test]
+    fn a_link_that_resolves_elsewhere_is_not_inbound() {
+        let notes = vec![
+            note("Knowledge/Meta/Mind/Communication.md", ""),
+            note("Atlas/Reflections/Communication.md", ""),
+            note(
+                "Atlas/Reflections/Signal-Misreading.md",
+                "see [[Communication]]",
+            ),
+        ];
+        assert!(
+            inbound(&notes, "Knowledge").is_empty(),
+            "a name match was counted as a link into the folder"
+        );
+
+        // The control: move the linking note away from its sibling and the same link becomes
+        // ambiguous rather than inbound — still not a hit, and for the honest reason.
+        let notes = vec![
+            note("Knowledge/Meta/Mind/Communication.md", ""),
+            note("Atlas/Reflections/Communication.md", ""),
+            note("Journal/2026-01-05.md", "see [[Communication]]"),
+        ];
+        assert!(inbound(&notes, "Knowledge").is_empty());
+
+        // And with the twin gone it resolves, which proves the two cases above are not just
+        // `inbound` returning nothing.
+        let notes = vec![
+            note("Knowledge/Meta/Mind/Communication.md", ""),
+            note("Journal/2026-01-05.md", "see [[Communication]]"),
+        ];
+        assert_eq!(
+            inbound(&notes, "Knowledge"),
+            vec!["Knowledge/Meta/Mind/Communication.md"]
         );
     }
 

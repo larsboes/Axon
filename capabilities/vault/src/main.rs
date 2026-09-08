@@ -17,16 +17,21 @@
 //! how to answer them gets a different answer each run. A binary with tests
 //! gets the same one, and a migration can be gated on it.
 //!
-//! ## Why the counts are the acceptance test
+//! ## What checks the counts
 //!
-//! The figures this tool prints were first measured another way entirely, by
-//! `find`, `rg` and hand-classification, before any of this existed. Those
-//! numbers are the fixture: 2,248 live notes, 1,138 under `Knowledge/`, 996
-//! carrying a `knowledge:` key, 69 MOCs, 133 notes linked into `Knowledge/`
-//! from outside it. A disagreement means this tool is wrong, not the earlier
-//! probe — and where the two differ for a reason (the shell probe counted
-//! block references as links; this one separates them), the reason is stated
-//! rather than the number quietly adjusted.
+//! A second implementation run at the same moment, not a saved number. The
+//! table of seven figures measured by `find` and `rg` in August was retired on
+//! 2026-09-08: it disagreed with the vault on every line, and one of its rows —
+//! 996 notes carrying a `knowledge:` key — described a key the vault no longer
+//! has at all. The vault gained 509 notes and dropped a frontmatter convention,
+//! and a saved count over a hand-edited vault cannot survive that. Every
+//! mismatch then reads as "the vault moved again", which is a test that cannot
+//! fail.
+//!
+//! What holds instead is the property that table actually had: two
+//! implementations sharing no code, agreeing on the same vault or explaining why
+//! not. See the README for the 2026-09-08 run and the three defects writing the
+//! second implementation found.
 
 // The modules live in the library beside this binary, so `vault-server` reads
 // notes through the same loader rather than a second copy of it.

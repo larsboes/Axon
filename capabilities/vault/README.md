@@ -179,38 +179,84 @@ is in here, and what links to what. A skill that describes how to answer them
 answers differently each run. A binary with tests answers the same way twice,
 which is the only reason a migration can be gated on it.
 
-## Why the counts are the acceptance test
+## The acceptance check is a second instrument, not a saved number
 
-These figures were measured a first time by `find`, `rg` and hand
-classification, before this crate existed. Those numbers are the fixture, and
-the run below is the check:
+There used to be a table here of seven counts measured by `find` and `rg` before
+this crate existed, called "the fixture", with the tool's answer beside each. It
+was retired on **2026-09-08** because by then it disagreed with the vault on
+every line — 1,138 notes under `Knowledge/` against 1,141, 14 ambiguous basenames
+against 89, 18,332 wikilinks against 22,344 — and one of its rows had stopped
+describing the vault entirely: **0 notes carry a `knowledge:` key today, where
+the fixture recorded 996.** The key is gone; the notes carry `type:` and
+`status:` now.
 
-| Measure | Fixture | `vault` | |
+None of that was the tool drifting. The vault gained 509 notes and lost a
+frontmatter key, and a saved count over a hand-edited vault cannot survive that.
+**A fixture that can only ever be wrong is a test that cannot fail** — every
+mismatch reads as "the vault moved again", so nothing in it is falsifiable.
+
+What replaces it is the property the old table actually had, kept live: **two
+implementations that share no code, run against the same vault at the same
+moment, and are made to agree or made to explain.** The second one is
+`acceptance/link-counts.py` — its own walk, its own `[[([^]\n]+)]]` pattern, its
+own three rungs, deliberately not the crate's. Run both and compare:
+
+```
+python3 capabilities/vault/acceptance/link-counts.py <vault-root>
+vault links --root <vault-root>
+```
+
+Run 2026-09-08 against 2,757 notes:
+
+| Measure | Independent probe | `vault` | |
 |---|---|---|---|
-| Notes under `Knowledge/` | 1,138 | 1,138 | exact |
-| Notes carrying a `knowledge:` key | 996 | 996 | exact |
-| Path-form wikilinks | 1,486 | 1,486 | exact |
-| Ambiguous basenames | 14 | 14 | exact |
-| Wikilinks total | 18,332 | 18,084 | −1.4% |
-| Dead wikilinks | 5,397 | 5,491 | +1.7% |
-| Notes linked into `Knowledge/` from outside | 133 | 136 | tool is right |
+| Notes | 2,757 | 2,757 | exact |
+| Notes under `Knowledge/` | 1,141 | 1,141 | exact |
+| Path-form wikilinks | 5,173 | 5,173 | exact |
+| Path-form wikilinks that are dead | 406 | 406 | exact |
+| Ambiguous basenames | 89 | 89 | exact |
+| Notes in `Knowledge/` linked from outside | 134 | 134 | exact |
+| Wikilinks total | 22,354 | 22,344 | probe is wrong, −10 |
+| Dead wikilinks | 5,194 | 5,184 | the same 10 |
 
-The two percentage gaps are bracket pairs inside fenced code blocks, which the
-shell probe counted as links and this one does not. The last row is the
-interesting one: the shell probe scanned four folders and never looked at the
-notes sitting at the vault root, so it undercounted. Where the tool and the
-fixture disagree, the reason gets written down and the loser gets named. A
-number quietly adjusted to match is not a check.
+Three rows moved because writing the probe found real defects, and each is worth
+more than the row it fixed:
 
-## What it found that the fixture could not
+- **17 links that were never links.** The probe could not see
+  `np.array([[1, 2], [3, 4]])` in a fenced block or
+  `<% tp.date.now('yyyy-[W]ww') %>` in a Templater expression; the crate counted
+  both, and then counted them dead. Obsidian forbids `[` and `]` in a note name,
+  so `targets_in` now refuses a span that holds one. The crate lost 17 links and
+  17 dead links.
+- **`inbound` matched on names, not on links.** It answered 139 for
+  `Knowledge/`; five of those were links that share a name with a note in
+  `Knowledge/` and open a different one. It resolves through the same ladder
+  `report` uses now, and both instruments say 134.
+- **`inbound` could not see a nested folder at all.** It compared the first path
+  segment, so `--inbound Atlas/People` answered `0 distinct notes` — as a fact,
+  not as an error. It answers 71.
 
-Roughly **11,000 of the vault's 18,000 wikilinks live in frontmatter**, not in
-prose — in `categories:`, `related:` and `sources:`. That is the membership
-graph every MOC is fed by and every provenance edge the knowledge model rests
-on. This crate was written body-only first and reported a vault 60% smaller
-than it is; the fixture caught it. The two counts stay separate because they
-break differently: a folder move rewrites a prose link, an editor rewrites a
-`categories:` entry, and one number cannot tell you which repair you owe.
+The remaining 10-link gap is the probe's, and it is left standing rather than
+tuned away: all ten are `[[[…]]]`, six of them the empty `- "[[[]]]"` that a
+broken template wrote into frontmatter and four inside Mermaid nodes
+(`M[[[Net Present Value Method]]]`), where nothing renders as a link anyway. The
+regex can re-anchor inside the triple bracket and the crate's left-to-right scan
+cannot. **Where the two disagree the reason gets written down and the loser gets
+named. A number quietly adjusted to match is not a check.**
+
+The falsifiable half of this crate is its 43 tests, not this table — 38 in the
+library and 5 over the server's handlers. Each one plants an input the code must
+reject and watches it get rejected.
+
+## What the counts found that a note count could not
+
+**10,995 of the vault's 22,344 wikilinks live in frontmatter**, not in prose — in
+`categories:`, `related:` and `sources:`. That is the membership graph every MOC
+is fed by and every provenance edge the knowledge model rests on. This crate was
+written body-only first and reported a vault 60% smaller than it is. The two
+counts stay separate because they break differently: a folder move rewrites a
+prose link, an editor rewrites a `categories:` entry, and one number cannot tell
+you which repair you owe.
 
 ## Dialect drift
 
