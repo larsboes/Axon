@@ -55,7 +55,7 @@
     list-style: none;
     cursor: pointer;
     color: var(--text-primary);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     font-weight: 500;
     border-radius: var(--radius-sm);
   }
@@ -94,7 +94,7 @@
     border-radius: var(--radius-sm);
     background-color: var(--primary-soft);
     color: var(--primary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
     font-variant-numeric: tabular-nums;
     text-align: center;

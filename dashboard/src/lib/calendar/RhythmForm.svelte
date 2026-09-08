@@ -208,10 +208,10 @@
 
   h2 { margin: 0 0 16px; font-size: 1.125rem; }
 
-  label { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; font-size: 0.8125rem; font-weight: 600; color: var(--text-secondary); }
+  label { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; font-size: var(--text-sm); font-weight: 600; color: var(--text-secondary); }
 
   fieldset { min-width: 0; margin: 0 0 12px; padding: 0; border: 0; }
-  legend { margin-bottom: 4px; padding: 0; font-size: 0.8125rem; font-weight: 600; color: var(--text-secondary); }
+  legend { margin-bottom: 4px; padding: 0; font-size: var(--text-sm); font-weight: 600; color: var(--text-secondary); }
 
   select, input[type="text"], input[type="date"], input[type="time"] {
     padding: 8px 10px;
@@ -230,7 +230,7 @@
     border: 1.5px solid var(--card-border);
     background: transparent;
     color: var(--text-primary);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     font-weight: 600;
     cursor: pointer;
     transition: all 0.12s;
@@ -257,7 +257,7 @@
   .primary { background: var(--primary); color: #fff; }
   .secondary { background: var(--surface); color: var(--text-primary); }
 
-  .error { color: var(--danger); font-size: 0.8125rem; margin-bottom: 8px; }
+  .error { color: var(--danger); font-size: var(--text-sm); margin-bottom: 8px; }
 
   @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 </style>

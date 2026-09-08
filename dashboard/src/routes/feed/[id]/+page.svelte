@@ -1774,7 +1774,7 @@
     gap: 0.35rem;
     margin: 0 0 2rem;
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     text-decoration: none;
   }
 
@@ -1798,7 +1798,7 @@
 
   .overline {
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   h1 {
@@ -1842,7 +1842,7 @@
     background: transparent;
     color: var(--text-primary);
     font: inherit;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     font-variant-numeric: tabular-nums;
     font-weight: 600;
   }
@@ -1857,13 +1857,13 @@
     align-items: center;
     gap: 0.3rem;
     color: var(--text-tertiary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .when-problem {
     margin: 0.35rem 0 0;
     color: var(--danger);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   /* Not an error — a standing fact about this entry, so it reads as a note
@@ -1871,7 +1871,7 @@
   .export-note {
     margin: 0.3rem 0 0;
     color: var(--text-tertiary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .where-row {
@@ -1922,7 +1922,7 @@
     background: transparent;
     color: var(--text-primary);
     font: inherit;
-    font-size: 0.9375rem;
+    font-size: var(--text-base);
     line-height: 1.6;
     resize: vertical;
   }
@@ -1973,7 +1973,7 @@
     background: transparent;
     color: var(--text-tertiary);
     font: inherit;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
     cursor: pointer;
   }
@@ -2018,7 +2018,7 @@
     border: 1px solid var(--card-border);
     border-radius: var(--radius-sm);
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .links a:hover {
@@ -2047,7 +2047,7 @@
   .mail-redaction-notice {
     margin: 0 0 0.5rem;
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .mail-category {
@@ -2055,7 +2055,7 @@
     align-items: center;
     gap: 0.45rem;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .mail-category select {
@@ -2075,7 +2075,7 @@
     gap: 0.75rem;
     margin-bottom: 0.55rem;
     color: var(--text-tertiary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .data-class-control select {
@@ -2111,7 +2111,7 @@
     flex: 1;
     margin: 0;
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .reader-grid {
@@ -2169,7 +2169,7 @@
      is not a second thing to read. */
   .digest-rung {
     color: var(--text-tertiary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     letter-spacing: 0.02em;
   }
 
@@ -2234,7 +2234,7 @@
   .policy-rationale {
     margin: 0.45rem 0 0;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     line-height: 1.5;
   }
 
@@ -2242,7 +2242,7 @@
   .cloud-boundary {
     margin: 0;
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     line-height: 1.5;
   }
 
@@ -2287,7 +2287,7 @@
     align-items: baseline;
     gap: 0.4rem;
     color: var(--text-primary);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
   }
 
   .provider-head .mono {
@@ -2334,13 +2334,13 @@
   .cloud-boundary {
     margin-top: 0.55rem;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .cloud-job-error {
     margin: 0.65rem 0 0;
     color: var(--warning-ink);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     line-height: 1.45;
   }
 
@@ -2355,13 +2355,13 @@
   .cloud-result p {
     margin: 0;
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     line-height: 1.5;
   }
 
   .cloud-result .cloud-rationale {
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .cloud-result-head,
@@ -2389,13 +2389,13 @@
 
   .calendar-review-link {
     color: var(--primary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .cloud-result-head {
     grid-template-columns: 1fr auto;
     align-items: baseline;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .cloud-result-head strong {
@@ -2417,7 +2417,7 @@
   .cloud-result-item {
     padding-left: 0.6rem;
     border-left: 1px solid var(--card-border);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .cloud-topics {
@@ -2486,7 +2486,7 @@
   .disclosure-meta {
     margin-left: auto;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .transcript-body {
@@ -2501,7 +2501,7 @@
     gap: 0.3rem;
     margin-bottom: 1.25rem;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .document-head {
@@ -2529,7 +2529,7 @@
     gap: 0.3rem;
     flex-shrink: 0;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .empty {
@@ -2562,7 +2562,7 @@
     justify-content: space-between;
     gap: 1rem;
     padding: 0.25rem 0;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   dt {
@@ -2614,7 +2614,7 @@
   }
 
   .match-head {
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
   }
 
   .match-head span {
@@ -2635,7 +2635,7 @@
   .origin {
     margin: 0.35rem 0 0;
     color: var(--text-secondary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     line-height: 1.5;
   }
 
@@ -2710,7 +2710,7 @@
     border: 1px solid var(--card-border);
     border-radius: 999px;
     color: var(--text-secondary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .redaction-receipt {
@@ -2730,7 +2730,7 @@
     padding: 0.7rem 1rem;
     border-bottom: 1px solid var(--card-border);
     color: var(--text-secondary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .redaction-ledger .section-label {
@@ -2757,7 +2757,7 @@
     padding: 1.25rem;
     color: var(--text-primary);
     font-family: var(--font-mono);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     line-height: 1.6;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -2775,7 +2775,7 @@
     margin: 0;
     padding-left: 1rem;
     color: var(--text-secondary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     line-height: 1.5;
   }
 
@@ -2790,7 +2790,7 @@
     flex: 1;
     margin: 0;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .state {
@@ -2806,7 +2806,7 @@
   }
 
   .inline-error {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   @media (max-width: 62rem) {

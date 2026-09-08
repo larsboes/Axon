@@ -807,7 +807,7 @@
     padding: 0.3rem 0.6rem;
     border: 1px solid var(--card-border);
     border-radius: 999px;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     font-weight: 600;
     color: var(--text-secondary);
     cursor: pointer;
@@ -851,7 +851,7 @@
 
   .layer-section h2 {
     margin: 0 0 0.5rem;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -860,7 +860,7 @@
 
   .layer-section h3 {
     margin: 0.9rem 0 0.4rem;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -892,7 +892,7 @@
   }
 
   .tile-value {
-    font-size: 0.9375rem;
+    font-size: var(--text-base);
     font-weight: 700;
     font-variant-numeric: tabular-nums;
     letter-spacing: -0.01em;
@@ -904,7 +904,7 @@
     align-items: center;
     gap: 0.75rem;
     margin: 0.5rem 0 0;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     color: var(--text-secondary);
   }
 
@@ -972,7 +972,7 @@
     display: flex;
     justify-content: space-between;
     gap: 0.5rem;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .city-name {
@@ -1026,7 +1026,7 @@
     border-radius: var(--radius-sm);
     background: transparent;
     font: inherit;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: inherit;
     text-align: left;
     cursor: pointer;
@@ -1050,7 +1050,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.1rem;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     min-width: 0;
   }
 
@@ -1062,12 +1062,12 @@
 
   .muted {
     margin: 0.4rem 0 0;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--text-tertiary);
   }
 
   .small {
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .err {
@@ -1075,7 +1075,7 @@
     align-items: center;
     gap: 0.4rem;
     margin: 0.5rem 0 0;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--danger);
   }
 
@@ -1095,7 +1095,7 @@
     border: 0;
     background: transparent;
     font: inherit;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -1121,7 +1121,7 @@
     align-items: center;
     gap: 0.35rem;
     margin: 0.4rem 0 0;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     color: var(--success);
   }
 
@@ -1160,7 +1160,7 @@
   .group-meta {
     display: block;
     margin-top: 0.1rem;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     color: var(--text-tertiary);
   }
 
@@ -1173,7 +1173,7 @@
   }
 
   .assign-input {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     padding: 0.35rem 0.5rem;
   }
 
@@ -1204,7 +1204,7 @@
     border-radius: var(--radius-sm);
     background: transparent;
     font: inherit;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--text-primary);
     text-align: left;
     cursor: pointer;
@@ -1229,7 +1229,7 @@
 
   /* Panel-scale buttons: the .btn primitive at list density, not a new button. */
   .btn-mini {
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     padding: 0.25rem 0.5rem;
     flex-shrink: 0;
   }
@@ -1242,7 +1242,7 @@
     padding: 0.4rem 0.45rem;
     border: 1px dashed var(--card-border);
     border-radius: var(--radius-sm);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .geocoded-actions {

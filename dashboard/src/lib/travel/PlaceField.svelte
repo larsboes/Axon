@@ -123,7 +123,7 @@
     flex-direction: column;
     gap: 0.3rem;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -183,7 +183,7 @@
     background: none;
     color: var(--text-primary);
     font: inherit;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     text-align: left;
     cursor: pointer;
   }
