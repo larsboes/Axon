@@ -80,7 +80,7 @@ sha2.workspace = true
 # first thing here that reads one. Already resolved in the root Cargo.lock
 # (transitive today), so naming it reuses a pinned dep rather than hand-rolling
 # a decoder -- the same reasoning as sha2 above.
-base64 = "0.22"
+base64 = "0.23"
 # comms-server only:
 # Not `full`: these are the drivers this crate reaches for, verified with a lone
 # `cargo check -p <crate> --all-targets`, which is the only build where a missing
