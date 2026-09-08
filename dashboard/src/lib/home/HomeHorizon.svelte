@@ -109,7 +109,7 @@
   .entries time {
     color: var(--text-tertiary);
     font-family: var(--font-mono);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     font-variant-numeric: tabular-nums;
   }
 
@@ -131,7 +131,7 @@
 
   .entries strong {
     overflow: hidden;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     font-weight: 550;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -150,7 +150,7 @@
     overflow: hidden;
     max-width: 22rem;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     text-align: right;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -168,7 +168,7 @@
     margin: 0.7rem 0 0;
     padding-top: 0.55rem;
     border-top: 1px solid var(--card-border);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .contexts a {
@@ -206,7 +206,7 @@
     }
 
     .contexts {
-      font-size: 0.75rem;
+      font-size: var(--text-xs);
     }
 
     .contexts a {

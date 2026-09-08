@@ -150,7 +150,7 @@
   p {
     margin: 0.25rem 0 0;
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .state {
@@ -184,7 +184,7 @@
     border: 1px solid var(--card-border);
     border-radius: var(--radius-md);
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .error {

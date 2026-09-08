@@ -227,7 +227,7 @@
   .chart-note,
   .chart-provenance {
     margin: 0;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     line-height: 1.55;
     opacity: 0.72;
   }
@@ -240,7 +240,7 @@
 
   .chart-table summary {
     cursor: pointer;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     opacity: 0.72;
   }
 

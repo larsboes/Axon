@@ -71,7 +71,7 @@
   }
   small {
     color: var(--text-tertiary, #888);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     flex: 1;
     min-width: 0;
     overflow: hidden;

@@ -15,6 +15,7 @@
   import FeedItemRow from "$lib/feed/FeedItemRow.svelte";
   import {
     clampToSelectable,
+    focusRow,
     shouldIgnoreKey,
     nextSelectable as nextRow,
     prevSelectable as prevRow,
@@ -311,9 +312,14 @@
     const row = flatRows[to];
     if (!row) return;
     // After the frame that paints the selection, so the element exists.
-    queueMicrotask(() => {
-      document.getElementById(rowDomId(row.id))?.scrollIntoView({ block: "nearest" });
-    });
+    //
+    // `focusRow`, not `scrollIntoView`. This scrolled without focusing, which meant the
+    // cursor was a class and a scroll offset and nothing else: a screen reader was never
+    // told the selection had moved, and a keyboard reader's Tab position stayed wherever
+    // it was before the first `j`. The row is already `tabindex="-1"` and carries
+    // `aria-current` (`$lib/ListRow.svelte`), so focusing it is what turns both into an
+    // announcement.
+    queueMicrotask(() => focusRow(document.getElementById(rowDomId(row.id))));
   }
 
   function toggleEvaluation(id: string): void {
@@ -1117,6 +1123,7 @@
   <input
     class="input"
     type="url"
+    aria-label="Link to ingest"
     bind:value={pasted}
     placeholder="Add a link — YouTube, GitHub, arXiv, Reddit, article"
     disabled={ingesting}
@@ -1365,7 +1372,7 @@
   .context-note {
     margin: -0.55rem 0 1rem;
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .vault {
@@ -1412,7 +1419,7 @@
     max-width: 62ch;
     margin: 0.6rem 0 0.9rem;
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .vault-list {
@@ -1461,7 +1468,7 @@
 
   .segmented button {
     font: inherit;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     font-weight: 500;
     padding: 0.3rem 0.6rem;
     border: 0;
@@ -1482,7 +1489,7 @@
     align-items: center;
     gap: 0.5rem;
     margin: 0 0 0.6rem;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     font-weight: 600;
     color: var(--text-secondary);
   }
@@ -1517,7 +1524,7 @@
     background: var(--card-bg);
     color: var(--text-primary);
     font: inherit;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .mail-toolbar select {
@@ -1542,7 +1549,7 @@
     background: transparent;
     color: var(--text-primary);
     font: inherit;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .method-button.active {
@@ -1573,7 +1580,7 @@
 
   .bulk-bar strong {
     margin-right: 0.25rem;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .bulk-category {
@@ -1587,7 +1594,7 @@
     background: var(--card-bg);
     color: var(--text-primary);
     font: inherit;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .bulk-confirm {
@@ -1598,7 +1605,7 @@
     padding-top: 0.55rem;
     border-top: 1px solid var(--card-border);
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .bulk-confirm span {
@@ -1662,7 +1669,7 @@
   .column-empty {
     padding: 1rem 0.5rem;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     text-align: center;
   }
 
@@ -1737,7 +1744,7 @@
     overflow: hidden;
     margin-top: 0.6rem;
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     line-height: 1.4;
     -webkit-box-orient: vertical;
     line-clamp: 2;
@@ -1880,7 +1887,7 @@
 
   .empty-state p {
     margin: 0;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
   }
 
   .sr-only {
@@ -1903,7 +1910,7 @@
     gap: 0.5rem;
     margin: 0.75rem 0 0.1rem;
     color: var(--text-secondary);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     font-weight: 600;
   }
 
@@ -1914,7 +1921,7 @@
   .group-head.run {
     padding-left: 0.25rem;
     color: var(--text-tertiary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     font-weight: 500;
   }
 
@@ -1947,7 +1954,7 @@
     gap: 0.35rem;
     margin: 0.45rem 0 0;
     color: var(--primary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .evaluation-compact {
@@ -1969,7 +1976,7 @@
 
   .muted {
     color: var(--text-tertiary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     margin: 0.25rem 0 0;
   }
 
@@ -1988,7 +1995,7 @@
     border-radius: var(--radius-md);
     background-color: var(--warning-soft);
     color: var(--warning-ink);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
   }
 
   .notice.muted {

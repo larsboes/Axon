@@ -13,6 +13,6 @@
 <style>
   .redirect {
     color: var(--text-secondary);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
   }
 </style>

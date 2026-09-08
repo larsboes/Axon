@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount, type Snippet } from "svelte";
+  import type { Snippet } from "svelte";
+  import { modal } from "./modal";
 
   let {
     title,
@@ -20,51 +21,17 @@
   } = $props();
 
   const titleId = `overlay-title-${Math.random().toString(36).slice(2, 9)}`;
-  let sheet: HTMLDivElement;
-
-  onMount(() => sheet.focus());
-
-  const FOCUSABLE =
-    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
-
-  function handleKeydown(event: KeyboardEvent) {
-    if (event.key === "Escape" && !busy) {
-      onClose();
-      return;
-    }
-    if (event.key !== "Tab" || !sheet) return;
-
-    // A modal that lets Tab walk out behind its own backdrop is modal to a mouse only.
-    // The sheet itself is tabindex="-1" and focused on mount, so without this the first
-    // Tab left the dialog entirely and the reader had no way back except Escape.
-    const stops = [...sheet.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
-      (element) => element.offsetParent !== null,
-    );
-    if (stops.length === 0) {
-      event.preventDefault();
-      return;
-    }
-    const first = stops[0];
-    const last = stops[stops.length - 1];
-    const active = document.activeElement;
-    if (event.shiftKey && (active === first || active === sheet)) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && active === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }
 </script>
-
-<svelte:window onkeydown={handleKeydown} />
 
 <div class="overlay">
   <button class="backdrop" aria-label="Close dialog" onclick={() => !busy && onClose()}></button>
+  <!-- Mount focus, the Tab trap and the focus restore all live in `$lib/modal.ts`. They
+       were written here first and three other dialogs went without; the trap in
+       particular is the same code, moved rather than rewritten. -->
   <div
     class="sheet"
     style={`--overlay-width: ${width}`}
-    bind:this={sheet}
+    use:modal={{ onClose, canClose: () => !busy }}
     role="dialog"
     aria-modal="true"
     aria-labelledby={titleId}

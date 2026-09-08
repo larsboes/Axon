@@ -93,14 +93,14 @@
   }
 
   .summary-copy strong {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .summary-copy small {
     margin-top: 0.1rem;
     overflow: hidden;
     color: var(--text-secondary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -154,20 +154,20 @@
 
   h3 {
     margin: 0 0.15rem 0 0;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
   }
 
   p {
     margin: 0.25rem 0 0;
     color: var(--text-primary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   article small {
     display: block;
     margin-top: 0.2rem;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   article a {
@@ -175,7 +175,7 @@
     gap: 0.35rem;
     align-items: center;
     color: var(--primary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
     white-space: nowrap;
   }

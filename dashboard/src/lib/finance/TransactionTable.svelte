@@ -7,7 +7,7 @@
 </script>
 
 <div class="table-wrap"><table>
-  <thead><tr><th>Date</th><th>Description</th><th>Account</th><th>Category</th><th>Purpose</th><th class="num">Your amount</th></tr></thead>
+  <thead><tr><th scope="col">Date</th><th scope="col">Description</th><th scope="col">Account</th><th scope="col">Category</th><th scope="col">Purpose</th><th class="num" scope="col">Your amount</th></tr></thead>
   <tbody>
     {#each rows as row (row.id)}
       <tr>
@@ -25,7 +25,7 @@
 
 <style>
   .table-wrap { overflow-x: auto; margin-top: .65rem; }
-  table { width: 100%; border-collapse: collapse; font-size: .75rem; }
+  table { width: 100%; border-collapse: collapse; font-size: var(--text-xs); }
   th, td { text-align: left; padding: .48rem .5rem; border-bottom: 1px solid var(--border, #333); white-space: nowrap; }
   th { color: var(--muted, #888); font-size: .62rem; text-transform: uppercase; letter-spacing: .04em; }
   td:nth-child(2) { white-space: normal; min-width: 11rem; }
