@@ -432,7 +432,7 @@ impl PlacesStore {
     ) -> Fallible<usize> {
         let prefix = self.prefix.clone();
         let mut conn = self.conn()?;
-        let tx = conn.transaction()?;
+        let tx = axon_store::write_transaction(&mut conn)?;
         tx.execute(
             &format!("DELETE FROM {prefix}_climate_normals WHERE place_id = ?1"),
             params![&place_id],

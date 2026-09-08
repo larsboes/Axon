@@ -199,7 +199,7 @@ impl Store {
     ) -> Result<(), Box<dyn std::error::Error>> {
         let prefix = self.prefix.clone();
         let mut conn = self.conn()?;
-        let tx = conn.transaction()?;
+        let tx = axon_store::write_transaction(&mut conn)?;
         tx.execute(&format!("DELETE FROM {prefix}_stop_stats"), [])?;
 
         {
