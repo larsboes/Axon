@@ -178,11 +178,29 @@ mod tests {
         assert_eq!(epoch_seconds("2026-09-07T21:40:05Z"), Some(1_788_817_205));
         // Against the reference implementation, not against a second copy of the
         // arithmetic: the day count comes from civil_date, the rest is a division.
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64;
-        assert_eq!(epoch_seconds(&now_timestamp()), Some(now));
+        //
+        // Read the clock on BOTH sides of `now_timestamp`, and compare only when
+        // the two agree. `now_timestamp` takes its own reading, so one reading
+        // taken before it is a different second whenever the boundary falls
+        // between the two calls -- roughly one run in a million, and a test that
+        // fails for no reason teaches its reader to re-run rather than to look.
+        // Watched: with a 1.1s sleep between the two calls the original form fails
+        // `left: Some(1788886710), right: Some(1788886709)`. The retry keeps the
+        // exact equality rather than widening it into a range.
+        let unix_seconds = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64
+        };
+        let (stamp, now) = loop {
+            let before = unix_seconds();
+            let stamp = now_timestamp();
+            if before == unix_seconds() {
+                break (stamp, before);
+            }
+        };
+        assert_eq!(epoch_seconds(&stamp), Some(now));
     }
 
     #[test]
