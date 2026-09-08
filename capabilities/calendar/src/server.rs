@@ -1537,7 +1537,30 @@ async fn main() {
         database_path: Arc::new(config.database_path.clone()),
         config: Arc::new(config),
     };
-    let app = Router::new()
+    axon_server::serve_local("calendar-server", port, build_router(state)).await;
+}
+
+/// This capability's name, for the origin guard's env var
+/// (`AXON_CALENDAR_ALLOWED_ORIGIN_HOSTS`).
+const CAPABILITY: &str = "calendar";
+
+/// The wired router, so a test can drive the real thing rather than a handler.
+///
+/// This is the largest personal read in the workspace and it sat under
+/// `CorsLayer::permissive()` with nothing above it: `GET /api/entries` returns
+/// the operator's calendar — titles, times, locations and the context each
+/// entry belongs to — to any page open in their browser. `POST
+/// /api/rhythms/:id/materialize` and `POST /api/trip-plans/:plan_id/sync` take
+/// no request body at all, so a cross-site *simple* POST reaches them with no
+/// preflight for CORS to refuse; refusing the request, which is what this guard
+/// does, is what closes that.
+///
+/// The origin guard sits below every route on purpose: axum wraps only the
+/// routes registered BEFORE a `.layer()` call (axum 0.7
+/// `src/docs/routing/layer.md`), so a route appended under it would silently
+/// lose the refusal.
+fn build_router(state: AppState) -> Router {
+    Router::new()
         .route("/health", get(health))
         .route("/ready", get(ready))
         .route("/routes", get(routes))
@@ -1578,9 +1601,13 @@ async fn main() {
         .route("/api/markdown/sources", get(list_markdown_sources))
         .route("/api/markdown/preview", post(markdown_preview))
         .route("/api/markdown/import", post(markdown_import_selected))
+        // ADD NEW ROUTES ABOVE THIS LINE. Below it they lose the origin guard.
+        .layer(axum::middleware::from_fn_with_state(
+            CAPABILITY,
+            axon_server::origin::refuse_foreign_origins,
+        ))
         .layer(CorsLayer::permissive())
-        .with_state(state);
-    axon_server::serve_local("calendar-server", port, app).await;
+        .with_state(state)
 }
 
 #[cfg(test)]
@@ -1594,5 +1621,78 @@ mod route_manifest_tests {
     fn the_manifest_covers_every_served_route() {
         let missing = route_manifest::undeclared_routes(include_str!("server.rs"), ROUTES);
         assert!(missing.is_empty(), "served but undocumented: {missing:?}");
+    }
+}
+
+/// The router-level proof that `libs/axon-server`'s predicate tests cannot give:
+/// a route registered BELOW the `.layer()` call passes every test of
+/// `origin_allowed_by` and still answers a hostile page.
+///
+/// `/routes` is the control rather than `/api/entries`, because every data
+/// handler here opens the deployment's SQLite file and a test must not. The
+/// refusal is asserted on the data routes, where the guard answers before the
+/// handler runs and nothing is opened.
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    fn router() -> Router {
+        let config = Config::load();
+        build_router(AppState {
+            database_path: Arc::new(config.database_path.clone()),
+            config: Arc::new(config),
+        })
+    }
+
+    async fn answer(method: &str, path: &str, origin: Option<&str>) -> StatusCode {
+        let mut request = Request::builder().method(method).uri(path);
+        if let Some(origin) = origin {
+            request = request.header("origin", origin);
+        }
+        router()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .expect("the router answers")
+            .status()
+    }
+
+    /// The two POSTs in this list take no request body, so a hostile page can
+    /// send them as *simple* requests — no preflight, nothing for a CORS policy
+    /// to refuse. They are the reason the guard refuses the request rather than
+    /// merely withholding a response header.
+    #[tokio::test]
+    async fn a_foreign_origin_can_neither_read_the_calendar_nor_drive_a_write() {
+        for (method, path) in [
+            ("GET", "/api/entries"),
+            ("GET", "/api/windows"),
+            ("GET", "/api/contexts"),
+            ("POST", "/api/rhythms/r-1/materialize"),
+            ("POST", "/api/trip-plans/p-1/sync"),
+        ] {
+            assert_eq!(
+                answer(method, path, Some("https://evil.example")).await,
+                StatusCode::FORBIDDEN,
+                "{method} {path} answered a foreign origin — it is registered below the guard layer"
+            );
+        }
+    }
+
+    /// The other half. 200 from `/routes` is a handler answering.
+    #[tokio::test]
+    async fn the_dashboard_and_a_non_browser_caller_still_reach_the_handler() {
+        for origin in [
+            None,
+            Some("http://localhost:47117"),
+            Some("https://mac.tailnet.ts.net"),
+        ] {
+            assert_eq!(
+                answer("GET", "/routes", origin).await,
+                StatusCode::OK,
+                "the guard refused a caller it must admit: {origin:?}"
+            );
+        }
     }
 }

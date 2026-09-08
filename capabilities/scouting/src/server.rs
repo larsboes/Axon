@@ -563,7 +563,35 @@ async fn main() {
     // discover_handler's Store::open, which stays inside spawn_blocking).
     let cfg = Config::load();
 
-    let app = Router::new()
+    // Was 0.0.0.0, which put an unauthenticated POST /opportunities/:id/status on
+    // the LAN. Nothing documented that bind as a decision; it was the last of the
+    // three divergences libs/axon-server exists to end.
+    axon_server::serve_local("scout-server", cfg.port, build_router()).await;
+}
+
+/// This capability's name, for the origin guard's env var
+/// (`AXON_SCOUTING_ALLOWED_ORIGIN_HOSTS`).
+const CAPABILITY: &str = "scouting";
+
+/// The wired router, so a test can drive the real thing rather than a handler.
+///
+/// No state: every handler resolves its own `Config` and opens the store inside
+/// `spawn_blocking`, which is why this takes no argument.
+///
+/// The sentence that used to sit on the CORS layer — "defensible only because
+/// serve_local binds loopback — the browser calling this is on the same machine"
+/// — is where the hole was. A page on any website is also "on the same machine"
+/// once the operator opens it, so loopback bounds who can route a packet here
+/// and not who can make the operator's browser send one. `GET /opportunities`
+/// carries the operator's own accept/dismiss decisions and the rationale that
+/// scored them, and `POST /opportunities/:id/status` writes one.
+///
+/// The origin guard sits below every route on purpose: axum wraps only the
+/// routes registered BEFORE a `.layer()` call (axum 0.7
+/// `src/docs/routing/layer.md`), so a route appended under it would silently
+/// lose the refusal.
+fn build_router() -> Router {
+    Router::new()
         .route("/routes", get(routes))
         .route("/health", get(health_handler))
         .route("/ready", get(ready_handler))
@@ -576,16 +604,15 @@ async fn main() {
             "/sources/proposed/:id/dismiss",
             post(dismiss_proposal_handler),
         )
+        // ADD NEW ROUTES ABOVE THIS LINE. Below it they lose the origin guard.
+        .layer(axum::middleware::from_fn_with_state(
+            CAPABILITY,
+            axon_server::origin::refuse_foreign_origins,
+        ))
         // CorsLayer stays here rather than in axon_server: it is a per-capability
-        // security decision and belongs where it can be seen. It is defensible only
-        // because serve_local binds loopback — the browser calling this is on the
-        // same machine, through the dashboard's proxy.
-        .layer(CorsLayer::permissive());
-
-    // Was 0.0.0.0, which put an unauthenticated POST /opportunities/:id/status on
-    // the LAN. Nothing documented that bind as a decision; it was the last of the
-    // three divergences libs/axon-server exists to end.
-    axon_server::serve_local("scout-server", cfg.port, app).await;
+        // security decision and belongs where it can be seen. It decides what a
+        // permitted answer may say; the guard above decides who may ask.
+        .layer(CorsLayer::permissive())
 }
 
 #[cfg(test)]
@@ -597,5 +624,66 @@ mod route_manifest_tests {
     fn the_manifest_covers_every_served_route() {
         let missing = route_manifest::undeclared_routes(include_str!("server.rs"), super::ROUTES);
         assert!(missing.is_empty(), "served but undocumented: {missing:?}");
+    }
+}
+
+/// The router-level proof that `libs/axon-server`'s predicate tests cannot give:
+/// a route registered BELOW the `.layer()` call passes every test of
+/// `origin_allowed_by` and still answers a hostile page.
+///
+/// `/routes` is the control rather than `/opportunities`, because every data
+/// handler here opens the deployment's SQLite file and a test must not. The
+/// refusal is asserted on the data routes, where the guard answers before the
+/// handler runs and nothing is opened.
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    async fn answer(method: &str, path: &str, origin: Option<&str>) -> StatusCode {
+        let mut request = Request::builder().method(method).uri(path);
+        if let Some(origin) = origin {
+            request = request.header("origin", origin);
+        }
+        build_router()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .expect("the router answers")
+            .status()
+    }
+
+    #[tokio::test]
+    async fn a_foreign_origin_can_neither_read_nor_write_the_backlog() {
+        for (method, path) in [
+            ("GET", "/opportunities"),
+            ("GET", "/discover"),
+            ("GET", "/sources"),
+            ("POST", "/opportunities/evt-1/status"),
+            ("POST", "/sources/proposed"),
+        ] {
+            assert_eq!(
+                answer(method, path, Some("https://evil.example")).await,
+                StatusCode::FORBIDDEN,
+                "{method} {path} answered a foreign origin — it is registered below the guard layer"
+            );
+        }
+    }
+
+    /// The other half. 200 from `/routes` is a handler answering.
+    #[tokio::test]
+    async fn the_dashboard_and_a_non_browser_caller_still_reach_the_handler() {
+        for origin in [
+            None,
+            Some("http://localhost:47117"),
+            Some("https://mac.tailnet.ts.net"),
+        ] {
+            assert_eq!(
+                answer("GET", "/routes", origin).await,
+                StatusCode::OK,
+                "the guard refused a caller it must admit: {origin:?}"
+            );
+        }
     }
 }

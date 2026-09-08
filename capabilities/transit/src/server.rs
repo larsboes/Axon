@@ -368,7 +368,33 @@ async fn main() {
         config,
     };
 
-    let app = Router::new()
+    // Port contract and loopback bind live in axon_server; the old 0.0.0.0 bind
+    // here was never a documented decision and is retired with it.
+    let port = axon_server::resolve_port(Some("TRANSIT_PORT"), None, 3000);
+    axon_server::serve_local("transit-server", port, build_router(state)).await;
+}
+
+/// This capability's name, for the origin guard's env var
+/// (`AXON_TRANSIT_ALLOWED_ORIGIN_HOSTS`).
+const CAPABILITY: &str = "transit";
+
+/// The wired router, so a test can drive the real thing rather than a handler.
+///
+/// Two surfaces make this more than hygiene. `GET /api/trips` returns the
+/// operator's saved trip searches with their legs — where they went, when, and
+/// what it cost — which `CorsLayer::permissive()` made readable by any page open
+/// in their browser. `POST /api/tickets/extract` takes raw file bytes and hands
+/// them to `pdf_extract`, so the same permissive layer let a hostile page choose
+/// the bytes a PDF parser runs on; that is the input class `osv-scanner.toml`'s
+/// RUSTSEC-2026-0192 entry is about, and the entry's reason assumed those bytes
+/// were the operator's.
+///
+/// The origin guard sits below every route on purpose: axum wraps only the
+/// routes registered BEFORE a `.layer()` call (axum 0.7
+/// `src/docs/routing/layer.md`), so a route appended under it would silently
+/// lose the refusal.
+fn build_router(state: AppState) -> Router {
+    Router::new()
         .route("/routes", get(routes))
         .route("/health", get(handle_health))
         .route("/api/health", get(handle_health))
@@ -377,13 +403,13 @@ async fn main() {
         .route("/api/split", get(handle_split))
         .route("/api/trips", get(handle_list_trips))
         .route("/api/tickets/extract", post(handle_extract_ticket))
+        // ADD NEW ROUTES ABOVE THIS LINE. Below it they lose the origin guard.
+        .layer(axum::middleware::from_fn_with_state(
+            CAPABILITY,
+            axon_server::origin::refuse_foreign_origins,
+        ))
         .layer(CorsLayer::permissive())
-        .with_state(state);
-
-    // Port contract and loopback bind live in axon_server; the old 0.0.0.0 bind
-    // here was never a documented decision and is retired with it.
-    let port = axon_server::resolve_port(Some("TRANSIT_PORT"), None, 3000);
-    axon_server::serve_local("transit-server", port, app).await;
+        .with_state(state)
 }
 
 #[cfg(test)]
@@ -395,5 +421,81 @@ mod route_manifest_tests {
     fn the_manifest_covers_every_served_route() {
         let missing = route_manifest::undeclared_routes(include_str!("server.rs"), super::ROUTES);
         assert!(missing.is_empty(), "served but undocumented: {missing:?}");
+    }
+}
+
+/// The router-level proof that `libs/axon-server`'s predicate tests cannot give:
+/// a route registered BELOW the `.layer()` call passes every test of
+/// `origin_allowed_by` and still answers a hostile page.
+///
+/// `tower::ServiceExt::oneshot` rather than a loopback listener, so the test
+/// needs no port and no HTTP client.
+///
+/// No route here reads the store. `/api/trips` would open the deployment's
+/// SQLite file, and the guard answers it before the handler runs, so the
+/// refusal is asserted on that path and the control is asserted on
+/// `/api/tickets/extract`, whose empty-body 400 comes from the handler and
+/// touches nothing.
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    /// The HafasClient is built off the runtime for the reason `main` states:
+    /// `reqwest::blocking::Client` builds a runtime, and building one inside an
+    /// async context panics on drop.
+    async fn router() -> Router {
+        let hafas_client = Arc::new(
+            tokio::task::spawn_blocking(HafasClient::new)
+                .await
+                .expect("hafas client construction panicked"),
+        );
+        build_router(AppState {
+            hafas_client,
+            config: Arc::new(tokio::task::spawn_blocking(Config::load).await.unwrap()),
+        })
+    }
+
+    async fn answer(method: &str, path: &str, origin: Option<&str>) -> StatusCode {
+        let mut request = Request::builder().method(method).uri(path);
+        if let Some(origin) = origin {
+            request = request.header("origin", origin);
+        }
+        router()
+            .await
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .expect("the router answers")
+            .status()
+    }
+
+    #[tokio::test]
+    async fn a_foreign_origin_reaches_neither_the_saved_trips_nor_the_pdf_parser() {
+        for (method, path) in [("GET", "/api/trips"), ("POST", "/api/tickets/extract")] {
+            assert_eq!(
+                answer(method, path, Some("https://evil.example")).await,
+                StatusCode::FORBIDDEN,
+                "{method} {path} answered a foreign origin — it is registered below the guard layer"
+            );
+        }
+    }
+
+    /// The other half. 400 is `handle_extract_ticket`'s own answer to an empty
+    /// body, so the request reached a handler rather than the guard.
+    #[tokio::test]
+    async fn the_dashboard_and_a_non_browser_caller_still_reach_the_handler() {
+        for origin in [
+            None,
+            Some("http://localhost:47117"),
+            Some("https://mac.tailnet.ts.net"),
+        ] {
+            assert_eq!(
+                answer("POST", "/api/tickets/extract", origin).await,
+                StatusCode::BAD_REQUEST,
+                "the guard refused a caller it must admit: {origin:?}"
+            );
+        }
     }
 }
