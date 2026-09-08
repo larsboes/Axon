@@ -30,7 +30,7 @@
 
 // The modules live in the library beside this binary, so `vault-server` reads
 // notes through the same loader rather than a second copy of it.
-use vault::{class, graph, lint, names, note, people};
+use vault::{bases, class, graph, lint, names, note, people};
 
 fn flag(args: &[String], name: &str) -> Option<String> {
     let i = args.iter().position(|a| a == name)?;
@@ -59,8 +59,9 @@ fn main() {
                vault links [--root PATH] [--json] [--dead] [--inbound FOLDER]\n  \
                vault lint  [--root PATH] [--json] [--carrying KEY]\n  \
                vault names [--root PATH] [--json] [--folder Atlas/People]\n  \
-               vault class [--root PATH] [--json] [--only c2] [--list]
-  vault people [--root PATH] [--json]\n\
+               vault class [--root PATH] [--json] [--only c2] [--list]\n  \
+               vault people [--root PATH] [--json]\n  \
+               vault bases [--root PATH] [--json] [--strict]\n\
              \n\
              The root comes from the overlay's config/knowledge.toml unless --root says otherwise."
         );
@@ -230,6 +231,74 @@ fn main() {
                         }
                     );
                 }
+            }
+        }
+
+        // D5, the half a CLI can answer. Base rendering is not checkable from here and this
+        // does not pretend it is; what it checks is everything a Base states about the vault
+        // before rendering starts — the folders it queries and the keys it draws as columns.
+        "bases" => {
+            let files = root.files_recursive().unwrap_or_else(|e| die(e));
+            let mut found: Vec<(String, String)> = Vec::new();
+            for path in files {
+                if path.extension().and_then(|e| e.to_str()) != Some("base") {
+                    continue;
+                }
+                let Some(id) = root.relative_id(&path) else {
+                    continue;
+                };
+                match std::fs::read_to_string(&path) {
+                    Ok(text) => found.push((id, text)),
+                    // Named rather than skipped: a Base this verb cannot read is the one case
+                    // where "0 unresolved" would be a lie.
+                    Err(e) => die(format!("{id}: unreadable: {e}")),
+                }
+            }
+            let rep = bases::report(&notes, &found);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rep).unwrap_or_default());
+            } else {
+                println!("bases                  {}", rep.bases);
+                println!("folder references      {}", rep.folder_refs);
+                println!("  unresolved           {}", rep.unresolved_folders);
+                println!("declared columns empty {}", rep.empty_fields);
+                println!();
+                for base in &rep.items {
+                    let scope = match base.scope {
+                        Some(n) => format!("{n} notes"),
+                        None => "no folder scope".to_string(),
+                    };
+                    println!("{}  ({}, {} views)", base.id, scope, base.views);
+                    for f in &base.folders {
+                        let mark = if f.excluded {
+                            "excludes"
+                        } else if f.resolved() {
+                            "ok      "
+                        } else {
+                            "MISSING "
+                        };
+                        println!("  {mark} {:<34} {:>5}", f.folder, f.notes);
+                        for c in &f.candidates {
+                            println!(
+                                "           candidate: {} ({} notes, {}/{} columns)",
+                                c.folder, c.notes, c.columns_carried, c.columns_total
+                            );
+                        }
+                    }
+                    for field in base.fields.iter().filter(|f| f.carried == 0) {
+                        println!("  EMPTY    column `{}` — 0 notes carry it", field.field);
+                    }
+                    println!();
+                }
+            }
+            // `--strict` is the gate half. Without it this verb answers 0 for a vault where
+            // every Base is broken and 0 for one where none is, which is an instrument that
+            // cannot be wrong.
+            if has(&args, "--strict") && rep.unresolved_folders > 0 {
+                die(format!(
+                    "{} folder reference(s) name a folder that holds no note",
+                    rep.unresolved_folders
+                ));
             }
         }
 

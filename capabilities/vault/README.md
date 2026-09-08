@@ -1,13 +1,15 @@
 # vault
 
-Reads an Obsidian vault as data. Four CLI verbs and one HTTP surface, all
+Reads an Obsidian vault as data. Six CLI verbs and one HTTP surface, all
 read-only.
 
 ```
-vault links [--root PATH] [--json] [--dead] [--inbound FOLDER]
-vault lint  [--root PATH] [--json] [--carrying KEY]
-vault names [--root PATH] [--json] [--folder Atlas/People]
-vault class [--root PATH] [--json] [--only c2] [--list]
+vault links  [--root PATH] [--json] [--dead] [--inbound FOLDER]
+vault lint   [--root PATH] [--json] [--carrying KEY]
+vault names  [--root PATH] [--json] [--folder Atlas/People]
+vault class  [--root PATH] [--json] [--only c2] [--list]
+vault people [--root PATH] [--json]
+vault bases  [--root PATH] [--json] [--strict]
 ```
 
 The root is a personal fact and never lives in this repo. It comes from the
@@ -53,6 +55,52 @@ default report names the **refused declarations** — notes whose frontmatter se
 a class outside the vocabulary. A refusal is the interesting row. The folder
 default answers for it, so nothing fails; what it means is that somebody
 believes that note is classified and it is not.
+
+## `bases` — the Bases, checked against the vault they query
+
+PRD **D5** says the Bases are unverified in Obsidian and that a CLI cannot
+confirm Base *rendering*. Both are still true. What a CLI can confirm is what a
+Base states about the vault before rendering starts: a Base is a query, it names
+folders and it names the frontmatter keys it will draw as columns, and each of
+those is checkable against the notes on disk.
+
+**Measured 2026-09-08** — 28 Bases, 37 folder references:
+
+| | |
+|---|---|
+| Folder references naming a folder that holds no note | **11**, across 11 Bases and 10 distinct folders |
+| Declared columns no note in scope carries | **106** |
+
+Those are two different failures and both look identical in Obsidian. A Base
+whose folder moved renders an empty table; a Base whose folder is fine and whose
+`maturity:` became `status:` renders a table of blank columns. Neither throws.
+
+A missing folder gets **candidates, never a rewrite**. `.base` files live in the
+vault and §5.5 is one-way, so this verb names where the folder probably went and
+stops. The rule is narrow — a folder elsewhere in the vault with the same final
+segment, holding at least one note — and each candidate is weighed by how many of
+that Base's own declared columns its notes carry, because a matching name is not
+a destination:
+
+| Base | Names | Candidate | Columns it fills |
+|---|---|---|---|
+| `Focus.base` | `TELOS/Focus` | `Atlas/Focus` | 3 of 3 |
+| `Reflections.base` | `TELOS/Reflections` | `Atlas/Reflections` | 4 of 5 |
+| `Soma.base` | `Projects/Soma/Domains` | `Projects/Axon/Knowledge-Base/Domains` | 4 of 4 |
+| `Investments.base` | `Atlas/Finance/Investments` | `Projects/Archive/Ledger/Notability/Investments` | **0 of 8** |
+| `Tasks.base`, `Calendar.base` | `Projects/Tasks` | nine of them | 7 of 10 at best |
+
+Four references have exactly one candidate and only three of them survive the
+column check. The fourth is an archived Notability import that shares a word.
+`Projects/Tasks` is the opposite shape: Q48 spread it across `Projects/**/Tasks/`
+on purpose, so nine candidates is the correct answer and none of them is a
+proposal. The remaining five — `Atlas/Places`, `Atlas/Identity`,
+`Resources/Spots`, `Atlas/Finance/Income`, `Atlas/Finance/Purchases` — have no
+candidate at all, which means the folder was never created rather than moved.
+
+`--strict` exits non-zero when a positive folder reference resolves to nothing.
+Without it the verb answers `0` for a vault where every Base is broken and `0`
+for one where none is, which is an instrument that cannot be wrong.
 
 ## The server
 
