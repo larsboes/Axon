@@ -16,6 +16,7 @@
     tone,
     href,
     whyHere,
+    dataClass,
     candidateStatus,
   }: DecisionRowProps<CalendarEntry, CalendarSource> = $props();
 
@@ -59,7 +60,7 @@
   <a class="row-title" {href}>{row.title}</a>
   {#if row.notes}<p class="row-text">{row.notes}</p>{/if}
 
-  {#snippet meta()}<RowMeta {whyHere} {candidateStatus} />{/snippet}
+  {#snippet meta()}<RowMeta {whyHere} {dataClass} {candidateStatus} />{/snippet}
 
   {#snippet actions()}
     <a class="btn" {href}>Calendar</a>

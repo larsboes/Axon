@@ -384,7 +384,7 @@
     min-height: 2.45rem;
     padding: 0.55rem;
     border-style: dashed;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   fieldset {
@@ -399,7 +399,7 @@
 
   .mode-list button {
     padding: 0.42rem 0.65rem;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .mode-list button.active {
@@ -424,7 +424,7 @@
   .danger-zone button,
   .primary-actions button {
     padding: 0.5rem 0.7rem;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .danger-zone small {
@@ -456,7 +456,7 @@
   .validation {
     margin: 0.8rem 0 0;
     color: var(--danger, #c55);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   @media (max-width: 46rem) {

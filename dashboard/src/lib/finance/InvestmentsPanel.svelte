@@ -57,11 +57,11 @@
       <table>
         <thead>
           <tr>
-            <th>Position</th>
-            <th>Price</th>
-            <th>Value</th>
-            <th>Share</th>
-            <th>Drift</th>
+            <th scope="col">Position</th>
+            <th scope="col">Price</th>
+            <th scope="col">Value</th>
+            <th scope="col">Share</th>
+            <th scope="col">Drift</th>
           </tr>
         </thead>
         <tbody>
@@ -119,7 +119,7 @@
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>Asset class</th><th>Value</th><th>Share</th><th>Drift</th></tr>
+          <tr><th scope="col">Asset class</th><th scope="col">Value</th><th scope="col">Share</th><th scope="col">Drift</th></tr>
         </thead>
         <tbody>
           {#each portfolio.asset_classes as row (row.asset_class)}
@@ -178,7 +178,7 @@
   .investments { margin-top: .75rem; padding: .9rem; border: 1px solid var(--card-border); border-radius: var(--radius-md); background: var(--card-bg); }
   .heading { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
   h2 { margin: 0; font-size: .85rem; }
-  h3 { margin: 0 0 .35rem; font-size: .75rem; }
+  h3 { margin: 0 0 .35rem; font-size: var(--text-xs); }
   p { margin: .2rem 0 0; color: var(--text-secondary); font-size: .7rem; }
   .heading > strong { font-size: .95rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
   .no-policy { margin-top: .65rem; padding: .55rem .65rem; border-left: 3px solid var(--warning); background: var(--warning-soft); color: var(--text-primary); font-size: .72rem; }

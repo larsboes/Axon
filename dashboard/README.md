@@ -15,12 +15,19 @@ single frontend standard*. Bun for packages. No CSS framework and no component l
 Svelte scopes a component's own styles at compile time, so what is worth sharing is a token
 layer plus a handful of primitives, and `src/app.css` is that whole design system. It
 declares a named type scale, a spacing rhythm, three breakpoints and one focus ring, and the
-classes `.card` / `.card-interactive`, `.tag`, `.btn`, `.input` and `.table`. What a class
+classes `.card`, `.tag`, `.btn`, `.input` and `.table`. What a class
 cannot express once is a component: `ListRow`, `RowMeta`, `StateLine`, `FactorBars`,
 `PageTabs` and `PageHeader`. `src/lib/feed/FeedItemRow.svelte` is the feed triage row built
 on them; Home's reading lane renders it today and the `/feed` list is meant to adopt the same
 component rather than keep a second one. Icons are inline SVG in `src/lib/Icon.svelte`,
 quarried from Lucide (ISC), rather than a dependency.
+
+Behaviour that is not a class and not a component is an action. `src/lib/modal.ts` is the
+one so far: `use:modal` on the element carrying `role="dialog"` gives it mount focus, a Tab
+trap, Escape with a `canClose` predicate, and a focus restore to whatever opened it. It was
+written inside `Overlay` and moved out on 2026-09-08, when a count found four dialogs, one
+trap and no focus restore at all; `tools/dashboard-modal.test.ts` keeps every
+`role="dialog"` in the tree wired to it.
 
 ### The token layer
 
@@ -94,14 +101,22 @@ feed link to script in the origin that renders the mail snippets. The keyboard h
 only while the ladder is on screen, so Enter on another view cannot navigate to a row nobody
 can see.
 
-**Data class is shown only where a capability publishes one.** Mail publishes one, and
-`GET /comms/feed` began publishing one on 2026-09-06 (`capabilities/comms/README.md`); the
-calendar entry, the task, the trip plan and the scouting opportunity still do not, and this
-shell will not invent a class it does not own. `FeedEntry.data_class` in `src/lib/api.ts` is
-therefore typed **optional**, and the `?` records a contract gap rather than caution: comms'
-detail contract carries no class, so `toListEntry` in `routes/feed/+page.svelte` builds a list
-row out of an ingest response that has none. A reader must treat `undefined` as *not stated*
-and fail closed. The field stops being optional the day the detail contract states one too.
+**Data class is shown only where a capability publishes one.** Mail and finance publish one,
+`GET /comms/feed` began publishing one on 2026-09-06 (`capabilities/comms/README.md`), and on
+2026-09-08 the calendar entry lists, `GET /vault/api/tasks` and `GET /scouting/opportunities`
+joined them (B50). **The trip plan is the one list left**, and it stays silent on purpose: what
+a plan naming its travellers is worth is an open operator question, not the shell's to answer,
+and this shell will not invent a class it does not own. `tools/dashboard-home-data-class.test.ts`
+holds the trip and trip-retrospective kinds on the silent list so that filling one in is a test
+failure rather than a guess.
+
+`FeedEntry.data_class` in `src/lib/api.ts` is typed **optional**, and the `?` records a contract
+gap rather than caution: comms' detail contract carries no class, so `toListEntry` in
+`routes/feed/+page.svelte` builds a list row out of an ingest response that has none. A reader
+must treat `undefined` as *not stated* and fail closed. The field stops being optional the day
+the detail contract states one too. `CalendarEntry.data_class` carries the same `?` for the same
+kind of reason: the three entry lists state a class, while `GET /api/entries/:id`, the create and
+the patch answer with the bare row.
 
 ### One map surface, and a basemap that is half local
 

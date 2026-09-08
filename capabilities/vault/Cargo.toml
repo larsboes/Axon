@@ -38,3 +38,10 @@ serde_json.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 axum.workspace = true
 tower-http = { workspace = true, features = ["cors"] }
+
+[dev-dependencies]
+# `ServiceExt::oneshot`, so the origin test drives the wired Router with no
+# listener, no port and no HTTP client. This crate has neither reqwest nor
+# tokio's `net`, and pulling a TLS stack in so a test can talk to itself would
+# cost more than the thing it proves.
+tower = { workspace = true, features = ["util"] }

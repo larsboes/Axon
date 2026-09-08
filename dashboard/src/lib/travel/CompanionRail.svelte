@@ -86,7 +86,7 @@
   .rail-hint {
     margin: 0 0 0.4rem;
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     line-height: 1.45;
   }
 
@@ -130,7 +130,7 @@
     align-items: baseline;
     gap: 0.4rem;
     margin: 0;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
   }
 
   .who span {
@@ -139,14 +139,14 @@
 
   .when {
     margin: 0;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     font-variant-numeric: tabular-nums;
     color: var(--text-primary);
   }
 
   .meta {
     margin: 0;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     color: var(--text-tertiary);
   }
 

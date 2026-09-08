@@ -94,10 +94,79 @@ pub struct SourceEntry {
     /// Whether this source is active. Disabled sources are listed but not polled.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+
+    /// What this source's opportunities are worth protecting: `c0`, `c1`, `c2`
+    /// or `c3`. Absent means undeclared, which is c1.
+    ///
+    /// The declaration is here rather than in Rust for the reason comms already
+    /// gives for the identical field on `FeedSourceConfig`: the operator decides
+    /// what a source collects, and the only class that can be reached by silence
+    /// is the one nobody chose. `c0` is reachable only through a positive
+    /// declaration.
+    ///
+    /// Unlike comms', it is OPTIONAL, and the difference is deliberate: comms
+    /// refuses to load a feed source that omits the key, which it can afford
+    /// because it shipped the key with the sources. Scouting's `sources[]` are
+    /// already deployed and would all fail to load. Absent is therefore treated
+    /// as undeclared and answered with `DataClass::undeclared()` -- the strict
+    /// direction, never `c0` -- so an unmigrated config loses nothing but the
+    /// ability to say "public".
+    #[serde(default)]
+    pub data_class: Option<String>,
 }
 
 fn default_enabled() -> bool {
     true
+}
+
+/// The class a source declares, refusing anything outside the vocabulary.
+///
+/// Three inputs, one direction. A valid literal is honoured. A literal that is
+/// not a class is a typo, and a typo must not be more permissive than saying
+/// nothing, so it is refused down to the undeclared default and reported --
+/// exactly the rule `comms::config` applies to the same field, and the reason
+/// it is reported at load rather than dropped at ingest. Nothing at all is the
+/// undeclared default too, and that default is `c1`: never `c0`.
+fn declared_class(declared: Option<&str>, id: &str) -> String {
+    let fallback = content_item::DataClass::undeclared().value;
+    match declared.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) if content_item::valid(value) => value.to_string(),
+        Some(value) => {
+            eprintln!(
+                "scouting: source '{id}' declares an unknown data_class '{value}'; \
+                 treating it as {fallback}"
+            );
+            fallback
+        }
+        None => fallback,
+    }
+}
+
+/// What an opportunity from `source` is worth protecting.
+///
+/// The serve-side half of the declaration above, and the one that fails closed:
+/// a stored row whose source is not in `sources[]` gets `DataClass::undeclared`.
+/// That covers every hardcoded adapter (luma, meetup, cfp, euro_hackathons,
+/// transit_fare), a source an operator has since removed from the config, and a
+/// typo'd source name — none of which anybody has declared anything about, so
+/// none of them may read as `c0`.
+///
+/// Resolved at read time rather than stored on the row, which is the ONE place
+/// this departs from comms' feed rule ("the class lands with the INSERT, and
+/// every later pass may only raise it"). Comms protects a per-ITEM class a human
+/// can edit; scouting has no per-item class and no surface to edit one, so the
+/// class here is a property of the source and the current declaration is the
+/// truthful answer for every row that came from it. The consequence is stated
+/// rather than hidden: editing `data_class` in `scouting.json` re-labels rows
+/// already stored, downwards as well as upwards. That edit is the operator's own
+/// written declaration, which is the same authority `set_feed_data_class`
+/// requires to lower a class in comms.
+pub fn class_for_source(sources: &[SourceManifest], source: &str) -> String {
+    sources
+        .iter()
+        .find(|manifest| manifest.id == source)
+        .map(|manifest| manifest.data_class.clone())
+        .unwrap_or_else(|| content_item::DataClass::undeclared().value)
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +190,9 @@ pub struct SourceManifest {
     pub profile_root: Option<PathBuf>,
     pub doc_path: Option<PathBuf>,
     pub enabled: bool,
+    /// Resolved and validated by `SourceEntry::resolve` -- always one of
+    /// `DATA_CLASSES`, never empty. See `declared_class`.
+    pub data_class: String,
 }
 
 use axon_config::expand_tilde;
@@ -146,6 +218,7 @@ impl SourceEntry {
             profile_root: self.profile_path.as_ref().map(|p| expand_tilde(p)),
             doc_path,
             enabled: self.enabled,
+            data_class: declared_class(self.data_class.as_deref(), &self.id),
         }
     }
 }
@@ -331,6 +404,7 @@ mod tests {
             profile_root: None,
             doc_path: None,
             enabled: true,
+            data_class: content_item::DataClass::undeclared().value,
         }
     }
 
@@ -389,5 +463,66 @@ mod tests {
     fn an_unconfigured_adapter_keeps_its_type_name() {
         use crate::adapters::luma::LumaAdapter;
         assert_eq!(LumaAdapter::new().name(), "luma");
+    }
+
+    fn entry(id: &str, data_class: Option<&str>) -> SourceEntry {
+        SourceEntry {
+            id: id.into(),
+            adapter: "rss".into(),
+            path: None,
+            url: Some("https://example.test/feed".into()),
+            events_glob: None,
+            opportunities_glob: None,
+            opportunity_type: None,
+            profiles_glob: None,
+            profile_path: None,
+            doc: None,
+            enabled: true,
+            data_class: data_class.map(Into::into),
+        }
+    }
+
+    /// The three ways a source declares a class, and the one direction they all
+    /// fail in.
+    ///
+    /// The middle two are the planted inputs. `"public"` is the vocabulary Q72
+    /// retired -- deliberately disjoint from `c0`..`c3` so a stale reader fails
+    /// loudly rather than passing as the wrong class -- and `"C0"` is the same
+    /// literal an operator would most plausibly typo. Neither may be honoured,
+    /// and neither may be MORE permissive than saying nothing: both land on the
+    /// undeclared default, which is Mine.
+    #[test]
+    fn a_source_that_declares_nothing_or_nonsense_is_mine_and_never_public() {
+        assert_eq!(entry("declared", Some("c0")).resolve().data_class, "c0");
+        assert_eq!(entry("strict", Some("c2")).resolve().data_class, "c2");
+
+        assert_eq!(entry("silent", None).resolve().data_class, "c1");
+        assert_eq!(entry("blank", Some("   ")).resolve().data_class, "c1");
+        assert_eq!(
+            entry("retired", Some("public")).resolve().data_class,
+            "c1",
+            "the pre-Q72 vocabulary is not a class and must not read as one"
+        );
+        assert_eq!(
+            entry("typo", Some("C0")).resolve().data_class,
+            "c1",
+            "a typo must not be more permissive than silence"
+        );
+    }
+
+    /// A stored row whose source is not in `sources[]` at all.
+    ///
+    /// This is the live case, not a hypothetical: a scout measured 310 rows from
+    /// four adapters, and the hardcoded ones (luma, meetup, cfp,
+    /// euro_hackathons, transit_fare) have no config entry to declare anything.
+    /// Every one of them is undeclared, so every one of them is c1.
+    #[test]
+    fn a_row_whose_source_declared_nothing_fails_closed() {
+        let declared = vec![entry("bonn-events", Some("c0")).resolve()];
+
+        assert_eq!(class_for_source(&declared, "bonn-events"), "c0");
+        assert_eq!(class_for_source(&declared, "luma"), "c1");
+        assert_eq!(class_for_source(&declared, "bonn-event"), "c1");
+        assert_eq!(class_for_source(&[], "bonn-events"), "c1");
     }
 }

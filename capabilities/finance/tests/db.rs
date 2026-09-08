@@ -583,6 +583,72 @@ mod db_tests {
         assert!(store.latest_prices().unwrap().is_empty());
     }
 
+    /// The freshness contract's whole body, and the case it exists to refuse.
+    ///
+    /// `capabilities/finance/service.toml` declares `freshness_stale_hours`, so
+    /// doctor calls finance stale when this stops moving. A run in which every
+    /// provider refused still WROTE rows to `finance_price_fetches`, and if
+    /// those rows answered here, a machine whose price fetch has been failing
+    /// nightly for a week would report data arriving every night.
+    #[test]
+    fn a_failed_fetch_does_not_answer_the_freshness_contract() {
+        let store = store("prices-freshness");
+        let attempt = |status, fetched_at: &str| FetchAttempt {
+            provider: "yahoo".into(),
+            target: "SYN-A".into(),
+            requested_on: fetched_at[0..10].to_string(),
+            status,
+            detail: String::new(),
+            rows_written: 0,
+            fetched_at: fetched_at.to_string(),
+        };
+
+        assert_eq!(
+            store.newest_price_arrival().unwrap(),
+            None,
+            "nothing has ever arrived, and that must read as never rather than as fresh"
+        );
+
+        // The idempotent night: the provider handed over observations the UNIQUE
+        // tuple already held. Zero rows written, and data did arrive.
+        store
+            .record_fetch(&attempt(FetchStatus::Ok, "2026-09-05T03:00:00Z"))
+            .unwrap();
+        assert_eq!(
+            store.newest_price_arrival().unwrap().as_deref(),
+            Some("2026-09-05T03:00:00Z")
+        );
+
+        // Three nights of failure on top of it. Each is a row with a newer
+        // stamp, and none of them is an arrival.
+        for (status, at) in [
+            (FetchStatus::Refused, "2026-09-06T03:00:00Z"),
+            (FetchStatus::Error, "2026-09-07T03:00:00Z"),
+            (FetchStatus::Empty, "2026-09-08T03:00:00Z"),
+        ] {
+            store.record_fetch(&attempt(status, at)).unwrap();
+        }
+        assert_eq!(store.recent_fetches(50).unwrap().len(), 4);
+        assert_eq!(
+            store.newest_price_arrival().unwrap().as_deref(),
+            Some("2026-09-05T03:00:00Z"),
+            "a refused, errored or empty attempt is not a delivery"
+        );
+
+        // And the stamp the handler serves is the stamp the row holds.
+        store
+            .record_fetch(&attempt(FetchStatus::Ok, "2026-09-09T03:00:00Z"))
+            .unwrap();
+        assert_eq!(
+            store
+                .newest_price_arrival()
+                .unwrap()
+                .as_deref()
+                .and_then(finance::clock::epoch_seconds),
+            Some(1_788_922_800)
+        );
+    }
+
     /// The store.rs candidate fix: a primary-key read must agree with the scan it
     /// replaced, and answer None for an id that does not exist.
     #[test]

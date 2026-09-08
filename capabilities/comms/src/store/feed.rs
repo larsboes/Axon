@@ -394,7 +394,7 @@ impl Store {
             _ => "unkept",
         };
         let mut conn = self.conn()?;
-        let transaction = conn.transaction()?;
+        let transaction = axon_store::write_transaction(&mut conn)?;
         // Read inside the transaction rather than keying the ledger off the
         // UPDATE's row count: an UPDATE that sets a column to the value it
         // already holds still reports one row affected, so a second press of
@@ -531,7 +531,7 @@ impl Store {
         flags: &[QualityFlag],
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
-        let transaction = conn.transaction()?;
+        let transaction = axon_store::write_transaction(&mut conn)?;
         transaction.execute(
             &format!(
                 "DELETE FROM {}_feed_quality_flags WHERE feed_id = ?1",
@@ -997,7 +997,7 @@ impl Store {
         matches: &[RelevanceMatch],
     ) -> Result<bool, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
-        let transaction = conn.transaction()?;
+        let transaction = axon_store::write_transaction(&mut conn)?;
         let incoming_tier = matches
             .first()
             .map(|matched| provenance::ranking_tier(&matched.mode))

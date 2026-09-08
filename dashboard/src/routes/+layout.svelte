@@ -362,7 +362,7 @@
     align-items: center;
     gap: 0.5rem;
     color: var(--text-tertiary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .clock {
@@ -389,7 +389,7 @@
     align-items: center;
     gap: 0.4rem;
     padding: 0.5rem 0.75rem;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     font-weight: 500;
     border-radius: var(--radius-md);
     color: var(--nav-inactive);
@@ -451,7 +451,7 @@
        notice in both themes without app.css growing a palette entry only one build uses. */
     background: color-mix(in oklab, var(--primary-soft) 70%, var(--page-bg));
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     line-height: 1.5;
   }
 
@@ -538,7 +538,7 @@
   footer {
     border-top: 1px solid var(--header-border);
     padding: 1rem 1.5rem;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--text-tertiary);
   }
 

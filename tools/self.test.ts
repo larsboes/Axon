@@ -13,6 +13,7 @@ import {
   classifyPath,
   couplingFromCargo,
   couplingFromRustPath,
+  generateWouldBakeStaleGraph,
   generateWouldDropCode,
   mergeCoupling,
   rollUp,
@@ -299,5 +300,27 @@ describe("generateWouldDropCode — the artifact must not be regenerated blind",
 
   test("no graph and a committed file that never had counts — allow", () => {
     expect(generateWouldDropCode(false, withoutCode)).toBe(false);
+  });
+});
+
+describe("generateWouldBakeStaleGraph — a stale graph is a reason not to write", () => {
+  // A stale path is internal-looking and resolves to nothing. Every per-unit code count in
+  // the same run was rolled up from that same graph, so writing them down publishes a
+  // measurement of a tree that is one edit behind. This is the real path from 2026-09-07:
+  // the cursor merge deleted the module, generate recorded it as a field and exited 0.
+  test("a graph holding a path this tree no longer has — refuse", () => {
+    expect(generateWouldBakeStaleGraph(["dashboard/src/lib/feed/list-cursor.ts"])).toBe(true);
+  });
+
+  // The known-good half. Without it the refusal above would be indistinguishable from a
+  // guard that refuses everything, which is the shape the sixth silent failure takes.
+  test("a graph that matches the tree — write", () => {
+    expect(generateWouldBakeStaleGraph([])).toBe(false);
+  });
+
+  // A checkout with no graph at all arrives here as undefined. That is not staleness, and
+  // treating it as such would make the artifact impossible to generate on a fresh clone.
+  test("no graph block at all — write", () => {
+    expect(generateWouldBakeStaleGraph(undefined)).toBe(false);
   });
 });

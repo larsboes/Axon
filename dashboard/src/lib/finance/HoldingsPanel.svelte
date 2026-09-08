@@ -53,7 +53,7 @@
       {/if}
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Instrument</th><th>Quantity</th><th>Latest activity price</th></tr></thead>
+          <thead><tr><th scope="col">Instrument</th><th scope="col">Quantity</th><th scope="col">Latest activity price</th></tr></thead>
           <tbody>
             {#each snapshot.holdings as holding (holding.instrument)}
               <tr>
