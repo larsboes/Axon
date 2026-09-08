@@ -34,6 +34,14 @@ pub enum DayLoad {
     Planned,
     /// A `committed` entry touches it.
     Committed,
+    /// The calendar was not read, so nothing is known about this day.
+    ///
+    /// Last on purpose. `rank` orders by this enum before price, so an unknown
+    /// day never outranks a day that was measured free — a guess that looks
+    /// like a measurement is worse than a blank (Packs/travel/ISA.md). In
+    /// practice it is all-or-nothing: either the calendar answered for the
+    /// whole span or it answered for none of it.
+    Unknown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -106,6 +114,24 @@ pub fn day_loads(
     days
 }
 
+/// Every day of `[from, to]` marked [`DayLoad::Unknown`], for the answer a
+/// caller gets when the calendar could not be read at all.
+///
+/// The alternative this replaces was `unwrap_or_default()` on the calendar
+/// response, which fed an EMPTY entry list into `day_loads` — and an empty
+/// entry list makes every day `Free`, so a fully committed week ranked
+/// cheapest-first with nothing in the body saying the calendar was never
+/// reached.
+pub fn unknown_loads(from: &str, to: &str) -> Vec<(String, DayLoad, Vec<String>)> {
+    let mut days = Vec::new();
+    let mut day = from.to_string();
+    while day.as_str() <= to {
+        days.push((day.clone(), DayLoad::Unknown, Vec::new()));
+        day = next_day(&day);
+    }
+    days
+}
+
 /// Grid days joined with day loads, ranked: free days cheapest-first, then
 /// planned, committed last -- within each band by price. Days the grid did not
 /// price are absent, which is itself the honest answer for them.
@@ -117,7 +143,11 @@ pub fn rank(grid: Vec<GridDay>, loads: &[(String, DayLoad, Vec<String>)]) -> Vec
                 .iter()
                 .find(|(date, _, _)| *date == g.date)
                 .map(|(_, l, c)| (*l, c.clone()))
-                .unwrap_or((DayLoad::Free, Vec::new()));
+                // A priced day the load table does not cover is unknown, not
+                // free: `day_loads` covers the whole span it was given, so this
+                // branch means the two spans disagree and nobody measured this
+                // day.
+                .unwrap_or((DayLoad::Unknown, Vec::new()));
             WhenDay {
                 date: g.date,
                 price: g.price,
@@ -168,33 +198,68 @@ fn next_day(iso: &str) -> String {
 }
 
 /// Days since an arbitrary fixed epoch for `window_centers` arithmetic.
+///
+/// One behaviour change from the copy this replaced: a month outside 1..=12 or a
+/// day outside 1..=31 is now `None` rather than a well-formed nonsense number.
+/// Every caller here already had the `None` path — `store.rs:740`,
+/// `plan_search.rs:170` and `:173` all early-return on it — so the refusal reaches
+/// them instead of a date 1,900 years off.
 pub fn day_number(iso: &str) -> Option<i64> {
-    let mut parts = iso.split('-');
-    let y: i64 = parts.next()?.parse().ok()?;
-    let m: i64 = parts.next()?.parse().ok()?;
-    let d: i64 = parts.next()?.parse().ok()?;
-    // Howard Hinnant's days-from-civil, the standard branchless form.
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = (m + 9) % 12;
-    let doy = (153 * mp + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    Some(era * 146097 + doe)
+    civil_date::day_number_of_iso(iso)
+}
+
+/// The day number of 1970-01-01.
+///
+/// `day_number`'s epoch is proleptic year 0, not Unix — its own doc comment says
+/// "an arbitrary fixed epoch", and it is arbitrary. The constant, the scale and
+/// the failure it prevents now live in `libs/civil-date`; this re-export is what
+/// the rest of this module and its tests read.
+pub use civil_date::UNIX_EPOCH_DAY;
+
+/// Today as an ISO date from the wall clock, UTC, on `day_number`'s scale.
+pub fn today() -> String {
+    civil_date::today()
 }
 
 /// `day_number`'s inverse.
 pub fn iso_of_day_number(z: i64) -> String {
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = z - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = (mp + 2) % 12 + 1;
-    let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{d:02}")
+    civil_date::iso_of_day_number(z)
+}
+
+#[cfg(test)]
+mod epoch_tests {
+    use super::*;
+
+    /// The trap: `iso_of_day_number` on a raw Unix day count returns a
+    /// well-formed date that is nearly two thousand years wrong, so nothing
+    /// downstream can tell it went wrong.
+    #[test]
+    fn the_two_scales_do_not_agree_and_the_constant_is_the_bridge() {
+        assert_eq!(iso_of_day_number(UNIX_EPOCH_DAY), "1970-01-01");
+        assert_eq!(day_number("1970-01-01"), Some(UNIX_EPOCH_DAY));
+        assert_eq!(iso_of_day_number(UNIX_EPOCH_DAY + 20_697), "2026-09-01");
+        // A raw Unix day count parses as a date and is not one.
+        assert_eq!(iso_of_day_number(20_697), "0056-10-30");
+    }
+
+    #[test]
+    fn a_month_out_of_range_is_refused_rather_than_converted() {
+        assert_eq!(day_number("2026-13-01"), None);
+        assert_eq!(day_number("2026-09-32"), None);
+        assert_eq!(day_number("not a date"), None);
+    }
+
+    #[test]
+    fn today_is_a_plausible_iso_date_on_the_day_number_scale() {
+        let today = today();
+        assert_eq!(today.len(), 10, "{today}");
+        let day = day_number(&today).expect("today parses back");
+        // Anything between 2020 and 2100: this asserts the epoch, not the clock.
+        assert!(
+            day > day_number("2020-01-01").unwrap() && day < day_number("2100-01-01").unwrap(),
+            "today() returned {today}, which is off the wall clock's scale"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -271,5 +336,25 @@ mod tests {
         assert_eq!(next_day("2026-02-28"), "2026-03-01");
         let n = day_number("2026-08-12").unwrap();
         assert_eq!(iso_of_day_number(n), "2026-08-12");
+    }
+
+    /// The defect this route shipped with: an unreachable calendar produced an
+    /// empty entry list, and an empty entry list makes every day `Free`, so a
+    /// fully committed week ranked cheapest-first and said nothing about it.
+    #[test]
+    fn a_calendar_that_was_never_read_marks_days_unknown_rather_than_free() {
+        let unknown = unknown_loads("2026-10-05", "2026-10-07");
+        assert_eq!(unknown.len(), 3);
+        assert!(unknown.iter().all(|(_, load, _)| *load == DayLoad::Unknown));
+
+        // The same span through the old path — no entries at all — still reads
+        // as free, which is exactly why the caller must not use it when the
+        // read failed.
+        let empty = day_loads("2026-10-05", "2026-10-07", &[]);
+        assert!(empty.iter().all(|(_, load, _)| *load == DayLoad::Free));
+
+        // And an unknown day never outranks a measured free one.
+        assert!(DayLoad::Free < DayLoad::Unknown);
+        assert!(DayLoad::Committed < DayLoad::Unknown);
     }
 }

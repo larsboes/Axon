@@ -107,10 +107,16 @@ impl MeetupAdapter {
             }
         }
 
-        let client = reqwest::blocking::Client::builder()
-            .user_agent(USER_AGENT)
-            .build()
-            .map_err(|e| SourceError::Fetch(format!("client build: {e}")))?;
+        // `builder`, not `client`: USER_AGENT here is a browser string, and the
+        // override is deliberate -- Meetup answers a non-browser agent with a
+        // block page. Every other adapter now sends the Axon agent.
+        let client = axon_http::builder(
+            axon_http::Purpose::new("scouting-meetup"),
+            crate::http::TIMEOUT,
+        )
+        .user_agent(USER_AGENT)
+        .build()
+        .map_err(|e| SourceError::Fetch(format!("client build: {e}")))?;
         let html = crate::http::send_checked(
             &url,
             client
@@ -283,10 +289,6 @@ impl SourceAdapter for MeetupAdapter {
 
     fn rate_limit_per_min(&self) -> u32 {
         5
-    }
-
-    fn user_agent(&self) -> &str {
-        USER_AGENT
     }
 
     fn search(&self, query: &SearchQuery) -> Result<Vec<Opportunity>, SourceError> {

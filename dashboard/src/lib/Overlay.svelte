@@ -24,8 +24,36 @@
 
   onMount(() => sheet.focus());
 
+  const FOCUSABLE =
+    'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
   function handleKeydown(event: KeyboardEvent) {
-    if (event.key === "Escape" && !busy) onClose();
+    if (event.key === "Escape" && !busy) {
+      onClose();
+      return;
+    }
+    if (event.key !== "Tab" || !sheet) return;
+
+    // A modal that lets Tab walk out behind its own backdrop is modal to a mouse only.
+    // The sheet itself is tabindex="-1" and focused on mount, so without this the first
+    // Tab left the dialog entirely and the reader had no way back except Escape.
+    const stops = [...sheet.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+      (element) => element.offsetParent !== null,
+    );
+    if (stops.length === 0) {
+      event.preventDefault();
+      return;
+    }
+    const first = stops[0];
+    const last = stops[stops.length - 1];
+    const active = document.activeElement;
+    if (event.shiftKey && (active === first || active === sheet)) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
+    }
   }
 </script>
 
@@ -100,13 +128,13 @@
     margin-bottom: 18px;
   }
 
+  /* Sentence case: the eyebrow says which section this sheet belongs to, and a
+     tracked-out all-caps line above every heading is template chrome. */
   .eyebrow {
     margin: 0 0 3px;
     color: var(--text-secondary);
-    font-size: 0.6875rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font-size: var(--text-2xs);
+    font-weight: 600;
   }
 
   h2 {

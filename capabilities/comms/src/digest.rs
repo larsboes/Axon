@@ -121,13 +121,17 @@ pub fn unattended_producer_revisions(cfg: &Config) -> Vec<String> {
 /// The `Target` shape is deliberately plain data: `libs/summarize` never learns
 /// what an `InferenceConfig` is, so a capability with no inference dependency
 /// can still call it.
-fn to_target(cfg: &Config, role: &axon_inference::ResolvedRole) -> Target {
+pub(crate) fn to_target(cfg: &Config, role: &axon_inference::ResolvedRole) -> Target {
+    // Two questions, and Q39 is where they stopped having one answer. A trusted
+    // peer may see any class (`trusted_for_every_class`) and must not queue
+    // behind this machine's GPU gate (`is_loopback`), because it has its own.
     let loopback = role.is_loopback();
     Target {
         endpoint: role.chat_completions_endpoint(),
         model: role.model.clone(),
         api_key: role.bearer_key(),
         loopback,
+        operator_owned: role.trusted_for_every_class(),
         // Only a local target gets a gate. A hosted provider queues for itself
         // and shares no GPU with anything here, so serialising against it would
         // cost latency and buy nothing.
@@ -278,11 +282,10 @@ fn source_text(store: &Store, cfg: &Config, source: &str, id: &str) -> Result<Op
 /// construction, so this never reaches a remote target.
 fn calendar_entry_text(cfg: &Config, id: &str) -> Result<Option<SourceText>> {
     let base = cfg.calendar_context.base_url.trim_end_matches('/');
-    let http = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_millis(
-            cfg.calendar_context.timeout_ms,
-        ))
-        .build()?;
+    let http = axon_http::client(
+        axon_http::Purpose::new("comms-digest"),
+        std::time::Duration::from_millis(cfg.calendar_context.timeout_ms),
+    )?;
     let response = http
         .get(format!("{base}/api/content/calendar/{id}"))
         .send()?;

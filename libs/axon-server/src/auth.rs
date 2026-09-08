@@ -19,6 +19,26 @@
 //! | yes | served | `401` without a matching token | permitted |
 //! | no | served | served (or `403`, see below) | **refused at bind** |
 //!
+//! ## The second gate, and why one struct decides
+//!
+//! A shared secret cannot reach a browser without being in the browser, so the
+//! phone gets in on an identity instead: [`crate::tailnet`] reads the login
+//! `tailscale serve` proves, and a declared operator satisfies the token
+//! requirement. It is resolved into this struct rather than layered separately
+//! because "is this request allowed to" must stay one comparison in one place —
+//! two middlewares deciding admission is the drift this module's own first
+//! paragraph exists to refuse.
+//!
+//! | Declared operator | `Tailscale-User-Login` | Outcome |
+//! |---|---|---|
+//! | no | anything | header ignored, token rule alone decides |
+//! | yes | absent | token rule alone decides — a direct loopback caller |
+//! | yes | the operator | served, without a token |
+//! | yes | anyone else | `401` |
+//!
+//! The one exception is [`InboundAuth::refuse_without_token`], which an identity
+//! never satisfies.
+//!
 //! `Reach::AllInterfaces` without a token has no representation:
 //! [`crate::bind_addr_for`] is the only constructor of a non-loopback
 //! `SocketAddr` in this crate and it returns `Err` for that pairing, while
@@ -79,6 +99,10 @@ pub struct InboundAuth {
     /// `true` when the absence of a token must close the non-exempt routes
     /// rather than leave them open. See [`InboundAuth::refuse_without_token`].
     refuse_without_token: bool,
+    /// The login `tailscale serve` must vouch for, when the deployment declared
+    /// one. See [`crate::tailnet`] for why a second gate exists and what it may
+    /// not do.
+    tailnet_operator: Option<String>,
 }
 
 /// Redacts the token. A capability that logs its own config must not turn this
@@ -88,6 +112,10 @@ impl std::fmt::Debug for InboundAuth {
         f.debug_struct("InboundAuth")
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
             .field("refuse_without_token", &self.refuse_without_token)
+            // Printed in full, unlike the token: a login is a public value, and
+            // "which operator is this deployment admitting" is the first thing
+            // worth seeing when the phone is answered 401.
+            .field("tailnet_operator", &self.tailnet_operator)
             .finish()
     }
 }
@@ -117,6 +145,7 @@ impl InboundAuth {
         Self {
             token,
             refuse_without_token: false,
+            tailnet_operator: crate::tailnet::deployment_operator(),
         }
     }
 
@@ -128,7 +157,19 @@ impl InboundAuth {
                 .map(|t| t.trim().to_string())
                 .filter(|t| !t.is_empty()),
             refuse_without_token: false,
+            tailnet_operator: None,
         }
+    }
+
+    /// Admit a request that `tailscale serve` proved came from `operator`.
+    ///
+    /// No I/O, for tests and for a caller that resolved the login itself.
+    /// [`InboundAuth::resolve`] reads the deployment's declaration instead.
+    pub fn with_tailnet_operator(mut self, operator: Option<String>) -> Self {
+        self.tailnet_operator = operator
+            .map(|o| o.trim().to_string())
+            .filter(|o| !o.is_empty());
+        self
     }
 
     /// Answer `403` on the non-exempt routes when no token is configured,
@@ -162,7 +203,7 @@ impl InboundAuth {
     /// refusal is not layered onto the router, so an unconfigured deployment
     /// pays nothing per request.
     fn gates_anything(&self) -> bool {
-        self.token.is_some() || self.refuse_without_token
+        self.token.is_some() || self.refuse_without_token || self.tailnet_operator.is_some()
     }
 
     /// `Some(rejection)` when this request must not reach a handler.
@@ -177,6 +218,48 @@ impl InboundAuth {
         if method == Method::OPTIONS || EXEMPT_PATHS.contains(&path) {
             return None;
         }
+
+        // The tailnet gate runs first, and only when the deployment declared an
+        // operator. Without that declaration the identity header is ignored
+        // entirely rather than believed — otherwise declaring nothing would
+        // silently start trusting a header any caller can write.
+        if let Some(operator) = self.tailnet_operator.as_deref() {
+            match crate::tailnet::arrival(headers) {
+                // The proxy authenticated somebody who is not the operator.
+                // Refuse here rather than falling through to the token: a named
+                // stranger holding a valid shared secret is a token to rotate,
+                // and answering 401 is how that becomes visible.
+                crate::tailnet::Arrival::Tailnet(login)
+                    if !crate::tailnet::is_operator(&login, operator) =>
+                {
+                    return Some(
+                        (
+                            StatusCode::UNAUTHORIZED,
+                            Json(json!({ "error": "this tailnet identity is not the declared operator" })),
+                        )
+                            .into_response(),
+                    );
+                }
+                // Proven operator. This satisfies the token requirement, which
+                // is the whole reason the gate exists: the browser that loads
+                // the built SPA cannot carry the deployment's shared secret, and
+                // shipping it one would put that secret in a bundle.
+                //
+                // It does NOT satisfy `refuse_without_token`. A route that opts
+                // into that wants the secret specifically — comms' `POST
+                // /ingest` fetches an attacker-chosen URL, and its own comment
+                // records that being inside the loopback boundary is not what
+                // contains it. A name is not what contains it either.
+                crate::tailnet::Arrival::Tailnet(_) if !self.refuse_without_token => return None,
+                // Either the request came straight to loopback, or the proxy is
+                // not injecting identity. Both fall through to the token rule
+                // below, which is the behaviour that predates this gate. Doctor's
+                // "Tailnet identity gate" check is what distinguishes the two,
+                // because a request cannot.
+                _ => {}
+            }
+        }
+
         let Some(expected) = self.token.as_deref() else {
             if self.refuse_without_token {
                 return Some(
@@ -318,6 +401,137 @@ mod tests {
             Some(response) => response.status().as_u16(),
             None => 200,
         }
+    }
+
+    const OPERATOR: &str = "lars@example.com";
+
+    fn tailnet(auth: InboundAuth) -> InboundAuth {
+        auth.with_tailnet_operator(Some(OPERATOR.into()))
+    }
+
+    /// The reason this gate exists: the phone's browser holds no secret.
+    #[test]
+    fn the_declared_operator_is_admitted_without_a_token() {
+        let auth = tailnet(InboundAuth::with_token(Some("s3cret".into())));
+        let proven = &[("tailscale-user-login", OPERATOR)];
+        assert_eq!(status(&auth, Method::GET, "/feed", proven), 200);
+        assert_eq!(
+            status(&auth, Method::GET, "/api/axon-status/capabilities", proven),
+            200
+        );
+    }
+
+    #[test]
+    fn another_tailnet_identity_is_refused_even_holding_the_token() {
+        // A named stranger with a valid shared secret is a token to rotate. 401
+        // is how that becomes visible instead of being served silently.
+        let auth = tailnet(InboundAuth::with_token(Some("s3cret".into())));
+        assert_eq!(
+            status(
+                &auth,
+                Method::GET,
+                "/feed",
+                &[
+                    ("tailscale-user-login", "someone.else@example.com"),
+                    ("authorization", "Bearer s3cret"),
+                ]
+            ),
+            401
+        );
+    }
+
+    #[test]
+    fn an_undeclared_operator_means_the_header_is_ignored_not_believed() {
+        // Declaring nothing must not silently start trusting a header any
+        // caller can write. The token rule alone decides here.
+        let auth = InboundAuth::with_token(Some("s3cret".into()));
+        assert_eq!(
+            status(
+                &auth,
+                Method::GET,
+                "/feed",
+                &[("tailscale-user-login", OPERATOR)]
+            ),
+            401
+        );
+    }
+
+    #[test]
+    fn a_direct_loopback_request_still_answers_to_the_token_rule() {
+        // No identity header: either a local caller or a proxy that stopped
+        // injecting one. A request cannot tell those apart, so the gate does not
+        // guess — it falls through to the behaviour that predates it, and
+        // doctor's "Tailnet identity gate" check covers the second case.
+        let auth = tailnet(InboundAuth::with_token(Some("s3cret".into())));
+        assert_eq!(status(&auth, Method::GET, "/feed", &[]), 401);
+        assert_eq!(
+            status(
+                &auth,
+                Method::GET,
+                "/feed",
+                &[("authorization", "Bearer s3cret")]
+            ),
+            200
+        );
+    }
+
+    #[test]
+    fn declaring_only_an_operator_gates_the_tailnet_and_leaves_loopback_alone() {
+        // The deployment this change actually ships: no token anywhere, and the
+        // tailnet surface stops being open to every node on it.
+        let auth = tailnet(InboundAuth::with_token(None));
+        assert_eq!(status(&auth, Method::GET, "/feed", &[]), 200);
+        assert_eq!(
+            status(
+                &auth,
+                Method::GET,
+                "/feed",
+                &[("tailscale-user-login", OPERATOR)]
+            ),
+            200
+        );
+        assert_eq!(
+            status(
+                &auth,
+                Method::POST,
+                "/api/axon-status/capabilities/comms/stop",
+                &[("tailscale-user-login", "guest@example.com")]
+            ),
+            401
+        );
+    }
+
+    #[test]
+    fn an_identity_never_satisfies_refuse_without_token() {
+        // comms opts into that because `POST /ingest` fetches an attacker-chosen
+        // URL. Being inside the loopback boundary does not contain that route,
+        // and neither does being named.
+        let auth = tailnet(InboundAuth::with_token(None)).refuse_without_token();
+        assert_eq!(
+            status(
+                &auth,
+                Method::POST,
+                "/ingest",
+                &[("tailscale-user-login", OPERATOR)]
+            ),
+            403
+        );
+    }
+
+    #[test]
+    fn health_stays_exempt_for_an_unknown_identity() {
+        // axon-status polls every capability's /health. Gating it would report a
+        // healthy capability as down, which is what the exemption exists to stop.
+        let auth = tailnet(InboundAuth::with_token(None));
+        assert_eq!(
+            status(
+                &auth,
+                Method::GET,
+                "/health",
+                &[("tailscale-user-login", "guest@example.com")]
+            ),
+            200
+        );
     }
 
     #[test]

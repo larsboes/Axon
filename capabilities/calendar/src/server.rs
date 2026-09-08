@@ -780,9 +780,7 @@ async fn sync_trip_plan(State(state): State<AppState>, Path(plan_id): Path<Strin
     let config = state.config.clone();
     match tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let store = CalendarStore::open(&database_path).map_err(|e| e.to_string())?;
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(20))
-            .build()
+        let client = axon_http::client(axon_http::Purpose::new("calendar-trips"), std::time::Duration::from_secs(20))
             .map_err(|e| format!("client build: {e}"))?;
         let base = config.trips_base_url.trim_end_matches('/').to_string();
 
@@ -942,10 +940,11 @@ async fn materialize_trip(
         }
         let store = CalendarStore::open(&database_path).map_err(|e| e.to_string())?;
 
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(20))
-            .build()
-            .map_err(|e| format!("client build: {e}"))?;
+        let client = axon_http::client(
+            axon_http::Purpose::new("calendar-trips"),
+            std::time::Duration::from_secs(20),
+        )
+        .map_err(|e| format!("client build: {e}"))?;
         let base = config.trips_base_url.trim_end_matches('/').to_string();
 
         // Already a trip? Only if trips still has it. The ledger records what

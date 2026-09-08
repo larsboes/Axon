@@ -281,10 +281,11 @@ impl HafasClient {
         // own live smoke test: a `--search` call stalled past 600s with no
         // recovery). 15s is generous for a single journey-search POST; a
         // real network issue should fail fast and loud, not hang silently.
-        let client = Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .build()
-            .expect("reqwest client with a fixed timeout should always build");
+        let client = axon_http::client(
+            axon_http::Purpose::new("transit-hafas"),
+            std::time::Duration::from_secs(15),
+        )
+        .expect("reqwest client with a fixed timeout should always build");
         Self {
             client,
             backend,

@@ -172,10 +172,11 @@ fn chat(role: &ResolvedRole, mut body: serde_json::Value) -> Result<String, Stri
     if !role.is_cloud_endpoint() {
         return Err("the selected role is not an approved HTTPS cloud endpoint".into());
     }
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .map_err(|_| "cloud request could not be prepared".to_string())?;
+    let client = axon_http::client(
+        axon_http::Purpose::new("comms-cloud"),
+        std::time::Duration::from_secs(120),
+    )
+    .map_err(|_| "cloud request could not be prepared".to_string())?;
     let mut request = client.post(role.chat_completions_endpoint()).json(&body);
     if let Some(key) = role.bearer_key() {
         request = request.bearer_auth(key);

@@ -42,11 +42,15 @@ tracker holds nothing, and no automation creates entries in it.
 
 ## Constraints
 
-- **C1** — `cargo test --workspace --locked` and the `tools/check-*.sh` gates before
-  claiming the gates pass. `tools/check-architecture-fresh.sh` is the only check that
-  catches a stale generated `ARCHITECTURE.md`. Was `bazel test //...` until PRD Q44
-  retired Bazel (2026-08-25), then carried `-- --skip postgres_tests::` until PRD Q45
-  retired the server (2026-08-27) — the suites run on temp files and need no skip.
+- **C1** — `cargo test --workspace --locked`, `bun test` and the `tools/check-*.sh` gates
+  before claiming the gates pass. `bun test` is named because it is the only runner that
+  reaches `tools/*.test.ts`, and since 2026-09-05 four dashboard build gates live nowhere
+  else — `dashboard-tokens`, `dashboard-contrast`, `dashboard-home-bands` and
+  `dashboard-number-bindings`, the last covering a class `bun run check` structurally cannot
+  see. `tools/check-architecture-fresh.sh` is the only check that catches a stale generated
+  `ARCHITECTURE.md`. Was `bazel test //...` until PRD Q44 retired Bazel (2026-08-25), then
+  carried `-- --skip postgres_tests::` until PRD Q45 retired the server (2026-08-27) — the
+  suites run on temp files and need no skip.
 - **C2** — `tools/self check` fails locally and that is pre-existing: it compares per-unit
   code counts only when a code graph is present, and this machine's graph is behind main.
   Verify in a `git worktree` of origin/main, not in place.

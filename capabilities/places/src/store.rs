@@ -45,6 +45,34 @@ pub struct CacheEntry {
     pub place_id: Option<String>,
 }
 
+/// One calendar month of a place's climate normal. Every measure is optional
+/// because a provider that reports nothing for a month must store nothing:
+/// a 0.0 that means "not observed" is the failure mode the nullable columns and
+/// `days_observed` exist to prevent (Packs/travel ISA: a guess that looks like a
+/// measurement is worse than a blank).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MonthlyNormal {
+    pub month: u32,
+    pub t_max_mean: Option<f64>,
+    pub t_min_mean: Option<f64>,
+    pub rain_days_mean: Option<f64>,
+    pub precipitation_mm_mean: Option<f64>,
+    pub daylight_hours_mean: Option<f64>,
+    pub sunshine_hours_mean: Option<f64>,
+    pub days_observed: i64,
+}
+
+/// What window the twelve rows were folded from, and when. `years_covered` alone
+/// cannot tell 2015-2024 from 1995-2004, so the window is named as well as counted.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NormalsMeta {
+    pub years_covered: i64,
+    pub period_start: String,
+    pub period_end: String,
+    pub source: String,
+    pub fetched_at: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct PersonPlaceRow {
     pub id: String,
@@ -127,7 +155,7 @@ impl PlacesStore {
         Ok(())
     }
 
-    /// The current shape of the four tables. `places` is declared before the two
+    /// The current shape of the five tables. `places` is declared before the three
     /// that reference it, because a batch executes in order.
     fn run_migration(conn: &Connection, prefix: &str) -> Fallible<()> {
         conn.execute_batch(&format!(
@@ -204,6 +232,39 @@ impl PlacesStore {
             );
             CREATE INDEX IF NOT EXISTS idx_{prefix}_person_places_state
                 ON {prefix}_person_places(state, person);
+
+            -- Climate normals, twelve rows per place (README D5, ISA F4).
+            -- The table IS the cache: permanent by design like the geocode cache
+            -- above, so there is no TTL column and no second cache table. A
+            -- re-fetch is DELETE-then-twelve-INSERTs in one transaction, so a
+            -- partial refresh never leaves a stale eleventh month behind.
+            --
+            -- Every measure is nullable because a provider that reports no
+            -- sunshine duration at some latitude must store NULL, not 0.
+            -- `days_observed` is NOT NULL so a short month is visible rather
+            -- than silently averaged, and `years_covered` alone cannot tell
+            -- 2015-2024 from 1995-2004, which is what the period columns say.
+            -- `best_month` is deliberately not a column: the numbers are data,
+            -- the rule that reads them is code (climate.rs::best_months).
+            CREATE TABLE IF NOT EXISTS {prefix}_climate_normals (
+                place_id TEXT NOT NULL REFERENCES {prefix}_places(id),
+                month INTEGER NOT NULL CHECK (month BETWEEN 1 AND 12),
+                t_max_mean REAL,
+                t_min_mean REAL,
+                rain_days_mean REAL,
+                precipitation_mm_mean REAL,
+                daylight_hours_mean REAL,
+                sunshine_hours_mean REAL,
+                days_observed INTEGER NOT NULL,
+                years_covered INTEGER NOT NULL,
+                period_start TEXT NOT NULL,
+                period_end TEXT NOT NULL,
+                source TEXT NOT NULL,
+                fetched_at TEXT NOT NULL,
+                PRIMARY KEY (place_id, month)
+            );
+            CREATE INDEX IF NOT EXISTS idx_{prefix}_climate_normals_fetched
+                ON {prefix}_climate_normals(fetched_at);
             "
         ))?;
         Ok(())
@@ -311,6 +372,120 @@ impl PlacesStore {
             ),
             [],
             row_to_place,
+        )?)
+    }
+
+    /// The twelve stored months for one place, in calendar order. An empty
+    /// vector means "never fetched", which the read routes report as such
+    /// rather than as an empty grid.
+    pub fn climate_get(&self, place_id: &str) -> Fallible<Vec<MonthlyNormal>> {
+        let prefix = &self.prefix;
+        let conn = self.conn()?;
+        Ok(conn.query_all(
+            &format!(
+                "SELECT month, t_max_mean, t_min_mean, rain_days_mean,
+                        precipitation_mm_mean, daylight_hours_mean,
+                        sunshine_hours_mean, days_observed
+                 FROM {prefix}_climate_normals WHERE place_id = ?1
+                 ORDER BY month"
+            ),
+            params![&place_id],
+            row_to_normal,
+        )?)
+    }
+
+    /// The window and the fetch stamp the stored months came from. `None` when
+    /// the place has no normals, which is the same answer `climate_get` gives.
+    pub fn climate_meta(&self, place_id: &str) -> Fallible<Option<NormalsMeta>> {
+        let prefix = &self.prefix;
+        let conn = self.conn()?;
+        Ok(conn
+            .query_row(
+                &format!(
+                    "SELECT years_covered, period_start, period_end, source, fetched_at
+                     FROM {prefix}_climate_normals WHERE place_id = ?1
+                     ORDER BY month LIMIT 1"
+                ),
+                params![&place_id],
+                |row| {
+                    Ok(NormalsMeta {
+                        years_covered: row.get(0)?,
+                        period_start: row.get(1)?,
+                        period_end: row.get(2)?,
+                        source: row.get(3)?,
+                        fetched_at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    /// Replace a place's normals in one transaction: DELETE, then one INSERT per
+    /// month the fold produced. One transaction because a refresh that failed
+    /// halfway would otherwise leave a place with some months from 2015-2024 and
+    /// some from an older window, which no column could tell apart afterwards.
+    pub fn climate_put(
+        &self,
+        place_id: &str,
+        months: &[MonthlyNormal],
+        meta: &NormalsMeta,
+    ) -> Fallible<usize> {
+        let prefix = self.prefix.clone();
+        let mut conn = self.conn()?;
+        let tx = conn.transaction()?;
+        tx.execute(
+            &format!("DELETE FROM {prefix}_climate_normals WHERE place_id = ?1"),
+            params![&place_id],
+        )?;
+        {
+            let mut insert = tx.prepare(&format!(
+                "INSERT INTO {prefix}_climate_normals
+                    (place_id, month, t_max_mean, t_min_mean, rain_days_mean,
+                     precipitation_mm_mean, daylight_hours_mean, sunshine_hours_mean,
+                     days_observed, years_covered, period_start, period_end,
+                     source, fetched_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)"
+            ))?;
+            for month in months {
+                insert.execute(params![
+                    &place_id,
+                    &month.month,
+                    &month.t_max_mean,
+                    &month.t_min_mean,
+                    &month.rain_days_mean,
+                    &month.precipitation_mm_mean,
+                    &month.daylight_hours_mean,
+                    &month.sunshine_hours_mean,
+                    &month.days_observed,
+                    &meta.years_covered,
+                    &meta.period_start,
+                    &meta.period_end,
+                    &meta.source,
+                    &meta.fetched_at,
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(months.len())
+    }
+
+    /// Every place that carries a coordinate, paired with whether it has normals
+    /// stored. The read routes resolve a bare coordinate against exactly this
+    /// list, so "nearest place" means "nearest place that can actually answer".
+    pub fn places_with_climate(&self) -> Fallible<Vec<(Place, bool)>> {
+        let prefix = &self.prefix;
+        let conn = self.conn()?;
+        Ok(conn.query_all(
+            &format!(
+                "SELECT p.id, p.name, p.kind, p.address, p.city, p.country_code,
+                        p.latitude, p.longitude, p.source, p.external_ref,
+                        EXISTS (SELECT 1 FROM {prefix}_climate_normals c
+                                WHERE c.place_id = p.id) AS has_normals
+                 FROM {prefix}_places p
+                 WHERE p.latitude IS NOT NULL AND p.longitude IS NOT NULL"
+            ),
+            [],
+            |row| Ok((row_to_place(row)?, row.get::<_, i64>(10)? == 1)),
         )?)
     }
 
@@ -487,20 +662,202 @@ impl PlacesStore {
     }
 
     /// The one write path that can produce `state = 'confirmed'`, reached only
-    /// from the explicit confirm/dismiss routes (ISA PLC-7). Returns false when
-    /// the id does not exist.
-    pub fn review_person_place(&self, id: &str, review: Review, now: &str) -> Fallible<bool> {
+    /// from the explicit confirm/dismiss routes (ISA PLC-7).
+    ///
+    /// The guard is **asymmetric**, and that is the whole decision:
+    ///
+    /// | from | to | |
+    /// |---|---|---|
+    /// | `proposed` | `confirmed` | allowed |
+    /// | `proposed` | `dismissed` | allowed |
+    /// | `confirmed` | `dismissed` | allowed — the human can always withdraw |
+    /// | `dismissed` | `confirmed` | **refused**, naming the state found |
+    /// | any | itself | **refused** — a review that changes nothing |
+    ///
+    /// Before this, the UPDATE was unconditional on the id, so a stale id in an
+    /// open tab or a replayed call turned a dismissed row back into a confirmed
+    /// one and got a 200 for it. A *symmetric* `state = 'proposed'` guard would
+    /// have been the other mistake: these two routes are the only writers of
+    /// this column — there is no PATCH, no DELETE and no CLI arm — so it would
+    /// have made a mis-clicked confirm permanent on the most sensitive store in
+    /// the system, leaving hand-written SQL as the only repair, which is the
+    /// write path Q73 forbids. PRD 2419-2421 prices it the other way round: "a
+    /// wrong inference costs a dismissed proposal rather than a wrong trip".
+    ///
+    /// The UPDATE carries the state it read in its WHERE clause, so two
+    /// concurrent reviews cannot both apply.
+    pub fn review_person_place(
+        &self,
+        id: &str,
+        review: Review,
+        now: &str,
+    ) -> Fallible<ReviewOutcome> {
         let prefix = &self.prefix;
         let conn = self.conn()?;
-        Ok(conn.execute(
+        let Some(state): Option<String> = conn
+            .query_row(
+                &format!("SELECT state FROM {prefix}_person_places WHERE id = ?1"),
+                params![&id],
+                |row| row.get(0),
+            )
+            .optional()?
+        else {
+            return Ok(ReviewOutcome::NoSuchRow);
+        };
+        let allowed = matches!(
+            (state.as_str(), review),
+            ("proposed", _) | ("confirmed", Review::Dismissed)
+        );
+        if !allowed {
+            return Ok(ReviewOutcome::Refused { state });
+        }
+        let changed = conn.execute(
             &format!(
                 "UPDATE {prefix}_person_places
                  SET state = ?2, reviewed_at = ?3
-                 WHERE id = ?1"
+                 WHERE id = ?1 AND state = ?4"
             ),
-            params![&id, review.as_str(), &now],
-        )? == 1)
+            params![&id, review.as_str(), &now, &state],
+        )?;
+        Ok(if changed == 1 {
+            ReviewOutcome::Applied
+        } else {
+            // Another writer moved the row between the read and the write.
+            ReviewOutcome::Refused { state }
+        })
     }
+
+    /// How many known companions are near a coordinate in a window, and for how
+    /// many days — and nothing else.
+    ///
+    /// A §6.2 derived aggregate. NO person, NO place name, NO row id, NO
+    /// confidence: this is the only shape in which the C2 register reaches a
+    /// planner at all (PRD 2424-2429), and it is what lets `trips` hold the
+    /// answer without ever holding the row.
+    ///
+    /// The radius is [`PRESENCE_RADIUS_KM`] and is NOT a caller parameter. How
+    /// precisely places will answer about a person's location is places'
+    /// disclosure policy, not a travel-matching rule — which is also why it
+    /// does not collide with `DESTINATION_MATCH_RADIUS_KM = 75` in
+    /// `dashboard/src/lib/travel/travel-candidates.ts`, a different question
+    /// with its own single home.
+    ///
+    /// Confirmed rows only. A proposal is an inference nobody has agreed with,
+    /// so it is not evidence that anyone is anywhere (ISA PLC-7).
+    ///
+    /// Overlap rule: a row with no `date_start` and no `date_end` means "lives
+    /// there" and matches any window; one open end is open in that direction.
+    pub fn confirmed_presence(
+        &self,
+        latitude: f64,
+        longitude: f64,
+        from: &str,
+        to: &str,
+    ) -> Fallible<Presence> {
+        let prefix = &self.prefix;
+        let conn = self.conn()?;
+        let rows: Vec<RegisterSpan> = conn.query_all(
+            &format!(
+                "SELECT pp.person, pp.date_start, pp.date_end, pl.latitude, pl.longitude
+                     FROM {prefix}_person_places pp
+                     JOIN {prefix}_places pl ON pl.id = pp.place_id
+                     WHERE pp.state = 'confirmed'
+                       AND (pp.date_start IS NULL OR pp.date_start <= ?1)
+                       AND (pp.date_end IS NULL OR pp.date_end >= ?2)"
+            ),
+            params![&to, &from],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+
+        let (Some(window_start), Some(window_end)) =
+            (crate::days_from_civil(from), crate::days_from_civil(to))
+        else {
+            return Err("from and to must be YYYY-MM-DD".into());
+        };
+        let span = (window_end - window_start + 1).max(0) as usize;
+        let mut covered = vec![false; span];
+        let mut people: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+        for (person, date_start, date_end, row_latitude, row_longitude) in rows {
+            let (Some(row_latitude), Some(row_longitude)) = (row_latitude, row_longitude) else {
+                // A confirmed relation to a place nobody has geocoded is not an
+                // error; it simply cannot be measured against a coordinate.
+                continue;
+            };
+            let distance =
+                crate::backfill::haversine_km((latitude, longitude), (row_latitude, row_longitude));
+            if distance > PRESENCE_RADIUS_KM {
+                continue;
+            }
+            // The person set is counted, never returned. `BTreeSet` because two
+            // rows for one person in one window are one companion.
+            people.insert(person);
+            let start = date_start
+                .as_deref()
+                .and_then(crate::days_from_civil)
+                .unwrap_or(window_start)
+                .max(window_start);
+            let end = date_end
+                .as_deref()
+                .and_then(crate::days_from_civil)
+                .unwrap_or(window_end)
+                .min(window_end);
+            for day in start..=end {
+                if let Some(slot) = covered.get_mut((day - window_start) as usize) {
+                    *slot = true;
+                }
+            }
+        }
+        Ok(Presence {
+            known_companions: people.len() as u32,
+            overlap_days: covered.iter().filter(|day| **day).count() as u32,
+        })
+    }
+}
+
+/// One confirmed register row, reduced to what the aggregate needs:
+/// `(person, date_start, date_end, latitude, longitude)`. The person is counted
+/// and never returned.
+type RegisterSpan = (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<f64>,
+    Option<f64>,
+);
+
+/// How precisely places is willing to answer about a person's location.
+///
+/// A places constant, echoed in the response, and deliberately not a caller
+/// parameter: a caller-chosen radius is a free parameter in a disclosure route.
+pub const PRESENCE_RADIUS_KM: f64 = 50.0;
+
+/// What a review actually did. Three outcomes, because "nothing happened" and
+/// "no such row" are different answers and a caller acts on them differently.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewOutcome {
+    Applied,
+    NoSuchRow,
+    /// The transition is not allowed. Carries the state found, so the caller
+    /// can say which one rather than claiming the row does not exist.
+    Refused {
+        state: String,
+    },
+}
+
+/// The whole answer of the presence read: a count and an overlap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct Presence {
+    pub known_companions: u32,
+    pub overlap_days: u32,
 }
 
 fn row_to_place(row: &Row) -> rusqlite::Result<Place> {
@@ -515,6 +872,19 @@ fn row_to_place(row: &Row) -> rusqlite::Result<Place> {
         longitude: row.get(7)?,
         source: row.get(8)?,
         external_ref: row.get(9)?,
+    })
+}
+
+fn row_to_normal(row: &Row) -> rusqlite::Result<MonthlyNormal> {
+    Ok(MonthlyNormal {
+        month: row.get(0)?,
+        t_max_mean: row.get(1)?,
+        t_min_mean: row.get(2)?,
+        rain_days_mean: row.get(3)?,
+        precipitation_mm_mean: row.get(4)?,
+        daylight_hours_mean: row.get(5)?,
+        sunshine_hours_mean: row.get(6)?,
+        days_observed: row.get(7)?,
     })
 }
 
@@ -735,12 +1105,211 @@ pub(crate) mod db_tests {
         assert_eq!(proposed.len(), 1);
         assert_eq!(proposed[0].state, "proposed");
 
-        assert!(store
-            .review_person_place("pp_test", Review::Confirmed, "2026-08-25")
-            .unwrap());
+        assert_eq!(
+            store
+                .review_person_place("pp_test", Review::Confirmed, "2026-08-25")
+                .unwrap(),
+            ReviewOutcome::Applied
+        );
         assert_eq!(store.person_places_in_state("confirmed").unwrap().len(), 1);
-        assert!(!store
-            .review_person_place("pp_missing", Review::Dismissed, "2026-08-25")
-            .unwrap());
+        assert_eq!(
+            store
+                .review_person_place("pp_missing", Review::Dismissed, "2026-08-25")
+                .unwrap(),
+            ReviewOutcome::NoSuchRow
+        );
+    }
+
+    /// Set up one confirmed row for a synthetic person at a synthetic place.
+    fn a_register_row(
+        store: &PlacesStore,
+        id: &str,
+        latitude: f64,
+        longitude: f64,
+        date_start: Option<&str>,
+        date_end: Option<&str>,
+    ) -> String {
+        let place = Place {
+            id: stable_id("place", id),
+            name: format!("Synthetic City {id}"),
+            kind: "city".into(),
+            address: None,
+            city: None,
+            country_code: None,
+            latitude: Some(latitude),
+            longitude: Some(longitude),
+            source: "test".into(),
+            external_ref: None,
+        };
+        store.upsert_place(&place, "2026-08-25").unwrap();
+        store
+            .propose_person_place(
+                id,
+                &format!("Synthetic Person {id}"),
+                &place.id,
+                date_start,
+                date_end,
+                5000,
+                "test",
+                "2026-08-25",
+            )
+            .unwrap();
+        store
+            .review_person_place(id, Review::Confirmed, "2026-08-25")
+            .unwrap();
+        place.id
+    }
+
+    /// A dismissal is final. Without this guard a stale id in an open tab, or a
+    /// replayed call, turned a dismissed row back into a confirmed one and got
+    /// a 200 for it.
+    #[test]
+    fn a_dismissed_row_cannot_be_confirmed() {
+        let (store, _path) = open_test_store("review_dismissed");
+        a_register_row(&store, "pp_a", 50.0, 8.0, None, None);
+        assert_eq!(
+            store
+                .review_person_place("pp_a", Review::Dismissed, "2026-08-26")
+                .unwrap(),
+            ReviewOutcome::Applied
+        );
+        assert_eq!(
+            store
+                .review_person_place("pp_a", Review::Confirmed, "2026-08-27")
+                .unwrap(),
+            ReviewOutcome::Refused {
+                state: "dismissed".into()
+            },
+            "a dismissed row must not be confirmable, and the caller must be told which state it found"
+        );
+        assert_eq!(store.person_places_in_state("dismissed").unwrap().len(), 1);
+        assert!(store
+            .person_places_in_state("confirmed")
+            .unwrap()
+            .is_empty());
+    }
+
+    /// The half a symmetric `state = 'proposed'` guard would have broken: these
+    /// two routes are the only writers of this column, so a mis-clicked confirm
+    /// must stay withdrawable or hand-written SQL becomes the only repair.
+    #[test]
+    fn a_confirmed_row_can_still_be_dismissed() {
+        let (store, _path) = open_test_store("review_withdraw");
+        a_register_row(&store, "pp_b", 50.0, 8.0, None, None);
+        assert_eq!(
+            store
+                .review_person_place("pp_b", Review::Dismissed, "2026-08-26")
+                .unwrap(),
+            ReviewOutcome::Applied
+        );
+        // And a review that would change nothing is refused rather than
+        // silently succeeding.
+        assert_eq!(
+            store
+                .review_person_place("pp_b", Review::Dismissed, "2026-08-27")
+                .unwrap(),
+            ReviewOutcome::Refused {
+                state: "dismissed".into()
+            }
+        );
+    }
+
+    /// The presence read answers a count and an overlap. What it must NOT
+    /// answer is checked as text against the serialised body, because the
+    /// failure this guards against is a field added later without thinking.
+    #[test]
+    fn presence_answers_a_count_and_no_identity() {
+        let (store, _path) = open_test_store("presence_identity");
+        a_register_row(
+            &store,
+            "pp_near",
+            50.0,
+            8.0,
+            Some("2026-10-03"),
+            Some("2026-10-07"),
+        );
+        // Far away: about 550 km north, well outside the 50 km radius.
+        a_register_row(
+            &store,
+            "pp_far",
+            55.0,
+            8.0,
+            Some("2026-10-03"),
+            Some("2026-10-07"),
+        );
+
+        let presence = store
+            .confirmed_presence(50.0, 8.0, "2026-10-01", "2026-10-10")
+            .expect("the presence query is valid");
+        assert_eq!(presence.known_companions, 1, "only the nearby row counts");
+        assert_eq!(presence.overlap_days, 5);
+
+        let body = serde_json::to_string(&presence).unwrap();
+        for forbidden in [
+            "Synthetic Person",
+            "Synthetic City",
+            "pp_near",
+            "confidence",
+        ] {
+            assert!(
+                !body.contains(forbidden),
+                "the presence body carried {forbidden}: {body}"
+            );
+        }
+    }
+
+    /// Both dates null means "lives there", which overlaps any window. A
+    /// proposal is not evidence, so it never counts.
+    #[test]
+    fn an_open_ended_register_row_overlaps_any_window() {
+        let (store, _path) = open_test_store("presence_open");
+        a_register_row(&store, "pp_resident", 50.0, 8.0, None, None);
+        let presence = store
+            .confirmed_presence(50.0, 8.0, "2027-05-01", "2027-05-04")
+            .expect("the presence query is valid");
+        assert_eq!(presence.known_companions, 1);
+        assert_eq!(presence.overlap_days, 4, "the whole window is covered");
+
+        // One open end is open in that direction only.
+        a_register_row(&store, "pp_since", 50.0, 8.0, Some("2027-05-03"), None);
+        let later = store
+            .confirmed_presence(50.0, 8.0, "2027-05-01", "2027-05-04")
+            .expect("the presence query is valid");
+        assert_eq!(later.known_companions, 2);
+
+        // A proposal is an inference nobody agreed with, so it is not evidence.
+        let (fresh, _path) = open_test_store("presence_proposed");
+        let place = Place {
+            id: stable_id("place", "proposed-city"),
+            name: "Synthetic City".into(),
+            kind: "city".into(),
+            address: None,
+            city: None,
+            country_code: None,
+            latitude: Some(50.0),
+            longitude: Some(8.0),
+            source: "test".into(),
+            external_ref: None,
+        };
+        fresh.upsert_place(&place, "2026-08-25").unwrap();
+        fresh
+            .propose_person_place(
+                "pp_p",
+                "Synthetic Person",
+                &place.id,
+                None,
+                None,
+                9000,
+                "test",
+                "2026-08-25",
+            )
+            .unwrap();
+        assert_eq!(
+            fresh
+                .confirmed_presence(50.0, 8.0, "2027-05-01", "2027-05-04")
+                .unwrap()
+                .known_companions,
+            0
+        );
     }
 }

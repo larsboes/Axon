@@ -197,6 +197,13 @@ the many-row read has no one-call form in rusqlite — prepare, `query_map`, col
 `axon_store::QueryAll::query_all` is that one method, and there are no others. Inventing a second
 name for something rusqlite already has would be the expensive mistake.
 
+`query_all` prepares through the connection's statement cache (`prepare_cached`), keyed on the SQL
+text. Every store builds its statement with `format!("… {prefix} …")`, so one call site produces a
+byte-identical string every time and SQLite parses it once per connection instead of once per read.
+The cache belongs to the connection, and the pool hands a connection to one caller at a time, so a
+cached statement is never shared. Its capacity is raised from rusqlite's default of 16 to 64,
+because comms alone has 18 `query_all` sites and would otherwise evict its own statements.
+
 ```rust
 use axon_store::QueryAll;
 use rusqlite::OptionalExtension;
@@ -220,8 +227,9 @@ spellings of one file are one pool and one migration target.
 
 A SQLite connection costs microseconds, where a Postgres `Client::connect` cost 32-39 ms measured,
 so the pool is no longer buying latency. It buys the PRAGMA discipline above — applied once per
-connection, never forgettable at a call site — and it keeps `Store::open` the checkout that the
-call sites are written against.
+connection, never forgettable at a call site — plus the statement-cache capacity, and it keeps
+`Store::open` the checkout that the call sites are written against. A connection that lives in the
+pool carries its parsed statements with it; one that is rebuilt per call would not.
 
 Two settings are deliberate rather than inherited. `min_idle(0)`, because r2d2 otherwise keeps
 `max_size` connections warm: right for a server, wrong for the CLI half of these crates, where

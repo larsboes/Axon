@@ -126,4 +126,49 @@ strays="$(cd "$ROOT" && grep -rlE "grep -m1 '\^DOMAIN=|\[vaultwarden\]" tools/ 2
   | grep -v '\.test\.sh$' || true)"
 [ -z "$strays" ] || fail "these resolve a vault address by hand instead of calling capability_endpoint: $strays"
 
+# --- 8. trusted peers: the declaration is an intersection, not a location -------------------
+# PRD Q39 (2026-08-25). Presence in systems.local.toml cannot be the test: nvidia-nim lives in
+# the same file and is a cloud provider. `owner = "self"` is the declaration.
+cat > "$OVERLAY/config/systems.local.toml" <<'EOF'
+[family-vault]
+url = "https://vault.example.test"
+
+[lars-mac]
+url = "https://lars-mac.example.test:11434"
+owner = "self"
+
+[old-intel]
+url = "https://intel.example.test:11434"
+owner = "self"
+
+[nvidia-nim]
+url = "https://integrate.example.test/v1"
+EOF
+
+got="$(trusted_peer_ids | sort | tr '\n' ' ')"
+[ "$got" = "lars-mac old-intel " ] || fail "expected the two owner=self hosts, got '$got'"
+
+trusted_peer_ids | grep -q '^nvidia-nim$' && fail "a cloud provider in the same file was read as owned hardware"
+trusted_peer_ids | grep -q '^family-vault$' && fail "an entry declaring no owner was read as owned hardware"
+
+[ "$(systems_owner lars-mac)" = "self" ] || fail "systems_owner did not read the declaration"
+[ -z "$(systems_owner nvidia-nim)" ] || fail "systems_owner invented an owner"
+
+got="$(trusted_peers_env)"
+[ "$got" = "lars-mac,old-intel" ] || fail "expected a comma-separated pair, got '$got'"
+
+# The single-host state, which is this machine's today and must produce exactly the behaviour
+# that shipped before Q39: no declaration, no peers, empty output, exit 0.
+cat > "$OVERLAY/config/systems.local.toml" <<'EOF'
+[nvidia-nim]
+url = "https://integrate.example.test/v1"
+EOF
+got="$(trusted_peers_env)"
+[ -z "$got" ] || fail "an overlay declaring no owner must trust nothing, got '$got'"
+
+# And a missing file is not an error: an overlay may have no systems map at all.
+rm -f "$OVERLAY/config/systems.local.toml"
+got="$(trusted_peers_env)" || fail "a missing systems.local.toml must not fail the resolver"
+[ -z "$got" ] || fail "a missing systems map produced peers: '$got'"
+
 echo "external-ref tests passed"

@@ -97,7 +97,7 @@
     gap: 0.4rem;
     margin: 0;
     font-size: 0.8125rem;
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .back {

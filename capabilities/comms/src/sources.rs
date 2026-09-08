@@ -169,10 +169,10 @@ fn parse_arxiv_entries(body: &str, limit: usize) -> Vec<Discovered> {
 }
 
 fn http_client() -> Result<reqwest::blocking::Client> {
-    Ok(reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(30))
-        .user_agent("Axon-Comms/0.1 (+https://github.com/larsboes/Axon)")
-        .build()?)
+    Ok(axon_http::client(
+        axon_http::Purpose::new("comms-sources"),
+        std::time::Duration::from_secs(30),
+    )?)
 }
 
 fn bounded_limit(limit: usize) -> usize {
