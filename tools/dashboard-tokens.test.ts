@@ -128,6 +128,12 @@ describe("every custom property a component reads is declared somewhere it can s
 // A class counts as used when a component names it in a `class` attribute or a `class:`
 // directive. A component's own `<style>` mentioning `.card` does not count — that is a
 // scoped rule of its own that happens to share the name.
+//
+// The match is on the whole class token, not on a word boundary. `\bcard\b` also matches
+// `card-interactive`, and `\btable\b` also matches `table-wrap` — which is the one hole
+// that mattered here, because every primitive in this file is the prefix of a longer name
+// somebody really does write. Verified 2026-09-08 by declaring `.zz` in app.css, writing
+// `class="zz-decoration"` in one component, and watching the rule below stay green.
 
 describe("no primitive is declared that nothing uses", () => {
   /** Class names app.css declares, read from selector positions only. */
@@ -148,15 +154,44 @@ describe("no primitive is declared that nothing uses", () => {
     return [...names].sort();
   }
 
+  /**
+   * True when `text` writes `name` as a WHOLE class token.
+   *
+   * `(?<![\w-])name(?![\w-])`, not `\bname\b`: a hyphen is a word boundary to a regex and
+   * is not one to CSS, so `\btable\b` counted `class="table-wrap"` as a use of `.table`.
+   */
+  function namesClass(text: string, name: string): boolean {
+    const token = `(?<![\\w-])${name}(?![\\w-])`;
+    return new RegExp(`class="[^"]*${token}|class=\\{[^}]*${token}|class:${name}(?![\\w-])`).test(
+      text,
+    );
+  }
+
   /** The components that put `name` in a class attribute or a `class:` directive. */
   function consumers(name: string): string[] {
-    const pattern = new RegExp(
-      `class="[^"]*\\b${name}\\b|class=\\{[^}]*\\b${name}\\b|class:${name}\\b`,
-    );
     return sources(SRC)
-      .filter((file) => file.endsWith(".svelte") && pattern.test(readFileSync(file, "utf8")))
+      .filter((file) => file.endsWith(".svelte") && namesClass(readFileSync(file, "utf8"), name))
       .map(relative);
   }
+
+  /**
+   * The escape list, one entry, with what was measured.
+   *
+   * `.table` and its five descendant rules are declared in app.css, documented in
+   * `dashboard/README.md` as one of the five surviving primitives, and written by no
+   * component: `grep -rn 'class="table"' dashboard/src` returns nothing, and the seven
+   * hits for `\btable\b` are `table-wrap`, `chart-table`, `forecast-table` and
+   * `subscription-table`. It is the same defect as the four classes deleted on
+   * 2026-09-08 and it survived the sweep because of the word-boundary hole above.
+   *
+   * Left rather than deleted because the choice is not this file's to make: the fourteen
+   * hand-rolled tables either adopt `.table` or the class and its README line go. Whoever
+   * decides also owns `.table .num`, which is the only declaration of `.num` and matches
+   * nothing today — all four components that write `class="num"` restyle it themselves.
+   */
+  const KNOWN: Record<string, string> = {
+    table: "0 consumers, documented as a primitive (verifier, 2026-09-08)",
+  };
 
   test("the reader finds the primitives and not the font URLs", () => {
     const declared = declaredClasses();
@@ -168,9 +203,28 @@ describe("no primitive is declared that nothing uses", () => {
     }
   });
 
+  test("a longer class that merely starts with the name is not a use of it", () => {
+    // The hole this closes, as four assertions rather than as a claim in a comment.
+    expect(namesClass('<div class="card">', "card")).toBe(true);
+    expect(namesClass('<div class="a card b">', "card")).toBe(true);
+    expect(namesClass('<div class="card-interactive">', "card")).toBe(false);
+    expect(namesClass('<div class="table-wrap">', "table")).toBe(false);
+    expect(namesClass("<div class:card-lit>", "card")).toBe(false);
+    expect(namesClass("<div class:card>", "card")).toBe(true);
+  });
+
   test("every class app.css declares is named by at least one component", () => {
-    const unused = declaredClasses().filter((name) => consumers(name).length === 0);
-    expect(unused).toEqual([]);
+    const unused = declaredClasses()
+      .filter((name) => consumers(name).length === 0)
+      .map((name) => (KNOWN[name] ? `${name} [known: ${KNOWN[name]}]` : name));
+    expect(unused.filter((line) => !line.includes("[known:"))).toEqual([]);
+  });
+
+  test("the escape list stays exactly one entry, so it cannot grow quietly", () => {
+    expect(Object.keys(KNOWN)).toEqual(["table"]);
+    // And the entry is a live fact, not a leftover: if somebody adopts `.table`, this
+    // fails and the escape goes with the same commit.
+    expect(consumers("table")).toEqual([]);
   });
 
   test("the consumer count is real, so a passing run means something", () => {

@@ -1,11 +1,12 @@
 // A number that is already a scale step, written as a number.
 //
 // `app.css` declares eight named type steps and the README rules that the token layer is
-// the whole design system. Measured in `dashboard/src/` on 2026-09-08: 853 `font-size`
-// declarations carried a literal, and 333 of them were EXACTLY one of the eight steps —
-// `0.75rem` where `var(--text-xs)` was meant, 332 of those in files this sweep could
-// reach. That is not a typography decision anybody made; it is the same decision made 333
-// times without the name, and the cost is that changing the scale changes nothing.
+// the whole design system. Measured in `dashboard/src/` on 2026-09-08: 883 `font-size`
+// declarations, 851 of them carrying a literal, and 333 of THOSE were EXACTLY one of the
+// eight steps — `0.75rem` where `var(--text-xs)` was meant, 332 of those in files this
+// sweep could reach. That is not a typography decision anybody made; it is the same
+// decision made 333 times without the name, and the cost is that changing the scale
+// changes nothing.
 //
 // The other 518 are left alone on purpose. `0.72rem` is not `--text-xs` rounded, it is a
 // value somebody chose, and substituting the nearest step would be a silent redesign of

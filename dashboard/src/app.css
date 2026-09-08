@@ -481,9 +481,11 @@ code,
  *
  * There was a `.card-interactive` opt-in for the clickable case. It had zero consumers on
  * 2026-09-08, and so did the case: not one `.card` in the tree is an anchor, a button or
- * carries a click handler — all 51 are a div, li, section, ul or form. An escape hatch
- * with no user and no candidate is a claim about the app that is not true, so it went. The
- * ruling above is the part that was doing work, and it stays. */
+ * carries a click handler — all 48 of them, across 18 components, are a div, section, li,
+ * form, aside, p or ul. An escape hatch with no user and no candidate is a claim about the
+ * app that is not true, so it went. The ruling above is the part that was doing work, and
+ * it stays. (The 51 this comment first said was a count of components whose markup held
+ * `card` as a substring — `card-header` and the like — not of `.card` elements.) */
 .card:hover {
   border-color: var(--card-border-hover);
 }

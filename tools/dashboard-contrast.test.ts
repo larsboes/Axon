@@ -237,15 +237,35 @@ describe("focus indicators are visible", () => {
     expect(shared[0].body).toContain("var(--focus-ring)");
   });
 
+  /**
+   * True when a block that says `outline: none` still leaves something to see.
+   *
+   * A replacement has to be something a reader can see: the shared ring, or a
+   * component's own box-shadow declared in the same block. `box-shadow: none` is not
+   * one — it cancels the shared ring too, so a block holding both `none`s draws no
+   * indicator at all.
+   */
+  function drawsSomethingInstead(body: string): boolean {
+    return /box-shadow:(?!\s*none\b)/.test(body);
+  }
+
+  test("a block that cancels both the outline and the ring is not a replacement", () => {
+    // The known-bad input this rule exists to reject. Without it the rule below passed
+    // `outline: none; box-shadow: none;` — verified 2026-09-08 by planting exactly that
+    // on `$lib/travel/PlaceField.svelte`'s `button:focus-visible` and watching it go green.
+    expect(drawsSomethingInstead("outline: none; box-shadow: none;")).toBe(false);
+    expect(drawsSomethingInstead("outline: none;")).toBe(false);
+    expect(drawsSomethingInstead("outline: none; box-shadow: var(--focus-ring);")).toBe(true);
+    expect(drawsSomethingInstead("outline: none; box-shadow: 0 0 0 2px var(--primary);")).toBe(true);
+  });
+
   test("no :focus-visible rule removes the outline without putting one back", () => {
     const offenders: string[] = [];
     for (const rel of styleSources()) {
       for (const { selector, body } of rules(rel)) {
         if (!selector.includes(":focus-visible")) continue;
         if (!/outline:\s*none/.test(body)) continue;
-        // A replacement has to be something a reader can see: the shared ring, or a
-        // component's own box-shadow declared in the same block.
-        if (/box-shadow:/.test(body)) continue;
+        if (drawsSomethingInstead(body)) continue;
         offenders.push(`${rel}: ${selector.replace(/\s+/g, " ")}`);
       }
     }
