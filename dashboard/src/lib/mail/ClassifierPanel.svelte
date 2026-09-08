@@ -163,7 +163,7 @@
   .classifier dd {
     margin: 0.2rem 0 0;
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     line-height: 1.45;
   }
 

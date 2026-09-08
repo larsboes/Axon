@@ -737,7 +737,7 @@
     align-items: center;
     gap: 0.35rem;
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     font-weight: 600;
     white-space: nowrap;
   }
@@ -755,7 +755,7 @@
     padding: 0.7rem 0.85rem;
     border: 1px solid var(--card-border);
     border-radius: var(--radius-md);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .notice.error {
@@ -876,18 +876,18 @@
   }
 
   .reading-toggle strong {
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     font-weight: 600;
   }
 
   .reading-toggle small {
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .reading-toggle em {
     color: var(--primary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     font-style: normal;
     font-weight: 600;
   }
@@ -1033,7 +1033,7 @@
     gap: 0.35rem;
     margin: 0.8rem 0 0;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .unavailable button {
@@ -1137,7 +1137,7 @@
   .project-copy strong {
     overflow: hidden;
     color: var(--text-primary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     font-weight: 620;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1210,7 +1210,7 @@
   .mc-power {
     margin-left: auto;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .mc-mem {
@@ -1246,7 +1246,7 @@
   .mc-mem-num {
     flex-shrink: 0;
     color: var(--text-secondary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .mc-detail {
@@ -1268,7 +1268,7 @@
     align-items: center;
     gap: 0.35rem;
     margin: 0;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     color: var(--text-tertiary);
     border-top: 1px solid var(--card-border);
     padding: 0.6rem 0.1rem 0;
@@ -1290,7 +1290,7 @@
     align-items: center;
     gap: 0.45rem;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     cursor: pointer;
     list-style: none;
   }
@@ -1328,7 +1328,7 @@
     align-items: center;
     gap: 0.3rem;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .status-dot {
@@ -1402,7 +1402,7 @@
     .home-views button {
       min-height: 2.75rem;
       padding: 0.5rem 0.35rem;
-      font-size: 0.75rem;
+      font-size: var(--text-xs);
     }
 
     .workspace {

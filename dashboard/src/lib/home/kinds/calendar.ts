@@ -50,8 +50,10 @@ const calendar: DecisionKind<CalendarSource, CalendarEntry> = {
   whyHere: (entry) => `Undecided since it was added from ${entry.source}.`,
   startOrDueAt: (entry) => entry.starts_at,
   candidateStatus: () => "proposed",
-  // CalendarEntry carries no class field; only the ContentItem detail shape does.
-  dataClass: () => null,
+  // CONTRACT: calendar declares one class for the whole source and states it on the entry
+  // list since 2026-09-08. Read, never computed — `content.rs`'s `classification()` is the
+  // one place that decides what a calendar row is worth.
+  dataClass: (entry) => entry.data_class ?? null,
   processingRoute: () => null,
 };
 

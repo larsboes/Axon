@@ -511,7 +511,7 @@
     max-width: 58ch;
     margin: 0.65rem 0 0;
     color: var(--text-secondary);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     line-height: 1.55;
   }
 
@@ -588,7 +588,7 @@
     align-items: center;
     gap: 0.35rem;
     color: var(--text-secondary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .distribution li strong {
@@ -646,7 +646,7 @@
   .travel-context > header a {
     gap: 0.35rem;
     color: var(--text-secondary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .travel-timeline {
@@ -689,7 +689,7 @@
   }
 
   .travel-lane strong {
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
   }
 
   .travel-lane ol {
@@ -746,7 +746,7 @@
     background: var(--input-bg);
     color: var(--text-primary);
     font: inherit;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .search input {
@@ -787,7 +787,7 @@
   .shelf > header > p {
     margin: 0;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .gallery {
@@ -876,7 +876,7 @@
   .author {
     margin: 0.35rem 0 0;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .preview {
@@ -884,7 +884,7 @@
     overflow: hidden;
     margin: 0.75rem 0 1rem;
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     line-height: 1.55;
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 4;

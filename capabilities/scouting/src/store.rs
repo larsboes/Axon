@@ -300,7 +300,7 @@ impl Store {
         //
         // Insert-or-nothing first, then update only if nothing was inserted. The
         // transaction is what makes the pair one decision.
-        let transaction = conn.transaction()?;
+        let transaction = axon_store::write_transaction(&mut conn)?;
         let inserted = transaction.execute(
             &format!(
                 "INSERT INTO {prefix}_proposed_sources

@@ -79,7 +79,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{Connection, Row, TransactionBehavior};
+use rusqlite::{Connection, Row, Transaction, TransactionBehavior};
 
 /// So a capability needs one database dependency, not two that can disagree.
 pub use rusqlite;
@@ -334,6 +334,38 @@ pub fn migrate_once(
     })
 }
 
+/// Begins a transaction that is going to write, with `BEGIN IMMEDIATE`.
+///
+/// [`migrate_once`] has taken the writer lock up front since it was written, for
+/// the reason stated above it: a deferred transaction that reads before it
+/// writes must upgrade to the writer lock, and SQLite answers a failed upgrade
+/// with `SQLITE_BUSY` **immediately**. `busy_timeout` does not retry that case,
+/// because another writer may already have changed what this one read.
+///
+/// That reasoning was never migration-specific, and the rest of the workspace
+/// did not get it. `capabilities/comms/src/store/feed.rs` set a feed item's
+/// status inside a deferred transaction whose first statement is a `SELECT` —
+/// deliberately, so a second press of `u` does not append a decision that never
+/// happened — and every one of those is an upgrade. Eleven services share one
+/// file here, so the drain that runs every fifteen minutes is enough to lose
+/// the race: `demo-seed: POST /feed/<id>/status → 400: {"error":"database is
+/// locked"}`, which is what has been failing the Pages build.
+///
+/// So it moves here, next to the PRAGMAs, on the same argument the module doc
+/// already makes for those: applied at one place and **never forgettable at a
+/// call site**. `tools/check-store-transactions.sh` keeps `.transaction()` out
+/// of the capabilities so the choice cannot be made again by omission.
+///
+/// The cost is real and small. `BEGIN IMMEDIATE` takes the writer lock before
+/// the first read rather than at the first write, so two writers serialise for
+/// slightly longer. They serialise either way — SQLite admits one writer — and
+/// waiting out `busy_timeout` is what this buys instead of erroring at once.
+///
+/// A transaction that only reads does not want this and should not use it.
+pub fn write_transaction(conn: &mut Connection) -> Result<Transaction<'_>, rusqlite::Error> {
+    conn.transaction_with_behavior(TransactionBehavior::Immediate)
+}
+
 /// A TEXT column holding JSON, read into its type.
 ///
 /// The one shape SQLite has no type for. Postgres carried it three ways and all
@@ -407,7 +439,10 @@ impl QueryAll for Connection {
 
 #[cfg(test)]
 mod tests {
-    use super::{now_offset, once_per_target, open_pool, QueryAll, NOW, STAMP_FORMAT};
+    use super::{
+        now_offset, once_per_target, open_pool, write_transaction, Connection, QueryAll,
+        CONNECTION_PRAGMAS, NOW, STAMP_FORMAT,
+    };
     use std::cell::Cell;
 
     /// Distinct per test: the guard is process-global by design, so two tests
@@ -730,5 +765,88 @@ mod tests {
         std::fs::write(&blocker, b"not a directory").unwrap();
         let result = open_pool(&blocker.join("axon.db"), "blocked", |_| Ok(()));
         assert!(result.is_err(), "an unusable path opened anyway");
+    }
+
+    /// The deferred read-then-write upgrade, reproduced.
+    ///
+    /// This is the failure that reached the operator as
+    /// `POST /feed/<id>/status → 400: {"error":"database is locked"}`. Asserted
+    /// rather than described, because the whole reason it survived 29 call
+    /// sites is that nobody had watched it happen: the module doc named it, the
+    /// migration guarded against it, and every other writer inherited the
+    /// deferred default.
+    ///
+    /// `busy_timeout` is set to five seconds on both connections here and does
+    /// not save the deferred reader. That is the point — a failed upgrade is
+    /// not a timeout, so SQLite refuses at once rather than waiting.
+    #[test]
+    fn a_deferred_read_then_write_loses_the_upgrade_and_immediate_does_not() {
+        use rusqlite::TransactionBehavior;
+
+        let path = temp_database("upgrade");
+        let _ = std::fs::remove_file(&path);
+        let setup = Connection::open(&path).unwrap();
+        setup.execute_batch(CONNECTION_PRAGMAS).unwrap();
+        setup
+            .execute_batch(
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER);
+                            INSERT INTO t VALUES (1, 0);",
+            )
+            .unwrap();
+
+        // The other writer. It holds the write lock for the whole of each case
+        // below, which is what a fifteen-minute drain does to a keypress.
+        let mut holder = Connection::open(&path).unwrap();
+        holder.execute_batch(CONNECTION_PRAGMAS).unwrap();
+
+        let mut victim = Connection::open(&path).unwrap();
+        victim.execute_batch(CONNECTION_PRAGMAS).unwrap();
+
+        // Deferred: reads first, so it holds only a read lock, and the UPDATE
+        // has to upgrade into a writer lock somebody else already holds.
+        let held = holder
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        held.execute("UPDATE t SET v = 1 WHERE id = 1", []).unwrap();
+
+        let deferred = victim.transaction().unwrap();
+        let _: i64 = deferred
+            .query_row("SELECT v FROM t WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        let upgrade = deferred.execute("UPDATE t SET v = 2 WHERE id = 1", []);
+        let error = upgrade.expect_err(
+            "the deferred upgrade succeeded — this test no longer reproduces the bug it guards",
+        );
+        // Asserted on the code, not on the message: the whole claim is that
+        // SQLite refuses with SQLITE_BUSY rather than waiting out busy_timeout,
+        // and a substring match on a debug string would also pass for a
+        // different error that happens to contain the word.
+        match error {
+            rusqlite::Error::SqliteFailure(e, _) => assert_eq!(
+                e.code,
+                rusqlite::ErrorCode::DatabaseBusy,
+                "the upgrade failed for some reason other than a busy database"
+            ),
+            other => panic!("expected a SQLite failure, got {other:?}"),
+        }
+        drop(deferred);
+        held.commit().unwrap();
+
+        // Immediate: takes the writer lock before the read, so there is no
+        // upgrade to lose. It waits out busy_timeout instead, which is the
+        // trade `write_transaction` documents.
+        let now = write_transaction(&mut victim).unwrap();
+        let seen: i64 = now
+            .query_row("SELECT v FROM t WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(seen, 1, "immediate transaction read the committed value");
+        now.execute("UPDATE t SET v = 3 WHERE id = 1", [])
+            .expect("an immediate transaction writes without an upgrade");
+        now.commit().unwrap();
+
+        let final_value: i64 = setup
+            .query_row("SELECT v FROM t WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(final_value, 3);
     }
 }

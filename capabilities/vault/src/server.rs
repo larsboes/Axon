@@ -1,9 +1,15 @@
 //! `vault-server` — the vault's read-only HTTP surface.
 //!
-//! One question, answered live off the files: what actions are open. PRD Q48
-//! (2026-08-27) retired the `tasks` capability and gave the Action kind back to
-//! `Projects/**/Tasks/`, which left the dashboard's decision ladder with a band
-//! and no source. This is that source.
+//! Two questions, both answered live off the files.
+//!
+//! **What actions are open.** PRD Q48 (2026-08-27) retired the `tasks`
+//! capability and gave the Action kind back to `Projects/**/Tasks/`, which left
+//! the dashboard's decision ladder with a band and no source. This is that
+//! source.
+//!
+//! **What the Journal knows about each person.** D2's three fields have no
+//! producer and cannot get one until D3 rules on machine-owned frontmatter. A
+//! computed read needs neither: see `list_people`.
 //!
 //! ## Read-only, and not by omission
 //!
@@ -36,7 +42,7 @@ use serde_json::{json, Value};
 use tower_http::cors::CorsLayer;
 
 use markdown_root::MarkdownRoot;
-use vault::tasks;
+use vault::{people, tasks};
 
 /// What this capability answers, served as data beside `/health`.
 const ROUTES: &[route_manifest::Route] = &[
@@ -51,6 +57,11 @@ const ROUTES: &[route_manifest::Route] = &[
         "GET",
         "/api/tasks",
         "Every action note under Projects/, read live. Optional status filter: open, done.",
+    ),
+    r(
+        "GET",
+        "/api/people",
+        "last_contact, met_at and mention_count per Atlas/People note, computed from Journal/ backlinks. Never stored.",
     ),
 ];
 
@@ -189,6 +200,38 @@ async fn list_tasks(State(state): State<AppState>, Query(query): Query<ListQuery
     }
 }
 
+/// D2, served rather than written.
+///
+/// `last_contact`, `met_at` and `mention_count` sit on 70 of the 89 `Atlas/People` notes with
+/// no producer. All three come out of `Journal/` backlinks and `vault people` has computed
+/// them since 2026-09-07 — and refused to write them, because D3 is unresolved: machine-owned
+/// frontmatter has no protection mechanism, so a producer could not tell its own value from a
+/// human's correction and would overwrite the correction on its next run.
+///
+/// **A computed read has that problem and does not need D3 ruled first.** Nothing is stored,
+/// so nothing can be overwritten; the answer is recomputed off the notes on every request and
+/// is stale for exactly as long as the request takes. The three fields become available to a
+/// reader without Axon becoming a second writer of files a human edits (§5.5).
+///
+/// It serves the drift too — `stored` and `disagrees` per person, the 4 notes whose written
+/// value contradicts the Journal — because the disagreement is the row that tells a reader
+/// which of the two is wrong, and a computed value served alone would look authoritative.
+async fn list_people(State(state): State<AppState>) -> ApiResponse {
+    match with_vault(&state, |vault| {
+        // Two folders, not the vault: `people::report` reads `Atlas/People/` and `Journal/`
+        // and nothing else. See `note::load_under` for the measurement.
+        let (mut notes, _) = vault::note::load_under(vault, people::FOLDER)?;
+        let (journal, _) = vault::note::load_under(vault, people::JOURNAL)?;
+        notes.extend(journal);
+        Ok(people::report(&notes))
+    })
+    .await
+    {
+        Ok(report) => ok(StatusCode::OK, report),
+        Err(response) => response,
+    }
+}
+
 #[tokio::main]
 async fn main() {
     // The same resolution the CLI uses, so both binaries read one declaration
@@ -204,17 +247,63 @@ async fn main() {
         vault_root: Arc::new(vault.path().to_string_lossy().into_owned()),
     };
     let port = axon_server::resolve_port(None, None, 8094);
-    let app = Router::new()
+    axon_server::serve_local("vault-server", port, build_router(state)).await;
+}
+
+/// This capability's name, for the origin guard's env var
+/// (`AXON_VAULT_ALLOWED_ORIGIN_HOSTS`).
+const CAPABILITY: &str = "vault";
+
+/// The wired router, so a test can drive the real thing rather than a handler.
+///
+/// `CorsLayer::permissive()` alone said any web page may read this, and the
+/// sentence that used to stand here — no control surface, no secret, loopback
+/// bind — is all true and still leaves that open. What `/api/tasks` returns is
+/// every open action under `Projects/`, each with the note path that names the
+/// project it belongs to: what the operator is working on this week, readable
+/// by any page open in their browser. The guard decides who may ask; CORS stays
+/// underneath it and decides what a permitted answer may say.
+///
+/// The origin guard sits below every route on purpose: axum wraps only the
+/// routes registered BEFORE a `.layer()` call (axum 0.7
+/// `src/docs/routing/layer.md`: "you have to first add your routes (and / or
+/// fallback) and then call `layer`"), so a route appended under it would
+/// silently lose the refusal.
+fn build_router(state: AppState) -> Router {
+    Router::new()
         .route("/routes", get(routes))
         .route("/health", get(health))
         .route("/ready", get(ready))
         .route("/api/tasks", get(list_tasks))
+        .route("/api/people", get(list_people))
         // Permissive CORS, matching every other capability the dashboard reads
-        // directly. This server serves no control surface and no secret — it
-        // serves task titles a human wrote — and the bind is loopback.
+        // directly. This server serves no control surface and no secret, and
+        // the bind is loopback.
+        //
+        // It stopped serving only task titles on 2026-09-08. `/api/people`
+        // answers with 89 real people's names and the dates they were last
+        // named in the Journal — the same names `names.rs` exists to redact
+        // before anything leaves this machine. Loopback is not what holds that
+        // in: `InboundAuth::refuse_without_token` (libs/axon-server/src/auth.rs)
+        // states the rule, that a page open in the operator's own browser is
+        // already inside the loopback boundary. What holds it in is the token
+        // `axon_server::serve_local` resolves through
+        // `InboundAuth::from_deployment()`, and a deployment that declares none
+        // leaves this route readable by any origin. Whether this server should
+        // refuse without a token is an operator ruling and not a comment's to
+        // make, so the comment stops at saying what is true.
+        //
+        // Since 2026-09-08 the origin guard below is what makes that concrete:
+        // a page on an origin this deployment does not name cannot read the
+        // route at all, token or no token. The token question above is still
+        // open and still the operator's.
+        // ADD NEW ROUTES ABOVE THIS LINE. Below it they lose the origin guard.
+        .layer(axum::middleware::from_fn_with_state(
+            CAPABILITY,
+            axon_server::origin::refuse_foreign_origins,
+        ))
         .layer(CorsLayer::permissive())
-        .with_state(state);
-    axon_server::serve_local("vault-server", port, app).await;
+        .with_state(state)
 }
 
 #[cfg(test)]
@@ -308,6 +397,99 @@ mod readiness_tests {
 }
 
 #[cfg(test)]
+mod people_tests {
+    use super::*;
+
+    /// A vault laid out the way the operator's is: one person, two journal entries that name
+    /// them, and a `last_contact` on the note that the Journal contradicts.
+    fn fixture(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("vault-people-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(people::FOLDER)).unwrap();
+        std::fs::create_dir_all(root.join(people::JOURNAL)).unwrap();
+        std::fs::write(
+            root.join(people::FOLDER).join("Erika.md"),
+            "---\nlast_contact: 2020-01-01\nmention_count: 40\n---\n\nbody\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(people::JOURNAL).join("2026-01-05.md"),
+            "coffee with [[Erika]]\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(people::JOURNAL).join("2026-03-09 Monday.md"),
+            "[[Erika]] again, and [[Erika]] twice\n",
+        )
+        .unwrap();
+        root
+    }
+
+    /// D2, end to end through the handler. The three fields are answered off the notes and the
+    /// note on disk is not touched — which is the whole argument for a route instead of a
+    /// producer, since D3 has no ruling yet.
+    #[tokio::test]
+    async fn the_three_computed_fields_are_served_and_the_note_is_not_rewritten() {
+        let root = fixture("serves");
+        let note = root.join(people::FOLDER).join("Erika.md");
+        let before = std::fs::read_to_string(&note).unwrap();
+
+        let state = AppState {
+            vault_root: Arc::new(root.to_string_lossy().into_owned()),
+        };
+        let (status, Json(body)) = list_people(State(state)).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        assert_eq!(body["people"], 1);
+        let erika = &body["facts"][0];
+        // Two notes, not three mentions: a day on which someone came up is one day.
+        assert_eq!(erika["mention_count"], 2);
+        assert_eq!(erika["met_at"], "2026-01-05");
+        assert_eq!(erika["last_contact"], "2026-03-09");
+        // The drift is served beside the computed value, because a computed number alone
+        // would read as authoritative and the stored one is what a human typed.
+        assert_eq!(erika["stored"]["last_contact"], "2020-01-01");
+        assert_eq!(body["disagreeing"], 1);
+        assert_eq!(
+            erika["disagrees"]
+                .as_array()
+                .map(|a| a.len())
+                .unwrap_or_default(),
+            2
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(&note).unwrap(),
+            before,
+            "the route wrote to a note a human owns — §5.5 is one-way"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A vault with People and no Journal answers 503, not 89 people with zero mentions.
+    /// `people.rs` states the reason: zero is a measurement and absent is a producer that did
+    /// not run, and a route that returned zeroes here would serve the second as the first.
+    #[tokio::test]
+    async fn a_vault_without_a_journal_is_unavailable_rather_than_all_zeroes() {
+        let root = fixture("no-journal");
+        std::fs::remove_dir_all(root.join(people::JOURNAL)).unwrap();
+
+        let state = AppState {
+            vault_root: Arc::new(root.to_string_lossy().into_owned()),
+        };
+        let (status, Json(body)) = list_people(State(state)).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("Journal")),
+            "the error must name the folder that is missing: {body}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+#[cfg(test)]
 mod route_manifest_tests {
     /// A stale manifest is worse than none, because it gets believed. This
     /// reads the router's own source, so adding a `.route()` without a summary
@@ -316,5 +498,71 @@ mod route_manifest_tests {
     fn the_manifest_covers_every_served_route() {
         let missing = route_manifest::undeclared_routes(include_str!("server.rs"), super::ROUTES);
         assert!(missing.is_empty(), "served but undocumented: {missing:?}");
+    }
+}
+
+/// The router-level proof that `libs/axon-server`'s own predicate tests cannot
+/// give: a route registered BELOW the `.layer()` call passes every test of
+/// `origin_allowed_by` and still answers a hostile page.
+///
+/// Driven with `tower::ServiceExt::oneshot` rather than over a loopback listener
+/// (the pattern `capabilities/places` uses), because this crate has no HTTP
+/// client and reqwest would pull a whole TLS stack into a test build to send one
+/// request to itself. `tower` is already in the graph under axum.
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    /// A vault root that is deliberately absent. The guard runs before the
+    /// handler, so the refusal does not need a vault — and the control below
+    /// reads its 503 as proof that the request got past the guard to a handler
+    /// that then found no vault.
+    fn router() -> Router {
+        let absent = std::env::temp_dir().join(format!("vault-origin-{}", std::process::id()));
+        build_router(AppState {
+            vault_root: Arc::new(absent.to_string_lossy().into_owned()),
+        })
+    }
+
+    async fn tasks_status(origin: Option<&str>) -> StatusCode {
+        let mut request = Request::builder().uri("/api/tasks");
+        if let Some(origin) = origin {
+            request = request.header("origin", origin);
+        }
+        router()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .expect("the router answers")
+            .status()
+    }
+
+    #[tokio::test]
+    async fn a_foreign_origin_cannot_read_the_task_list() {
+        assert_eq!(
+            tasks_status(Some("https://evil.example")).await,
+            StatusCode::FORBIDDEN,
+            "/api/tasks answered a foreign origin — it is registered below the guard layer"
+        );
+    }
+
+    /// The other half, and the reason the test above is not just asserting that
+    /// this server is broken: the callers that legitimately reach it still do.
+    /// 503 is the absent vault, which is a handler answering.
+    #[tokio::test]
+    async fn the_dashboard_and_a_non_browser_caller_still_reach_the_handler() {
+        for origin in [
+            None,
+            Some("http://localhost:47117"),
+            Some("https://mac.tailnet.ts.net"),
+        ] {
+            assert_eq!(
+                tasks_status(origin).await,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the guard refused a caller it must admit: {origin:?}"
+            );
+        }
     }
 }

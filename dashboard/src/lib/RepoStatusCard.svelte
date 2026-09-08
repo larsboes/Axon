@@ -142,7 +142,7 @@
     display: block;
     margin: 0 0 0.15rem;
     color: var(--primary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.08em;
@@ -197,17 +197,17 @@
   }
 
   .repo-copy strong {
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
   }
 
   .repo-copy small {
     color: var(--text-secondary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .muted {
     margin: 0.5rem 0 0;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 </style>

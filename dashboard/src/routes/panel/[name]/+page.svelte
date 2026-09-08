@@ -87,7 +87,7 @@
 
   .muted {
     margin: 0;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     color: var(--text-secondary);
   }
 
@@ -96,13 +96,13 @@
     align-items: center;
     gap: 0.4rem;
     margin: 0;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     color: var(--warning-ink);
   }
 
   .back {
     color: var(--text-tertiary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .back:hover {

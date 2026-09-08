@@ -191,6 +191,17 @@ pub fn validate(request: PlanSearchRequest) -> Result<ValidRequest, String> {
         return Err("origin needs an id or a name".into());
     }
 
+    // Re-rendered from the day numbers, not kept as the caller wrote them.
+    // `day_number` checks the shape and stops at the day field, so
+    // `{"from": "2026-01-01&min_days=0"}` passes both checks above and then goes
+    // verbatim into `upstream::calendar_windows`' query string and into
+    // `starts_on`, which `projection.rs` writes into the operator's vault. The
+    // same clip the flight-when handler now does, at the one place this route
+    // parses a date. `iso_of_day_number` is `day_number`'s documented inverse, so
+    // a well-formed date round-trips to itself.
+    let from = crate::windows::iso_of_day_number(from_day);
+    let to = crate::windows::iso_of_day_number(to_day);
+
     let span_days = (to_day - from_day + 1) as u32;
     let min_days = request.min_days.unwrap_or(3).clamp(1, span_days);
     let max_candidates = request
@@ -1681,6 +1692,32 @@ mod tests {
         })
         .expect("a clamped max_candidates is not an error");
         assert_eq!(clamped.max_candidates, MAX_MAX_CANDIDATES);
+    }
+
+    /// The dates a validated request carries are re-rendered from their day
+    /// numbers, so the caller's own bytes never reach `upstream`'s query strings
+    /// or `projection.rs`' vault note.
+    ///
+    /// `day_number` is a shape check that stops at the day field, so it accepts
+    /// the first string below; that is the premise, asserted here rather than
+    /// assumed. Same class as CodeQL alert 67 on `flight_when`, one route over.
+    #[test]
+    fn a_window_is_clipped_to_the_date_it_parsed_as() {
+        assert!(
+            crate::windows::day_number("2026-10-01&min_days=0").is_some(),
+            "the premise: the shape check accepts a date with a query string on it"
+        );
+        let clipped = request(None, Some(("2026-10-01&min_days=0", "2026-10-08#x")));
+        assert_eq!(clipped.from, "2026-10-01");
+        assert_eq!(clipped.to, "2026-10-08");
+
+        // A single-digit month is normalised the same way, which is what makes
+        // this a canonicalisation and not a string trim. (A single-digit DAY is
+        // refused outright: `unix_day_of_iso` reads that field two characters
+        // wide, so `2026-1-1` never parses at all.)
+        let loose = request(None, Some(("2026-1-01", "2026-1-08")));
+        assert_eq!(loose.from, "2026-01-01");
+        assert_eq!(loose.to, "2026-01-08");
     }
 
     /// The best window, not the first one calendar happened to list. A

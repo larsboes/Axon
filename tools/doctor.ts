@@ -459,6 +459,238 @@ export function formatFetchAge(fetchEpochSeconds: number | null, nowEpochSeconds
   return `fetched ${Math.floor(hours / 24)} day(s) ago`;
 }
 
+// --- backup receipts -------------------------------------------------------------------------
+//
+// `tools/backup.sh` writes one receipt per capability into <overlay>/backup/receipts/<cap>.json
+// after the destination's byte count matched. It is the only local record that a backup landed:
+// cleanup() removes the staging tree and the tarball, so nothing else here can answer "when was
+// the last successful backup".
+//
+// Read directly rather than through axon-status. That surface reads the same files and its
+// `backup_state` is the rule mirrored below — but it deliberately drops `target`, `tarball` and
+// `sha256` from its projection so no destination can reach an HTTP response
+// (capabilities/axon-status/src/status/backup.rs, on the Receipt struct), and those are exactly
+// the fields needed to go and look at the archive. It also has to be running, and doctor's whole
+// point is to work on a machine where things are not.
+//
+// So there are two readers of one file, in two languages, and that is a drift risk stated out
+// loud rather than hidden: the timestamp parser and the state rule below are ports of
+// `parse_receipt_ts` and `backup_state`, and doctor.test.ts pins both against a receipt written
+// in `date -u +%Y%m%dT%H%M%SZ` form, which is what backup.sh actually emits.
+export type BackupReceipt = {
+  capability?: string;
+  completed_at?: string;
+  target?: string;
+  tarball?: string;
+  bytes?: number;
+};
+
+/// `20260906T210709Z` — fixed-width UTC, the shape `date -u +%Y%m%dT%H%M%SZ` produces.
+/// null on anything else, which reads downstream as "no usable receipt": the same answer as a
+/// missing file, and the right one, because a receipt this process cannot date cannot be used to
+/// claim a backup is fresh.
+export function parseReceiptTimestamp(stamp: string): number | null {
+  const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/.exec(stamp);
+  if (!m) return null;
+  const [y, mo, d, h, mi, s] = m.slice(1).map(Number);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || s > 60) return null;
+  return Math.floor(Date.UTC(y, mo - 1, d, h, mi, s) / 1000);
+}
+
+/// Age against the capability's own two thresholds — the port of axon-status' `backup_state`,
+/// including why the two words differ: `due` means the data is older than the owner said it
+/// should be, `overdue` means the schedule that should have refreshed it did not. `never` outranks
+/// everything, because a capability with a backup contract and no receipt has the problem whatever
+/// its thresholds say, and `unknown` is what a manifest declaring no cadence gets — a red badge
+/// derived from a number Axon invented is worse than no badge.
+export function backupAgeState(
+  ageSeconds: number | null,
+  adviseDays: number,
+  staleDays: number,
+): "never" | "overdue" | "due" | "unknown" | "ok" {
+  if (ageSeconds === null) return "never";
+  const days = Math.floor(ageSeconds / 86_400);
+  if (Number.isFinite(staleDays) && days >= staleDays) return "overdue";
+  if (Number.isFinite(adviseDays) && days >= adviseDays) return "due";
+  if (!Number.isFinite(staleDays) && !Number.isFinite(adviseDays)) return "unknown";
+  return "ok";
+}
+
+/// Is the archive the receipt names still AT the destination, with the byte count the receipt
+/// recorded?
+///
+/// This exists because a receipt is a claim about the past and a destination is a live directory.
+/// The vault's first archive shipped 704 MB, verified its size at the target, wrote a receipt,
+/// reported success and could never have been restored (2026-08-29, tools/backup.sh
+/// verify_archive) — and separately, the destination this deployment ships to is an iCloud folder
+/// that evicts under disk pressure, which leaves the archive listed, named, sized and not there
+/// (2026-09-08, three of four archives). Both are invisible to anything that reads only the
+/// receipt.
+///
+/// `flags` is BSD `stat -f %Sf`, empty where that is not available. `dataless` in it is macOS'
+/// SF_DATALESS: the file provider evicted the contents and kept the name.
+export function classifyArchiveAtTarget(input: {
+  exists: boolean;
+  sizeBytes: number | null;
+  flags: string;
+  receiptBytes: number;
+}): { level: "ok" | "warn" | "bad"; detail: string } {
+  if (!input.exists) {
+    return { level: "bad", detail: "the archive the receipt names is not at the destination" };
+  }
+  if (input.sizeBytes !== input.receiptBytes) {
+    return {
+      level: "bad",
+      detail: `the archive holds ${input.sizeBytes} bytes, the receipt recorded ${input.receiptBytes}`,
+    };
+  }
+  if (input.flags.split(",").includes("dataless")) {
+    return {
+      level: "warn",
+      detail:
+        "the archive is a cloud placeholder, not a file — a restore needs the network and a full download first " +
+        '(in Finder, right-click the destination and choose "Keep Downloaded")',
+    };
+  }
+  return { level: "ok", detail: `${input.receiptBytes} bytes, present at the destination` };
+}
+
+// --- scheduled producers ----------------------------------------------------------------------
+//
+// A capability that declares `schedule` has no supervisor watching it. It is started, it runs, it
+// exits, and the only thing that brings it back is the timer. So there is nothing to be "down":
+// it stops producing and every surface keeps saying fine. Six units on this machine are in that
+// shape and one of them is the backup.
+//
+// The boot-persistence check above asks whether the unit MATCHES THE DECLARATION. This asks the
+// different question that nothing asked: did it actually run.
+
+/// One row of `launchctl list`: `PID \t Status \t Label`, where Status is the job's last exit
+/// status and either column may be `-` for "no answer". A label that is absent from this output
+/// is not loaded, which for a timer means it will never fire.
+export function parseLaunchdJobs(text: string): Map<string, { pid: number | null; lastExit: number | null }> {
+  const jobs = new Map<string, { pid: number | null; lastExit: number | null }>();
+  for (const line of text.split("\n")) {
+    const cols = line.split("\t");
+    if (cols.length < 3) continue;
+    const label = cols[2].trim();
+    if (!label || label === "Label") continue;
+    const num = (c: string) => (/^-?\d+$/.test(c.trim()) ? Number(c.trim()) : null);
+    jobs.set(label, { pid: num(cols[0]), lastExit: num(cols[1]) });
+  }
+  return jobs;
+}
+
+/// The three facts a scheduled LaunchAgent carries about its own running: how often, and where its
+/// two output streams go.
+///
+/// Read out of the INSTALLED unit rather than recomputed from the manifest. The unit's interval is
+/// the one launchd obeys, and the log paths are the files launchd truly appends to — a second copy
+/// of `/tmp/axon-<cap>-schedule.log` in this file would be a literal to keep in step with
+/// tools/service-runner.sh, and the drift would be silent (doctor would watch a file nothing
+/// writes and report "no run has ever produced output"). Where the unit and the manifest disagree
+/// about the interval, that is the boot-persistence check's `stale` state, not this one's.
+export function parseLaunchdSchedule(plist: string): {
+  intervalSeconds: number | null;
+  stdoutPath: string | null;
+  stderrPath: string | null;
+} {
+  const str = (key: string) =>
+    new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`).exec(plist)?.[1] ?? null;
+  const interval = /<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/.exec(plist);
+  return {
+    intervalSeconds: interval ? Number(interval[1]) : null,
+    stdoutPath: str("StandardOutPath"),
+    stderrPath: str("StandardErrorPath"),
+  };
+}
+
+export function formatAge(seconds: number): string {
+  if (seconds < 90) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 172_800) return `${(seconds / 3600).toFixed(1)}h`;
+  return `${(seconds / 86_400).toFixed(1)}d`;
+}
+
+export type ScheduledProducer = {
+  name: string;
+  unitInstalled: boolean;
+  loaded: boolean;
+  /// The job's last exit status as launchd remembers it; null when it has none to report.
+  lastExit: number | null;
+  intervalSeconds: number | null;
+  /// Age of the newest of the unit's two output files, or null when neither exists.
+  lastOutputAgeSeconds: number | null;
+};
+
+/// Did this producer run, and recently enough that its interval is being honoured?
+///
+/// The thresholds are one interval to warn and three to fail, and the third one is not arbitrary.
+/// launchd's `StartInterval` does not fire while the machine sleeps; it fires once on wake. On a
+/// laptop that is closed overnight, an hourly job legitimately shows an age of several intervals
+/// with nothing wrong. Two is inside the ordinary range of "the lid was shut". Three means either
+/// the producer stopped or the machine was off long enough that the report should say so anyway —
+/// and for the daily contracts that matters most it is three days, against the twenty-seven that
+/// D10 took to notice.
+///
+/// A non-zero exit outranks age: it is the more specific finding, and a job that fails fast still
+/// touches its log, so its age can look perfectly healthy.
+export function classifyScheduledProducer(p: ScheduledProducer): { level: "ok" | "warn" | "bad"; message: string } {
+  const seen = p.lastOutputAgeSeconds === null ? "no output on record" : `last output ${formatAge(p.lastOutputAgeSeconds)} ago`;
+  if (!p.unitInstalled) {
+    // Reported, never passed over — but the boot-persistence check owns this finding and already
+    // fails on it, and one condition counted twice reads as two problems.
+    return { level: "ok", message: `${p.name} — no unit installed; the boot-persistence check above owns that` };
+  }
+  if (!p.loaded) {
+    // Verifier, 2026-09-08: this one IS counted twice, unlike the branch above. The
+    // boot-persistence check has its own `installed-not-loaded` state — service-runner.sh's
+    // status_persistence asks launchctl the same question, and doctor warns on it
+    // (the `case "installed-not-loaded"` arm of the Boot persistence check). Measured from the
+    // main checkout: `tools/service-runner.sh persistence` returns
+    // `host-patch  installed-not-loaded  the unit exists but the supervisor is not running it`.
+    // It does not show up in a run taken from a git worktree because every unit reads `stale`
+    // there — the generated unit embeds the runner's absolute path — and `stale` short-circuits
+    // before the load state is asked for. So a worktree run cannot see the overlap.
+    return {
+      level: "warn",
+      message: `${p.name} — its unit is installed and launchd has not loaded it, so the timer cannot fire (${seen})`,
+    };
+  }
+  if (p.lastExit !== null && p.lastExit !== 0) {
+    return {
+      level: "bad",
+      message: `${p.name} — its last scheduled run exited ${p.lastExit} (${seen})`,
+    };
+  }
+  if (p.intervalSeconds === null) {
+    return {
+      level: "warn",
+      message: `${p.name} — its unit declares no StartInterval, so there is no cadence to judge it against (${seen})`,
+    };
+  }
+  const every = formatAge(p.intervalSeconds);
+  if (p.lastOutputAgeSeconds === null) {
+    // Not the same as "never ran". macOS clears /tmp of entries untouched for three days at boot,
+    // and a run that prints nothing does not move an mtime either.
+    return {
+      level: "warn",
+      message: `${p.name} — runs every ${every} and has written no output this machine still holds`,
+    };
+  }
+  const age = formatAge(p.lastOutputAgeSeconds);
+  if (p.lastOutputAgeSeconds >= p.intervalSeconds * 3) {
+    return {
+      level: "bad",
+      message: `${p.name} — runs every ${every} and has produced nothing for ${age}; it has missed at least two runs`,
+    };
+  }
+  if (p.lastOutputAgeSeconds >= p.intervalSeconds) {
+    return { level: "warn", message: `${p.name} — runs every ${every}, last produced ${age} ago` };
+  }
+  return { level: "ok", message: `${p.name} — runs every ${every}, produced ${age} ago` };
+}
+
 // How long a single reachability probe may take, absent an overlay saying otherwise. Public Axon
 // ships the default; a deployment that knows one of its endpoints is legitimately slow raises it
 // for that entry via `probe_timeout_ms` rather than muting the check or raising it for everything.
@@ -1171,6 +1403,90 @@ const CHECKS: Check[] = [
     },
   },
 
+  // Did the scheduled producers actually run?
+  //
+  // The check above compares the installed unit to the declaration. That is a different question,
+  // and a unit can match its declaration perfectly while the job behind it has not produced
+  // anything for a week. Nothing asked the second question, for any of them: a `schedule`
+  // capability has no supervisor, so it cannot be "down" — it simply stops, and every surface
+  // stays green. This is D10's shape with six subjects instead of one.
+  {
+    name: "Scheduled producers (did they run)",
+    async run(ctx) {
+      const os = ctx.machineToml?.os;
+      if (os !== "macos") {
+        // systemd records a timer's last elapse in `systemctl show --property=LastTriggerUSec`,
+        // which is a better source than a log mtime and a different implementation. Reported as a
+        // skip with its reason rather than passed over: this machine's producers are the subject,
+        // and a Linux host's are simply not covered yet.
+        return ctx.ok(`skipped — os = ${os ?? "unknown"}; this reads launchd units, and systemd timers are not covered yet`);
+      }
+      const proc = Bun.spawnSync({
+        cmd: [join(ctx.root, "tools/capability.sh"), "registry"],
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (proc.exitCode !== 0) return ctx.warn("capability.sh registry failed — skipping");
+      let registry: Array<Record<string, string>>;
+      try {
+        registry = JSON.parse(proc.stdout.toString());
+      } catch {
+        return ctx.warn("capability.sh registry did not return JSON — skipping");
+      }
+      const enabled = new Set<string>(
+        Array.isArray(ctx.machineToml?.capabilities) ? ctx.machineToml.capabilities : [],
+      );
+      const scheduled = registry.filter(
+        (s) => s.schedule && s.schedule.trim() !== "" && (enabled.size === 0 || enabled.has(s.name)),
+      );
+      if (scheduled.length === 0) return ctx.ok("no capability on this machine declares a schedule");
+
+      // One call, not one per unit. An absent label is the answer for "not loaded", so the whole
+      // table has to be in hand before any of them is judged.
+      const list = Bun.spawnSync({ cmd: ["launchctl", "list"], stdout: "pipe", stderr: "pipe" });
+      if (list.exitCode !== 0) return ctx.warn("launchctl list failed — scheduled producers unverified");
+      const jobs = parseLaunchdJobs(list.stdout.toString());
+
+      const unitDir = join(process.env.HOME ?? "", "Library", "LaunchAgents");
+      const now = Date.now() / 1000;
+      for (const service of scheduled) {
+        const unitPath = join(unitDir, `com.axon.${service.name}.plist`);
+        const unitInstalled = existsSync(unitPath);
+        const unit = unitInstalled
+          ? parseLaunchdSchedule(readFileSync(unitPath, "utf8"))
+          : { intervalSeconds: null, stdoutPath: null, stderrPath: null };
+        // The newest of the two streams. A job that fails writes only to stderr and a job that
+        // succeeds may write only to stdout, so taking one of them would make half the runs
+        // invisible.
+        let newest: number | null = null;
+        for (const p of [unit.stdoutPath, unit.stderrPath]) {
+          if (!p) continue;
+          try {
+            const mtime = statSync(p).mtimeMs / 1000;
+            if (newest === null || mtime > newest) newest = mtime;
+          } catch {
+            // absent, which is not the same as never ran — classifyScheduledProducer says so.
+          }
+        }
+        const job = jobs.get(`com.axon.${service.name}`);
+        const verdict = classifyScheduledProducer({
+          name: service.name,
+          unitInstalled,
+          loaded: job !== undefined,
+          lastExit: job?.lastExit ?? null,
+          intervalSeconds: unit.intervalSeconds,
+          lastOutputAgeSeconds: newest === null ? null : Math.max(0, now - newest),
+        });
+        // Every producer gets a line, including the healthy ones. A section that printed only its
+        // problems would let a producer that quietly left the set — dropped from the registry,
+        // renamed — read exactly like a producer that is fine.
+        if (verdict.level === "bad") ctx.bad(verdict.message);
+        else if (verdict.level === "warn") ctx.warn(verdict.message);
+        else ctx.ok(verdict.message);
+      }
+    },
+  },
+
   {
     // The shared SQLite database (PRD Q45, 2026-08-27). Every capability's tables are in one
     // file, so "is it there and does it open" is a machine-level question with one answer,
@@ -1829,6 +2145,171 @@ const CHECKS: Check[] = [
         } else {
           ctx.ok(`${service.name} — data arrived ${age} ago`);
         }
+      }
+    },
+  },
+
+  // Backup freshness, and then the archive itself.
+  //
+  // D10 is the argument for both halves. The vault's only backup died and stayed dead for 27 days
+  // before anyone noticed, and what made it invisible was not a subtle bug — it was that nothing
+  // asked. The dashboard has shown backup ages since (axon-status' /backups), but a dashboard is
+  // something you have to open; doctor is what runs before a change, and it said nothing about
+  // backups at all.
+  //
+  // The second half exists because the first is not enough. A receipt is a claim about a past
+  // moment, and the destination is a live directory that a full disk, an unmounted volume, a
+  // retention rule or a cloud provider's eviction can empty afterwards. Checking the receipt alone
+  // is the same instrument that reported 704 MB shipped and verified for an archive that could
+  // never have been restored.
+  {
+    name: "Backups (receipts, and the archives they name)",
+    async run(ctx) {
+      if (!ctx.overlayPath || !existsSync(ctx.overlayPath)) {
+        return ctx.warn("skipped — no overlay to read backup receipts from");
+      }
+      const proc = Bun.spawnSync({
+        cmd: [join(ctx.root, "tools/capability.sh"), "registry"],
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (proc.exitCode !== 0) return ctx.warn("capability.sh registry failed — skipping");
+      let registry: Array<Record<string, string>>;
+      try {
+        registry = JSON.parse(proc.stdout.toString());
+      } catch {
+        return ctx.warn("capability.sh registry did not return JSON — skipping");
+      }
+
+      // The machine's own enabled list, exactly as the freshness check above uses it: the registry
+      // answers for both roots, and this must only speak about contracts that run here. `scope`
+      // drops a capability this machine merely consumes — its data lives on the deployment that
+      // provides it, and so does its backup (tools/backup-all.sh makes the same cut).
+      const enabled = new Set<string>(
+        Array.isArray(ctx.machineToml?.capabilities) ? ctx.machineToml.capabilities : [],
+      );
+      const contracts = registry.filter(
+        (s) => s.backup_target && s.scope !== "external" && (enabled.size === 0 || enabled.has(s.name)),
+      );
+      if (contracts.length === 0) return ctx.ok("no capability on this machine declares a backup contract");
+
+      // Destination coordinates are a fact about a deployment, so they are in the overlay. An
+      // unreadable file is the overlay's finding, not this one's — say the archives could not be
+      // located rather than reporting every one of them missing.
+      let targets: Record<string, any> = {};
+      const systemsLocal = join(ctx.overlayPath, "config", "systems.local.toml");
+      if (existsSync(systemsLocal)) {
+        try {
+          targets = await readToml(systemsLocal);
+        } catch {
+          ctx.warn("overlay systems.local.toml is unreadable — archives cannot be located");
+        }
+      }
+
+      const now = Math.floor(Date.now() / 1000);
+      for (const service of contracts) {
+        const declared = (v: string | undefined) => (v && v.trim() !== "" ? Number(v) : Number.NaN);
+        const advise = declared(service.backup_advise_days);
+        const stale = declared(service.backup_stale_days);
+        const receiptPath = join(ctx.overlayPath, "backup", "receipts", `${service.name}.json`);
+        let receipt: BackupReceipt | null = null;
+        if (existsSync(receiptPath)) {
+          try {
+            receipt = JSON.parse(readFileSync(receiptPath, "utf8")) as BackupReceipt;
+          } catch {
+            // An unreadable receipt is not a fresh backup. Falling through to `never` is the
+            // honest reading and matches axon-status, which parses the same file with the same
+            // "unparseable means no usable receipt" rule.
+            ctx.bad(`${service.name} — ${receiptPath} is not readable JSON; treat this contract as unverified`);
+            continue;
+          }
+        }
+        const at = receipt?.completed_at ? parseReceiptTimestamp(receipt.completed_at) : null;
+        // saturating: a receipt dated in the future is a clock problem, not a negative age.
+        const age = at === null ? null : Math.max(0, now - at);
+        const state = backupAgeState(age, advise, stale);
+        const days = age === null ? 0 : (age / 86_400).toFixed(1);
+        switch (state) {
+          case "never":
+            ctx.bad(`${service.name} — declares a backup contract and has no usable receipt; nothing has ever landed (tools/backup.sh ${service.name})`);
+            continue;
+          case "overdue":
+            ctx.bad(`${service.name} — last backup ${days}d ago, past its ${stale}d stale threshold; the schedule that should refresh it is not working`);
+            break;
+          case "due":
+            ctx.warn(`${service.name} — last backup ${days}d ago (due past ${advise}d)`);
+            break;
+          case "unknown":
+            ctx.warn(`${service.name} — last backup ${days}d ago, and the manifest declares no cadence to judge that against`);
+            break;
+          default:
+            ctx.ok(`${service.name} — backed up ${days}d ago`);
+        }
+
+        // Now go and look. Everything below is about the artifact, not the record of it.
+        const targetId = receipt?.target ?? "";
+        const tarball = receipt?.tarball ?? "";
+        const bytes = typeof receipt?.bytes === "number" ? receipt.bytes : Number.NaN;
+        if (!targetId || !tarball || !Number.isFinite(bytes)) {
+          ctx.warn(`${service.name} — its receipt names no target/tarball/bytes, so the archive cannot be verified`);
+          continue;
+        }
+        const target = targets[targetId];
+        if (!target) {
+          ctx.warn(`${service.name} — receipt names target '${targetId}', which the overlay does not declare`);
+          continue;
+        }
+        // `ssh` is the default kind, exactly as tools/backup.sh resolves it.
+        const kind = typeof target.kind === "string" && target.kind ? target.kind : "ssh";
+        if (kind !== "local") {
+          // Not a gap that can be closed here. Reaching a push target costs an ssh round trip and
+          // an unlocked vault agent (backup.sh says so at its head), and doctor is offline by
+          // contract. Reported as a skip with the reason, never passed over — "nothing to check"
+          // must not read as "checked fine".
+          ctx.ok(`${service.name} — archive not verified: target '${targetId}' is kind=${kind}, which needs ssh and an unlocked vault`);
+          continue;
+        }
+        const rawPath = typeof target.path === "string" ? target.path : "";
+        if (!rawPath) {
+          ctx.warn(`${service.name} — target '${targetId}' is kind=local and declares no path`);
+          continue;
+        }
+        const archive = join(expandHome(rawPath), service.name, tarball);
+        // stat, never read. The archive is up to 4 GB and, at this destination, may be an evicted
+        // placeholder — opening one would pull the whole thing back over the network, which is the
+        // opposite of what a health check should cost.
+        let exists = false;
+        let size: number | null = null;
+        try {
+          size = statSync(archive).size;
+          exists = true;
+        } catch {
+          exists = false;
+        }
+        // BSD st_flags, the only place SF_DATALESS is visible. `stat -f` is BSD-only and Node's
+        // Stats does not carry st_flags at all, so this is a shell-out on Darwin and an empty
+        // string everywhere else.
+        //
+        // Verifier, 2026-09-08: an earlier version of this comment said the empty string reads
+        // as "not asked" rather than "not evicted". It does not. classifyArchiveAtTarget has no
+        // such branch — `flags = ""` and `flags = "-"` both fall through to the same
+        // `✓ <n> bytes, present at the destination`. So on Darwin, a `stat` that fails for any
+        // reason reports an evicted archive as present, which is the silent green this whole
+        // section exists to remove; the `kind != local` row above gets this right and says
+        // "archive not verified" out loud. Left as it stands rather than fixed here: the fix
+        // needs a fourth input on the classifier, and the branch could then only be watched
+        // failing on macOS, which tools/lib/test-support.sh's skippable() refuses in CI. See
+        // the verifier's report.
+        let flags = "";
+        if (exists && process.platform === "darwin") {
+          const st = Bun.spawnSync({ cmd: ["stat", "-f", "%Sf", archive], stdout: "pipe", stderr: "pipe" });
+          if (st.exitCode === 0) flags = st.stdout.toString().trim();
+        }
+        const verdict = classifyArchiveAtTarget({ exists, sizeBytes: size, flags, receiptBytes: bytes });
+        const line = `${service.name} — ${tarball}: ${verdict.detail}`;
+        if (verdict.level === "bad") ctx.bad(line);
+        else if (verdict.level === "warn") ctx.warn(line);
+        else ctx.ok(line);
       }
     },
   },

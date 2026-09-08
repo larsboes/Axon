@@ -46,8 +46,11 @@
 use std::collections::HashMap;
 use std::path::Path;
 
+use content_item::DataClass;
 use markdown_root::{frontmatter_spanned, MarkdownRoot};
 use serde::Serialize;
+
+use crate::class::CLASS_KEY;
 
 /// The folder the Action kind lives under (vault contract §5.1b).
 pub const PROJECTS: &str = "Projects";
@@ -79,6 +82,28 @@ pub struct Task {
     /// Where the operator goes to act on it. Obsidian is the writer; this
     /// server is not.
     pub uri: String,
+    /// What this task is worth protecting: `c0`, `c1`, `c2` or `c3`.
+    ///
+    /// Decided by `content_item::DataClass::classify_vault_note`, which is the
+    /// same call `class.rs` makes for the whole-vault report. Not a second
+    /// classifier and not a copy of its rules: a second place deciding what c2
+    /// means is the one outcome §6.1 forbids, and `class.rs`'s own module doc
+    /// says so about this exact function.
+    ///
+    /// Never absent. A note that declares nothing gets its folder's default,
+    /// which is c1 — the fail-closed answer, never c0. Publishing is an act and
+    /// no folder in the vault means "already public".
+    pub data_class: String,
+    /// Why that class, in the classifier's own words.
+    ///
+    /// Served where the feed list serves the value alone, because the vault
+    /// rule has a branch the value cannot show: a note whose frontmatter
+    /// declares a class OUTSIDE the vocabulary is refused, the folder default
+    /// answers, and the rationale is the only place that says so. `class.rs`
+    /// calls that the note "whose author believed they had set a class and had
+    /// not — the failure this whole section exists to make visible rather than
+    /// silent", and `/api/tasks` is the only vault surface the dashboard reads.
+    pub data_class_rationale: String,
 }
 
 /// Resolve the folder the Action kind lives in.
@@ -129,6 +154,12 @@ pub fn read(projects: &MarkdownRoot, vault_name: &str) -> Result<Vec<Task>, Stri
             continue;
         }
         let id = format!("{PROJECTS}/{relative}");
+        // The vault-relative id, which is what the folder half of Q9a reads, and
+        // the frontmatter key, which overrides it. Both are already in hand: the
+        // classifier refuses a body parameter on purpose, so classifying costs
+        // this walk nothing.
+        let class =
+            DataClass::classify_vault_note(&id, parsed.fields.get(CLASS_KEY).map(String::as_str));
         tasks.push(Task {
             title: title_of(&path),
             done: is_done(&parsed.fields),
@@ -137,6 +168,8 @@ pub fn read(projects: &MarkdownRoot, vault_name: &str) -> Result<Vec<Task>, Stri
             summary: value(&parsed.fields, "summary"),
             projects: projects_of(&parsed.fields),
             uri: obsidian_uri(vault_name, &id),
+            data_class: class.value,
+            data_class_rationale: class.rationale,
             id,
         });
     }
@@ -405,6 +438,70 @@ mod tests {
                 "Projects/Tasks - to sort in/Verlustvortrag prüfen.md"
             ),
             "obsidian://open?vault=Knowledge-Base&file=Projects/Tasks%20-%20to%20sort%20in/Verlustvortrag%20pr%C3%BCfen"
+        );
+    }
+
+    /// Every branch of Q9a, reached through the walk rather than through a
+    /// hand-built map — the folder default, the folder rule that overrides it,
+    /// the frontmatter override, and the declaration that is refused.
+    ///
+    /// The last one is the reason the rationale is served at all. A note
+    /// declaring `class: c22` must not be honoured (the literal is not a class)
+    /// and must not be escalated (a typo is not evidence that a note is more
+    /// sensitive than its folder), so it lands on the folder default with the
+    /// same value as a note that declared nothing — and the rationale is the
+    /// only thing that tells those two apart.
+    #[test]
+    fn a_task_carries_the_class_its_note_earns_and_a_typo_earns_nothing() {
+        let fixture = Fixture::new("class");
+        fixture
+            .note("Home-Lab/Tasks/Plain.md", "type: task\ndone: false")
+            .note(
+                "Gesundheit/Tasks/Appointment.md",
+                "type: task\ndone: false\ndue: 2026-09-20",
+            )
+            .note(
+                "Home-Lab/Tasks/Declared.md",
+                "type: task\ndone: false\nclass: c2",
+            )
+            .note(
+                "Home-Lab/Tasks/Typo.md",
+                "type: task\ndone: false\nclass: c22",
+            );
+
+        let by_title: HashMap<String, Task> = fixture
+            .read()
+            .into_iter()
+            .map(|task| (task.title.clone(), task))
+            .collect();
+
+        // The folder default: Mine, never Public. Publishing is an act, and no
+        // folder in the vault means "already public".
+        assert_eq!(by_title["Plain"].data_class, "c1");
+        // A health folder, wherever it sits (Q9a's own rule, not a Projects one).
+        assert_eq!(by_title["Appointment"].data_class, "c2");
+        // The operator's own word, honoured in either direction.
+        assert_eq!(by_title["Declared"].data_class, "c2");
+        assert!(
+            by_title["Declared"]
+                .data_class_rationale
+                .contains("frontmatter"),
+            "an override must say it was one: {}",
+            by_title["Declared"].data_class_rationale
+        );
+
+        // The planted input. Same value as `Plain`, and the only difference a
+        // reader can see is the sentence.
+        assert_eq!(by_title["Typo"].data_class, "c1");
+        assert!(
+            by_title["Typo"].data_class_rationale.contains("c22"),
+            "a refused declaration must name the literal it refused: {}",
+            by_title["Typo"].data_class_rationale
+        );
+        assert_ne!(
+            by_title["Typo"].data_class_rationale, by_title["Plain"].data_class_rationale,
+            "a note whose author believed they set a class reads identically to one that \
+             never tried"
         );
     }
 
