@@ -67,8 +67,8 @@
         "port": "8082"
       },
       "code": {
-        "files": 12,
-        "nodes": 128
+        "files": 13,
+        "nodes": 130
       }
     },
     {
@@ -137,8 +137,8 @@
         "port": "8083"
       },
       "code": {
-        "files": 88,
-        "nodes": 1530
+        "files": 90,
+        "nodes": 1568
       }
     },
     {
@@ -158,7 +158,7 @@
       "kind": "lib",
       "code": {
         "files": 3,
-        "nodes": 69
+        "nodes": 78
       }
     },
     {
@@ -181,15 +181,15 @@
       },
       "code": {
         "files": 159,
-        "nodes": 983
+        "nodes": 992
       }
     },
     {
       "name": "deliberation",
       "kind": "pack",
       "code": {
-        "files": 14,
-        "nodes": 76
+        "files": 31,
+        "nodes": 201
       }
     },
     {
@@ -252,7 +252,11 @@
     },
     {
       "name": "harness",
-      "kind": "pack"
+      "kind": "pack",
+      "code": {
+        "files": 9,
+        "nodes": 89
+      }
     },
     {
       "name": "home-assistant",
@@ -320,7 +324,7 @@
       "kind": "lib",
       "code": {
         "files": 3,
-        "nodes": 90
+        "nodes": 101
       }
     },
     {
@@ -332,8 +336,8 @@
         "port": "8092"
       },
       "code": {
-        "files": 31,
-        "nodes": 558
+        "files": 33,
+        "nodes": 588
       }
     },
     {
@@ -387,7 +391,7 @@
       "kind": "lib",
       "code": {
         "files": 5,
-        "nodes": 107
+        "nodes": 109
       }
     },
     {
@@ -404,6 +408,10 @@
       "service": {
         "kind": "data",
         "requires": []
+      },
+      "code": {
+        "files": 1,
+        "nodes": 7
       }
     },
     {
@@ -566,8 +574,8 @@
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 155,
-        "nodes": 1209
+        "files": 159,
+        "nodes": 1258
       }
     },
     {
@@ -600,8 +608,8 @@
         "port": "8086"
       },
       "code": {
-        "files": 19,
-        "nodes": 460
+        "files": 22,
+        "nodes": 524
       }
     },
     {
@@ -621,8 +629,8 @@
         "port": "8094"
       },
       "code": {
-        "files": 10,
-        "nodes": 90
+        "files": 12,
+        "nodes": 116
       }
     },
     {
@@ -1895,7 +1903,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 13192,
+    "nodes": 13710,
     "external": 11,
     "stale": [],
     "unmatched": [
