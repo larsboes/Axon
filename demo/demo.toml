@@ -177,6 +177,16 @@ paths = [
 # state of the machine recording it. On a clean CI runner that is honestly a clean CI
 # runner — capabilities up because the job started them, one repo on main, no overlay.
 # Nothing to invent, and inventing it would be the only way to get it wrong.
+#
+# `/api/axon-status/upstreams` stood in this list until 2026-09-08 and had not been a route
+# since 2026-08-28: PRD Q41 retired `tools/upstream-checker`, whose verdict was the endpoint's
+# only content, and the handler went with it (`capabilities/axon-status/src/status/health.rs`
+# keeps the reasoning where the code was). The dashboard's types went at the same time
+# (`dashboard/src/lib/api.ts`, `UpstreamEntry` / `UpstreamAudit`), so nothing has asked for it
+# in eleven days — the manifest was the last thing that still named it, and the recorder would
+# have taken axon-status' proxy fallback and failed the Pages build on a 404 from transit.
+# The verdict half is not lost: `self.json` carries `{name, verdict}` per upstreams.toml row
+# and `/self` above serves it. `tools/demo-check-paths` is what refuses the next one.
 paths = [
   "/axon-status/api/axon-status/health",
   "/axon-status/api/axon-status/capabilities",
