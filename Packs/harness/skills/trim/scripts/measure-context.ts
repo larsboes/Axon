@@ -14,7 +14,7 @@
 //
 // --root is the project whose CLAUDE.md counts as always-on (default: cwd).
 
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 type Entry = { path: string; bytes: number; lines: number; why: string };
@@ -33,12 +33,23 @@ const warnings: string[] = [];
 const entries: Entry[] = [];
 const seen = new Set<string>();
 
-function add(path: string, why: string): void {
+/** True when the file is accounted for — already counted, or read and counted now.
+ *  False only when it could not be read, which is what the caller reports.
+ *
+ *  The read is the existence check. An `existsSync` before it is a second answer to
+ *  the same question taken from a different instant (CodeQL js/file-system-race), and
+ *  it buys nothing here: a directory or an unreadable file throws, and the throw is
+ *  the same "not a file I can count" the `isFile()` test used to give. */
+function add(path: string, why: string): boolean {
   const full = resolve(path);
-  if (seen.has(full) || !existsSync(full)) return;
-  if (!statSync(full).isFile()) return;
+  if (seen.has(full)) return true;
+  let body: string;
+  try {
+    body = readFileSync(full, "utf8");
+  } catch {
+    return false;
+  }
   seen.add(full);
-  const body = readFileSync(full, "utf8");
   entries.push({ path: full, bytes: Buffer.byteLength(body), lines: body.split("\n").length, why });
   // Claude Code's @-import: a line whose first token is @<path>. Relative paths
   // resolve against the importing file, ~ against home.
@@ -46,12 +57,13 @@ function add(path: string, why: string): void {
     const match = /^\s*@([^\s]+)\s*$/.exec(line);
     if (!match) continue;
     const target = match[1].startsWith("~/") ? join(home, match[1].slice(2)) : resolve(dirname(full), match[1]);
-    if (!existsSync(target)) {
-      warnings.push(`${short(full)} imports ${match[1]}, which does not exist`);
-      continue;
+    if (!add(target, `imported by ${short(full)}`)) {
+      // "missing or unreadable", not "does not exist": the read is now the only
+      // probe, so a directory and a deleted file arrive here the same way.
+      warnings.push(`${short(full)} imports ${match[1]}, which is missing or unreadable`);
     }
-    add(target, `imported by ${short(full)}`);
   }
+  return true;
 }
 
 function short(path: string): string {
