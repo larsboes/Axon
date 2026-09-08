@@ -646,7 +646,7 @@ impl FinanceStore {
     ) -> Fallible<bool> {
         let prefix = &self.prefix;
         let mut conn = self.conn()?;
-        let transaction = conn.transaction()?;
+        let transaction = axon_store::write_transaction(&mut conn)?;
         let canonical = transaction.execute(
             &format!(
                 "UPDATE {prefix}_transaction_candidates
@@ -677,7 +677,7 @@ impl FinanceStore {
     pub fn replace_transaction_projection(&self, rows: &[TransactionRow]) -> Fallible<()> {
         let prefix = &self.prefix;
         let mut conn = self.conn()?;
-        let transaction = conn.transaction()?;
+        let transaction = axon_store::write_transaction(&mut conn)?;
         transaction.execute(&format!("DELETE FROM {prefix}_transaction_projection"), [])?;
         {
             let mut insert = transaction.prepare(&format!(
@@ -735,7 +735,7 @@ impl FinanceStore {
     pub fn replace_holding_projection(&self, snapshot: &ReviewedHoldingsSnapshot) -> Fallible<()> {
         let prefix = &self.prefix;
         let mut conn = self.conn()?;
-        let transaction = conn.transaction()?;
+        let transaction = axon_store::write_transaction(&mut conn)?;
         transaction.execute(&format!("DELETE FROM {prefix}_holding_projection"), [])?;
         transaction.execute(
             &format!("DELETE FROM {prefix}_holding_projection_state"),
@@ -807,7 +807,7 @@ impl FinanceStore {
     pub fn clear_holding_projection(&self) -> Fallible<()> {
         let prefix = &self.prefix;
         let mut conn = self.conn()?;
-        let transaction = conn.transaction()?;
+        let transaction = axon_store::write_transaction(&mut conn)?;
         transaction.execute(&format!("DELETE FROM {prefix}_holding_projection"), [])?;
         transaction.execute(
             &format!("DELETE FROM {prefix}_holding_projection_state"),

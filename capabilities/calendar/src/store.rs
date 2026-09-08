@@ -835,7 +835,7 @@ impl CalendarStore {
             updated_at: now_text(),
         };
         let mut conn = self.conn()?;
-        let tx = conn.transaction()?;
+        let tx = axon_store::write_transaction(&mut conn)?;
         tx.execute(
             &format!(
                 "INSERT INTO {prefix}_rhythms \
@@ -915,7 +915,7 @@ impl CalendarStore {
         )?;
         rhythm.updated_at = now_text();
         let mut conn = self.conn()?;
-        let tx = conn.transaction()?;
+        let tx = axon_store::write_transaction(&mut conn)?;
         tx.execute(
             &format!(
                 "UPDATE {prefix}_rhythms SET kind=?2, title=?3, location=?4, byweekday=?5, \
@@ -953,7 +953,7 @@ impl CalendarStore {
     /// ordinary manual-looking entries.
     pub fn delete_rhythm(&self, id: &str, delete_instances: bool) -> StoreResult<bool> {
         let mut conn = self.conn()?;
-        let tx = conn.transaction()?;
+        let tx = axon_store::write_transaction(&mut conn)?;
         if delete_instances {
             delete_future_instances(&tx, &self.prefix, id)?;
         }
@@ -978,7 +978,7 @@ impl CalendarStore {
             None => return Ok(None),
         };
         let mut conn = self.conn()?;
-        let tx = conn.transaction()?;
+        let tx = axon_store::write_transaction(&mut conn)?;
         let created = insert_instances(&tx, &self.prefix, &rhythm)?;
         tx.commit()?;
         Ok(Some(created))
