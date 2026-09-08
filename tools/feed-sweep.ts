@@ -39,7 +39,14 @@ const OVERLAY = overlayRoot(AXON_ROOT);
 if (!OVERLAY) fail("no 'overlay' in axon.local.toml or axon.toml — run tools/install.sh");
 
 /** comms' port, from the one file that declares it. Never a literal here — the manifest is the
- *  single home for that number, and the registry, the proxy and the health poll all read it. */
+ *  single home for that number, and the registry, the proxy and the health poll all read it.
+ *
+ *  The digits check is what keeps `http://127.0.0.1:${port}` a loopback URL, and the bearer
+ *  token below a credential that never leaves this machine. Measured:
+ *  `new URL("http://127.0.0.1:1@evil.example/x").host` is `evil.example`, because the last `@`
+ *  before the path ends the userinfo. CodeQL alerts 14, 15 and 18-22 were dismissed with "the
+ *  only file data is the port"; true, and not enough on its own. `tools/sparpreis-watch.ts`
+ *  carries the same check, and its test is where it is watched refusing. */
 function commsPort(): string {
   const manifest = join(AXON_ROOT, "capabilities", "comms", "service.toml");
   if (!existsSync(manifest)) fail(`no ${manifest}`);
@@ -48,6 +55,9 @@ function commsPort(): string {
     .find((l) => /^port\s*=/.test(l));
   const port = line?.match(/"([^"]*)"/)?.[1] ?? "";
   if (!port) fail(`no port in ${manifest}`);
+  if (!/^\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) {
+    fail(`${manifest} declares a port that is not a TCP port: ${port}`);
+  }
   return port;
 }
 
