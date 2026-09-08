@@ -29,9 +29,13 @@
    * bind to. Callback props rather than `createEventDispatcher`, which Svelte 5 keeps only
    * for compatibility.
    *
-   * `dataClass` is not passed and is not guessed. `FeedEntry` carries no class field while
-   * the `ContentItem` detail shape does, so the chip cannot render honestly until comms
-   * publishes a class on the list contract.
+   * The class is read off the entry, never passed in and never guessed. `GET /comms/feed`
+   * has published `data_class` on the LIST since 2026-09-06
+   * (`capabilities/comms/src/server/contracts.rs:174`), so the chip states what comms
+   * states. `undefined` still happens and still renders nothing: comms' `FeedFullItem` —
+   * what `POST /ingest` and `GET /feed/:id` answer with — carries no class, and
+   * `toListEntry` in `routes/feed/+page.svelte` builds a list row from one of those. A
+   * missing class is "not stated", which is not the same claim as any of the four.
    *
    * Two of the props below exist because /feed's inbox moved onto this row on 2026-09-07
    * and had them: a decided row greys in place instead of leaving, and the inbox shows the
@@ -100,6 +104,7 @@
     })),
   );
 
+  const dataClass = $derived(entry.data_class ?? null);
   const preview = $derived(entry.summary ?? entry.digest_preview);
   const whyHere = $derived(
     entry.evaluation?.explanation ?? entry.relevance?.rationale ?? "",
@@ -135,7 +140,14 @@
   {/if}
 
   {#snippet meta()}
-    {#if meta}{@render meta()}{:else if whyHere}<RowMeta {whyHere} candidateStatus="proposed" />{/if}
+    <!-- `whyHere || dataClass`, not `whyHere` alone: a c1 item with no evaluation and no
+         profile match has nothing to say about its rank and still has a class to state,
+         and the old condition dropped the whole line for it. -->
+    {#if meta}{@render meta()}{:else if whyHere || dataClass}<RowMeta
+        {whyHere}
+        {dataClass}
+        candidateStatus="proposed"
+      />{/if}
   {/snippet}
 
   {#snippet actions()}

@@ -342,7 +342,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.25rem;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--text-secondary);
   }
 
@@ -358,7 +358,7 @@
   }
 
   .mode-field legend {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--text-secondary);
     padding: 0 0 0.25rem;
   }
@@ -375,7 +375,7 @@
     border-radius: var(--radius-sm);
     background: transparent;
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     cursor: pointer;
   }
 
@@ -391,13 +391,13 @@
     align-items: center;
     gap: 0.5rem;
     margin: 0 0 0.75rem;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     color: var(--danger, #b91c1c);
   }
 
   .result-head p {
     margin: 0 0 0.2rem;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .coverage {
@@ -416,7 +416,7 @@
 
   .adopted {
     margin: 0.5rem 0;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     color: var(--primary);
   }
 
@@ -454,7 +454,7 @@
 
   .window {
     margin: 0.1rem 0 0.5rem;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--text-tertiary);
     font-variant-numeric: tabular-nums;
   }
@@ -473,7 +473,7 @@
     grid-template-columns: 9rem 5rem 1fr;
     align-items: center;
     gap: 0.5rem;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .factor-label {
@@ -496,7 +496,7 @@
 
   .factor-why {
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .companion {
@@ -504,7 +504,7 @@
     align-items: center;
     gap: 0.35rem;
     margin: 0 0 0.4rem;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--primary);
   }
 
@@ -512,7 +512,7 @@
   .why {
     margin: 0 0 0.5rem;
     padding-left: 1rem;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     color: var(--text-tertiary);
   }
 
@@ -533,7 +533,7 @@
     border-radius: var(--radius-sm);
     background: transparent;
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     cursor: pointer;
   }
 

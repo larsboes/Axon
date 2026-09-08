@@ -171,7 +171,7 @@
 
   .header {
     text-align: center;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -218,7 +218,7 @@
     background: transparent;
     color: var(--text-primary);
     font: inherit;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     font-weight: 600;
     cursor: pointer;
   }
@@ -253,7 +253,7 @@
     background: color-mix(in srgb, var(--entry-color) 13%, transparent);
     color: var(--text-primary);
     font: inherit;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     text-align: left;
     cursor: pointer;
   }
@@ -343,7 +343,7 @@
   .paint-hint {
     margin: 7px 4px 0;
     color: var(--text-secondary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .add-btn {

@@ -27,16 +27,40 @@ function fail(message: string): never {
 
 const AXON_ROOT = axonRoot();
 
+/**
+ * The port a service.toml declares. Throws with the reason when it declares none, or
+ * declares something that is not a port.
+ *
+ * The digits check is what keeps `http://127.0.0.1:${port}` a loopback URL. Measured:
+ * `new URL("http://127.0.0.1:1@evil.example/x").host` is `evil.example`, because the
+ * last `@` before the path ends the userinfo — so a manifest whose port reads
+ * `1@evil.example` moves the host, and every header on that request goes with it.
+ * CodeQL alerts 14 and 18-22 were dismissed with "the only file data is the port".
+ * That is true, and on its own it was not enough. `tools/feed-sweep.ts` carries the
+ * same check for the same reason.
+ *
+ * Its own exported function so tools/sparpreis-watch.test.ts can watch it refuse;
+ * `portOf` below reports through `fail`, which exits the process.
+ */
+export function portInManifest(body: string): string {
+  const line = body.split("\n").find((l) => /^port\s*=/.test(l));
+  const port = line?.match(/"([^"]*)"/)?.[1] ?? "";
+  if (!port) throw new Error("declares no port");
+  if (!/^\d{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535) {
+    throw new Error(`declares a port that is not a TCP port: ${port}`);
+  }
+  return port;
+}
+
 /** A capability's port, from the one file that declares it. */
 function portOf(capability: string): string {
   const manifest = join(AXON_ROOT, "capabilities", capability, "service.toml");
   if (!existsSync(manifest)) fail(`no ${manifest}`);
-  const line = readFileSync(manifest, "utf8")
-    .split("\n")
-    .find((l) => /^port\s*=/.test(l));
-  const port = line?.match(/"([^"]*)"/)?.[1] ?? "";
-  if (!port) fail(`no port in ${manifest}`);
-  return port;
+  try {
+    return portInManifest(readFileSync(manifest, "utf8"));
+  } catch (error) {
+    fail(`${manifest} ${(error as Error).message}`);
+  }
 }
 
 export interface RailWatch {

@@ -444,6 +444,14 @@ pub fn parse_frankfurter_json(
 /// `GET https://fc.yahoo.com` sets (that endpoint answers 404 and sets the cookie
 /// anyway). So the bare call is the primary path and the handshake is the retry:
 /// a non-200 or an error body triggers consent, crumb and one retry.
+///
+/// **Re-measured 2026-09-08, and both readings repeated exactly** -- 200 on the
+/// chart, 429 on the crumb with and without `A3`. The full numbers are in the
+/// `[yahoo-finance-chart]` row of `upstreams.toml` and not duplicated here; a
+/// measurement lives in one place or it drifts. Nothing below changed because of
+/// it: two readings from one network three days apart are two readings, not a
+/// property of the endpoint, which is the whole lesson the row records. The
+/// handshake is still the retry path and still **unverified live**.
 pub struct YahooProvider {
     pub client: reqwest::blocking::Client,
 }

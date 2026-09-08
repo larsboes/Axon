@@ -301,7 +301,7 @@
     gap: 5px;
     margin-bottom: 13px;
     color: var(--text-secondary);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     font-weight: 600;
   }
 
@@ -316,7 +316,7 @@
     margin-bottom: 5px;
     padding: 0;
     color: var(--text-secondary);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     font-weight: 600;
   }
 
@@ -337,7 +337,7 @@
     border-radius: 6px;
     background: transparent;
     color: var(--kind-color);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     cursor: pointer;
   }
 
@@ -395,7 +395,7 @@
     border-radius: 7px;
     background: var(--surface);
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     line-height: 1.45;
   }
 
@@ -440,7 +440,7 @@
   .error {
     margin: 0 0 12px;
     color: var(--danger);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
   }
 
   @media (max-width: 560px) {

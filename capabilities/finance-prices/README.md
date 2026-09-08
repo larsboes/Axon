@@ -68,12 +68,31 @@ builds `finance-server` only, and `tools/service-runner.sh` skips `maybe_build`
 entirely for a manifest that declares none, so without that line the nightly job would
 exec a path that exists on no machine but the one where it was compiled by hand.
 
-## Why no freshness contract yet
+## The freshness contract this job is the producer for
 
-`freshness_advise_hours` and `freshness_stale_hours` are deliberately not
-declared on `capabilities/finance/service.toml`. `tools/doctor.ts` answers a
-contract whose producer has never run with a fault on the first run, which is
-correct behaviour and is why nothing is declared until something has fed it.
+`capabilities/finance/service.toml` declares `freshness_advise_hours = "48"` and
+`freshness_stale_hours = "96"` since 2026-09-08, and finance serves
+`GET /__axon/freshness` to answer them. Both numbers are this job's own `24h`
+schedule: advise at two missed runs, stale at four.
+
+This section said the opposite until that day — the keys were deliberately absent,
+because `tools/doctor.ts` answers a contract whose producer has never run with a
+fault on the first run, and nothing is worth declaring until something has fed the
+table. Something has: a hand-run `finance-cli prices fetch` on 2026-09-07 wrote 13
+`ok` rows from `broker`, which `GET /finance/api/prices/status` still reports. The
+argument expired, so the keys followed it.
+
+Arrival is the newest `finance_price_fetches` row with `status = 'ok'` — not the
+newest attempt, and not the newest observation date. `newest_price_arrival` in
+`capabilities/finance/src/store.rs` carries that reasoning, including why an
+idempotent night that writes no row is still an arrival.
+
+**The contract will fail on a machine where this job is not installed, and that is
+it working.** Measured 2026-09-08: no `com.axon.finance-prices` unit exists in
+`~/Library/LaunchAgents`, so nothing feeds the table between hand runs and doctor
+says so four days after the last one.
+`tools/service-runner.sh install-persistence finance-prices` is what closes that.
+
 `GET /finance/api/prices/status` reports the gap meanwhile, per instrument and
 per provider, which is what a human actually reads.
 

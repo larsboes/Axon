@@ -327,7 +327,7 @@
             <span>Receivable <strong>{money(Math.max(0, selectedReview.totalCents - (personalCents() ?? 0)), selectedReview.candidate.currency)}</strong></span>
           </div>
         {/if}
-        <button class="save" disabled={busy || !shareIsValid() || (purpose === "trip" && !tripId)}>
+        <button type="submit" class="save" disabled={busy || !shareIsValid() || (purpose === "trip" && !tripId)}>
           Save purpose and share
         </button>
       {:else}
@@ -374,7 +374,7 @@
         {:else if selectedInflow && selectedTarget && selectedInflow.amount_cents > selectedTarget.outstanding_cents}
           <p class="error">This inflow is larger than the selected outstanding receivable.</p>
         {/if}
-        <button disabled={busy || !selectedInflow || !selectedTarget || selectedInflow.currency !== selectedTarget.currency || selectedInflow.amount_cents > selectedTarget.outstanding_cents}>
+        <button type="submit" disabled={busy || !selectedInflow || !selectedTarget || selectedInflow.currency !== selectedTarget.currency || selectedInflow.amount_cents > selectedTarget.outstanding_cents}>
           Link repayment
         </button>
       </form>
@@ -406,7 +406,7 @@
   .trip-strip dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; }
   .trip-strip dl div { display: grid; gap: .15rem; padding-left: .65rem; border-left: 1px solid var(--border, #333); }
   .trip-strip dt { color: var(--muted, #888); font-size: .6rem; }
-  .trip-strip dd { margin: 0; font-size: .75rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .trip-strip dd { margin: 0; font-size: var(--text-xs); font-weight: 650; font-variant-numeric: tabular-nums; }
   .review-workspace { display: grid; grid-template-columns: minmax(26rem, 1.25fr) minmax(19rem, .75fr); gap: .75rem; margin-top: .75rem; }
   .expense-queue, .allocation-editor, .receivables { min-width: 0; border: 1px solid var(--border, #333); border-radius: 7px; }
   .expense-queue { max-height: 27rem; overflow: auto; }

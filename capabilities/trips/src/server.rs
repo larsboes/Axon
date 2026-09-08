@@ -1090,6 +1090,54 @@ fn calendar_base_url() -> String {
     std::env::var("AXON_CALENDAR_URL").unwrap_or_else(|_| "http://127.0.0.1:8087".to_string())
 }
 
+/// Calendar's `GET /api/entries` for a day range, as `flight_when` asks for it.
+///
+/// Its own function so a test can read the string that actually leaves this
+/// process. Both dates must already have been through [`clipped_span`].
+fn calendar_entries_url(from: &str, to: &str) -> String {
+    format!("{}/api/entries?from={from}&to={to}", calendar_base_url())
+}
+
+/// A day range `flight_when` will search: both dates on the day-number scale, and
+/// both re-rendered from the numbers they parsed as.
+#[derive(Debug)]
+struct DaySpan {
+    from_day: i64,
+    to_day: i64,
+    from: String,
+    to: String,
+}
+
+/// Parse the two query dates, bound the span, and clip both to `YYYY-MM-DD`.
+/// `Err` carries the sentence the route answers 400 with.
+///
+/// The clip is the part that is not cosmetic. `day_number` checks the SHAPE of a
+/// date and stops at the day field — `libs/civil-date/src/lib.rs` says so: "The
+/// day field is read two characters wide, so a trailing wall time
+/// (`2026-08-08T10:00`) parses as its date rather than failing", which `places`
+/// depends on. So `date_from=2026-01-01&limit=99999` passes every check here, and
+/// the raw string used to go on into [`calendar_entries_url`]'s query string and
+/// into the grid filter that compares it against a day. `iso_of_day_number` is
+/// `day_number`'s documented inverse and builds its string from integers, so only
+/// digits and hyphens come out.
+///
+/// CodeQL rust/request-forgery, alert 67 — and alert 40, the same line before the
+/// file grew, dismissed on the grounds that the base URL is `AXON_CALENDAR_URL`.
+/// The base is. The two dates beside it are request data.
+fn clipped_span(date_from: &str, date_to: &str) -> Result<DaySpan, &'static str> {
+    let from_day = trips::windows::day_number(date_from).ok_or("date_from is not ISO")?;
+    let to_day = trips::windows::day_number(date_to).ok_or("date_to is not ISO")?;
+    if to_day < from_day || to_day - from_day > 42 {
+        return Err("span must be 0-42 days, date_from first");
+    }
+    Ok(DaySpan {
+        from_day,
+        to_day,
+        from: trips::windows::iso_of_day_number(from_day),
+        to: trips::windows::iso_of_day_number(to_day),
+    })
+}
+
 /// The fuzzy-timeframe answer: every day of the span priced via the grid,
 /// joined with committed calendar time, ranked free-cheapest-first.
 ///
@@ -1105,27 +1153,16 @@ fn calendar_base_url() -> String {
 /// (Packs/travel/ISA.md: "a guess that looks like a measurement is worse than
 /// a blank").
 async fn flight_when(Query(params): Query<FlightWhenParams>) -> ApiResponse {
-    let Some(from_day) = trips::windows::day_number(&params.date_from) else {
-        return response(
-            StatusCode::BAD_REQUEST,
-            json!({"error": "date_from is not ISO"}),
-        );
+    let span = match clipped_span(&params.date_from, &params.date_to) {
+        Ok(span) => span,
+        Err(error) => return response(StatusCode::BAD_REQUEST, json!({ "error": error })),
     };
-    let Some(to_day) = trips::windows::day_number(&params.date_to) else {
-        return response(
-            StatusCode::BAD_REQUEST,
-            json!({"error": "date_to is not ISO"}),
-        );
-    };
-    if to_day < from_day || to_day - from_day > 42 {
-        return response(
-            StatusCode::BAD_REQUEST,
-            json!({"error": "span must be 0-42 days, date_from first"}),
-        );
-    }
-
-    let date_from = params.date_from.clone();
-    let date_to = params.date_to.clone();
+    let DaySpan {
+        from_day,
+        to_day,
+        from: date_from,
+        to: date_to,
+    } = span;
     let result = tokio::task::spawn_blocking(move || {
         let client = KiwiClient::new();
         let mut grid: Vec<trips::kiwi::GridDay> = Vec::new();
@@ -1149,10 +1186,7 @@ async fn flight_when(Query(params): Query<FlightWhenParams>) -> ApiResponse {
             )
             .map_err(|error| error.to_string())?;
             let response = client
-                .get(format!(
-                    "{}/api/entries?from={date_from}&to={date_to}",
-                    calendar_base_url()
-                ))
+                .get(calendar_entries_url(&date_from, &date_to))
                 .send()
                 .map_err(|_| "calendar is not answering".to_string())?;
             if !response.status().is_success() {
@@ -1775,6 +1809,75 @@ mod origin_tests {
             allowed.status(),
             404,
             "with no Origin the request must reach the handler, which has no job 1"
+        );
+    }
+}
+
+#[cfg(test)]
+mod calendar_url_tests {
+    use super::{calendar_entries_url, clipped_span};
+
+    const HOSTILE: &str = "2026-01-01&to=2030-12-31&limit=99999";
+
+    /// The premise first: `day_number` is the only thing `flight_when` checked a
+    /// date against, and it accepts a date with anything glued to the end of it.
+    /// That is deliberate in `libs/civil-date` — `places` needs `2026-08-08T10:00`
+    /// to parse — so the clip belongs at the caller that puts the string in a URL.
+    #[test]
+    fn the_shape_check_accepts_a_date_with_a_query_string_glued_to_it() {
+        assert!(trips::windows::day_number(HOSTILE).is_some());
+    }
+
+    /// CodeQL rust/request-forgery, alert 67 (and alert 40, the same line before
+    /// the file grew). The URL carries one `from` and one `to` whatever the caller
+    /// sent, because `clipped_span` re-renders both from their day numbers.
+    #[test]
+    fn a_hostile_date_reaches_the_calendar_url_clipped() {
+        let span = clipped_span(HOSTILE, "2026-01-14").expect("the shape check passes");
+        assert_eq!(span.from, "2026-01-01");
+        assert_eq!(span.to, "2026-01-14");
+
+        let url = calendar_entries_url(&span.from, &span.to);
+        assert!(
+            url.ends_with("/api/entries?from=2026-01-01&to=2026-01-14"),
+            "unexpected URL: {url}"
+        );
+        assert_eq!(
+            url.matches('&').count(),
+            1,
+            "one parameter separator, not three: {url}"
+        );
+
+        // The same URL built from the raw string, so the difference this fix makes
+        // is visible rather than asserted about.
+        let unclipped = calendar_entries_url(HOSTILE, "2026-01-14");
+        assert_eq!(unclipped.matches('&').count(), 3, "{unclipped}");
+    }
+
+    /// The clip did not eat the three refusals it was folded in with.
+    #[test]
+    fn the_span_is_still_parsed_ordered_and_bounded() {
+        assert_eq!(
+            clipped_span("nonsense", "2026-01-14").unwrap_err(),
+            "date_from is not ISO"
+        );
+        assert_eq!(
+            clipped_span("2026-01-01", "nonsense").unwrap_err(),
+            "date_to is not ISO"
+        );
+        assert_eq!(
+            clipped_span("2026-01-14", "2026-01-01").unwrap_err(),
+            "span must be 0-42 days, date_from first"
+        );
+        assert_eq!(
+            clipped_span("2026-01-01", "2026-03-01").unwrap_err(),
+            "span must be 0-42 days, date_from first"
+        );
+        let ok = clipped_span("2026-01-01", "2026-01-01").expect("a one-day span is a span");
+        assert_eq!(ok.from_day, ok.to_day);
+        assert_eq!(
+            (ok.from.as_str(), ok.to.as_str()),
+            ("2026-01-01", "2026-01-01")
         );
     }
 }

@@ -30,13 +30,17 @@
 //   tools/self check             # is the committed self.json still current?
 //   tools/self -h                # this help
 //
-// Exit 0 = fine, 1 = stale (check) or unknown unit (explain).
+// Exit 0 = fine, 1 = stale (check), a stale code graph (generate), or an unknown unit
+// (explain).
 
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import {
   couplingFromCargo,
   couplingFromRustPath,
+  generateWouldBakeStaleGraph,
   generateWouldDropCode,
   mergeCoupling,
   rollUp,
@@ -52,6 +56,9 @@ const HELP = `tools/self — Axon's self-model: structure, coupling, provenance,
   tools/self check             is the committed self.json still current? (exit 1 if not)
 
   --json                       machine-readable output for status/explain/coupling
+  --allow-stale                generate anyway when the code graph holds paths this tree
+                               does not have. Prefer 'graphify update .' first.
+  --against <path>             check this tree against that artifact instead of self.json
 `;
 
 const AXON_ROOT = resolve(import.meta.dir, "..");
@@ -189,7 +196,11 @@ function readTrackedPaths(): Set<string> {
 }
 
 function build(): SelfModel {
-  const graphText = readText(`${AXON_ROOT}/graphify-out/graph.json`);
+  // AXON_SELF_GRAPH is a test seam, and it exists because the obvious way to test the
+  // stale-graph refusal is to plant a graph — and on this machine graphify-out/ holds a
+  // real 13,747-node graph that took a run to build. A test that wrote there to prove a
+  // refusal would destroy the thing it was protecting.
+  const graphText = readText(process.env.AXON_SELF_GRAPH || `${AXON_ROOT}/graphify-out/graph.json`);
   const trackedPaths = readTrackedPaths();
   const declaredServices = readDeclaredServices(trackedPaths);
   const tracked = (p: string) => trackedPaths.has(p);
@@ -351,16 +362,90 @@ if (cmd === "generate") {
     console.error("  tools/graphify.sh");
     process.exit(1);
   }
+  // Refuse to write a measurement of a tree that no longer exists. `graph.stale` is not a
+  // field to record, it is a reason not to write: every per-unit `code` count in this run was
+  // rolled up from the same graph. See generateWouldBakeStaleGraph.
+  if (generateWouldBakeStaleGraph(fresh.graph.stale) && !args.includes("--allow-stale")) {
+    console.error(
+      `the code graph still holds ${fresh.graph.stale.length} path(s) this tree does not have:`,
+    );
+    for (const path of fresh.graph.stale.slice(0, 10)) console.error(`  ${path}`);
+    if (fresh.graph.stale.length > 10) {
+      console.error(`  ... and ${fresh.graph.stale.length - 10} more`);
+    }
+    console.error("Every per-unit code count here was rolled up from that graph, so writing now");
+    console.error("records the staleness instead of fixing it. Rebuild the graph first:");
+    console.error("  graphify update .        # AST-only, no API cost");
+    console.error("Then run generate again. --allow-stale writes it anyway.");
+    process.exit(1);
+  }
+  if (generateWouldBakeStaleGraph(fresh.graph.stale)) {
+    console.error(
+      `WARNING: --allow-stale — baking ${fresh.graph.stale.length} stale graph path(s) into self.json.`,
+    );
+  }
   const out = serialize(fresh);
   await Bun.write(SELF_JSON, out);
   console.log(`wrote ${SELF_JSON} (${out.length} bytes)`);
   process.exit(0);
 }
 
+/**
+ * Show what actually differs, not only that something does.
+ *
+ * `check` reported "self.json is stale" and stopped, which leaves the reader with a whole
+ * artifact to eyeball and no idea whether a port moved or the entire code layer vanished.
+ * The same problem already has an answer in this repository: tools/check-architecture-fresh.sh
+ * regenerates into a scratch file and prints `diff` of the two. This is that, in TypeScript —
+ * `diff -u` rather than a diff engine written here, with `-L` for the labels because both BSD
+ * and GNU diff accept it.
+ *
+ * Capped, because a first generate on a machine with a fresh graph can differ by thousands of
+ * lines and a terminal full of JSON is the same non-answer as no diff at all.
+ */
+function printDrift(committedText: string, freshText: string, cap = 120): void {
+  const dir = mkdtempSync(`${tmpdir()}/axon-self-check.`);
+  writeFileSync(`${dir}/committed`, committedText);
+  writeFileSync(`${dir}/fresh`, freshText);
+  const proc = Bun.spawnSync({
+    cmd: [
+      "diff", "-u",
+      "-L", "self.json (committed)",
+      "-L", "self.json (this tree)",
+      `${dir}/committed`, `${dir}/fresh`,
+    ],
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const lines = proc.stdout.toString().split("\n").filter((l) => l.length > 0);
+  if (lines.length === 0) {
+    // diff found nothing while the string comparison did, or diff is absent. Say which
+    // rather than printing an empty block that reads as "no differences".
+    console.error(`  (could not render a diff: ${proc.stderr.toString().trim() || "diff produced no output"})`);
+    return;
+  }
+  for (const line of lines.slice(0, cap)) console.error(`  ${line}`);
+  if (lines.length > cap) console.error(`  ... ${lines.length - cap} more diff lines`);
+}
+
 if (cmd === "check") {
-  const committedText = readText(SELF_JSON);
+  // --against <path> compares this tree against an artifact that is not the committed one.
+  // It is what lets tools/self.test.sh watch the stale path produce a real diff without
+  // editing the tracked self.json, and it answers "is the file on that branch current?"
+  // without a checkout.
+  const againstAt = args.indexOf("--against");
+  const comparePath = againstAt === -1 ? SELF_JSON : args[againstAt + 1];
+  if (!comparePath) {
+    console.error("tools/self check --against needs a path");
+    process.exit(1);
+  }
+  const committedText = readText(comparePath);
   if (!committedText) {
-    console.error("self.json is missing. Run: tools/self generate");
+    console.error(
+      comparePath === SELF_JSON
+        ? "self.json is missing. Run: tools/self generate"
+        : `cannot read ${comparePath}`,
+    );
     process.exit(1);
   }
   const fresh = build();
@@ -382,6 +467,7 @@ if (cmd === "check") {
     process.exit(0);
   }
   console.error(`self.json is stale (${scope} differ). Run: tools/self generate`);
+  printDrift(right, left);
   process.exit(1);
 }
 
