@@ -15,7 +15,7 @@ single frontend standard*. Bun for packages. No CSS framework and no component l
 Svelte scopes a component's own styles at compile time, so what is worth sharing is a token
 layer plus a handful of primitives, and `src/app.css` is that whole design system. It
 declares a named type scale, a spacing rhythm, three breakpoints and one focus ring, and the
-classes `.card` / `.card-interactive`, `.tag`, `.btn`, `.input` and `.table`. What a class
+classes `.card`, `.tag`, `.btn`, `.input` and `.table`. What a class
 cannot express once is a component: `ListRow`, `RowMeta`, `StateLine`, `FactorBars`,
 `PageTabs` and `PageHeader`. `src/lib/feed/FeedItemRow.svelte` is the feed triage row built
 on them; Home's reading lane renders it today and the `/feed` list is meant to adopt the same

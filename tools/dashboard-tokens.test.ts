@@ -115,3 +115,69 @@ describe("every custom property a component reads is declared somewhere it can s
     expect(local.has("--overlay-width")).toBe(true);
   });
 });
+
+// The same rule in the other direction: no primitive is declared that nothing uses.
+//
+// The suite above catches a component reading a property nobody declared. This catches the
+// mirror image, and it had four on 2026-09-08: `.card-interactive`, `.glass`, `.glass-lit`
+// and `.tnum` — all documented in `dashboard/README.md` and in app.css's own header, all
+// with zero consumers across 96 components. Dead CSS is cheap to ship and expensive to
+// read: the next person budgets for a glass system that no surface uses, and the README
+// tells them it is there.
+//
+// A class counts as used when a component names it in a `class` attribute or a `class:`
+// directive. A component's own `<style>` mentioning `.card` does not count — that is a
+// scoped rule of its own that happens to share the name.
+
+describe("no primitive is declared that nothing uses", () => {
+  /** Class names app.css declares, read from selector positions only. */
+  function declaredClasses(): string[] {
+    const css = readFileSync(APP_CSS, "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      // The grain SVG carries `www.w3.org` and the @font-face srcs carry `.woff2`.
+      // Both read as class selectors to a regex and are neither.
+      .replace(/url\([^)]*\)/g, "");
+    const names = new Set<string>();
+    // Every run of text that ends at a `{` is a selector — including one nested inside an
+    // @media or @supports block, which a split on `}` would have skipped.
+    for (const match of css.matchAll(/([^{}]*)\{/g)) {
+      for (const found of match[1].matchAll(/\.([a-z][a-z0-9-]*)/gi)) names.add(found[1]);
+    }
+    // `.dark` is set on <html> by the theme toggle, never written in a component's markup.
+    names.delete("dark");
+    return [...names].sort();
+  }
+
+  /** The components that put `name` in a class attribute or a `class:` directive. */
+  function consumers(name: string): string[] {
+    const pattern = new RegExp(
+      `class="[^"]*\\b${name}\\b|class=\\{[^}]*\\b${name}\\b|class:${name}\\b`,
+    );
+    return sources(SRC)
+      .filter((file) => file.endsWith(".svelte") && pattern.test(readFileSync(file, "utf8")))
+      .map(relative);
+  }
+
+  test("the reader finds the primitives and not the font URLs", () => {
+    const declared = declaredClasses();
+    for (const name of ["card", "btn", "btn-primary", "tag", "input", "table", "mono", "num"]) {
+      expect([name, declared.includes(name)]).toEqual([name, true]);
+    }
+    for (const name of ["org", "w3", "woff2"]) {
+      expect([name, declared.includes(name)]).toEqual([name, false]);
+    }
+  });
+
+  test("every class app.css declares is named by at least one component", () => {
+    const unused = declaredClasses().filter((name) => consumers(name).length === 0);
+    expect(unused).toEqual([]);
+  });
+
+  test("the consumer count is real, so a passing run means something", () => {
+    // Without this, a reader that matched nothing would pass the test above by measuring
+    // nothing at all — which is how a dead-code gate goes green on a dead codebase.
+    expect(consumers("card").length).toBeGreaterThan(10);
+    expect(consumers("btn").length).toBeGreaterThan(10);
+    expect(consumers("a-name-nothing-uses")).toEqual([]);
+  });
+});
