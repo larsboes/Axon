@@ -144,7 +144,7 @@
                 <label>Reviewed expense account
                   <input list="finance-category-options" bind:value={targets[cluster.id]} placeholder="expenses:food:groceries" />
                 </label>
-                <button disabled={busyCluster !== "" || selectedCount(cluster) === 0 || !targets[cluster.id]?.trim()}>
+                <button type="submit" disabled={busyCluster !== "" || selectedCount(cluster) === 0 || !targets[cluster.id]?.trim()}>
                   Apply to {selectedCount(cluster)} selected
                 </button>
               </form>

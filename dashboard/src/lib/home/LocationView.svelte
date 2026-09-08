@@ -192,7 +192,7 @@
   .items span { display: grid; min-width: 0; }
   .items strong { overflow: hidden; font-size: .73rem; text-overflow: ellipsis; white-space: nowrap; }
   .items small { overflow: hidden; color: var(--text-tertiary); font-size: .6rem; text-overflow: ellipsis; white-space: nowrap; }
-  .empty { padding: 2rem; border: 1px dashed var(--card-border); color: var(--text-secondary); font-size: .75rem; text-align: center; }
+  .empty { padding: 2rem; border: 1px dashed var(--card-border); color: var(--text-secondary); font-size: var(--text-xs); text-align: center; }
 
   @media (width >= 62rem) {
     .groups { grid-template-columns: repeat(2, minmax(0, 1fr)); }

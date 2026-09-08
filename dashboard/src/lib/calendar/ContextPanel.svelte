@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { modal } from "$lib/modal";
   import type {
     CalendarContext,
     CalendarNewContext,
@@ -166,7 +167,14 @@
 {#if showForm}
   <div class="overlay">
     <button class="backdrop" aria-label="Close dialog" onclick={close}></button>
-    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="context-form-title">
+    <div
+      class="sheet"
+      use:modal={{ onClose: close, canClose: () => !saving }}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="context-form-title"
+      tabindex="-1"
+    >
       <div class="heading">
         <div>
           <p>Planning context</p>
@@ -227,7 +235,7 @@
 {/if}
 
 <style>
-  .hint { margin: 0 0 0.5rem; color: var(--text-secondary); font-size: 0.75rem; line-height: 1.45; }
+  .hint { margin: 0 0 0.5rem; color: var(--text-secondary); font-size: var(--text-xs); line-height: 1.45; }
   .empty { margin: 0; color: var(--text-tertiary); font-size: 0.78rem; }
 
   /* The overlay form still owns its own button styling; only the rail body defers to
@@ -300,9 +308,9 @@
   label { display: flex; flex-direction: column; margin-bottom: 13px; }
   input, textarea { box-sizing: border-box; width: 100%; padding: 8px 10px; border: 1px solid var(--card-border); border-radius: 7px; background: var(--surface); color: var(--text-primary); font: inherit; }
   .dates { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-  .form-error { color: var(--danger); font-size: 0.75rem; }
+  .form-error { color: var(--danger); font-size: var(--text-xs); }
   .form-actions { display: grid; grid-template-columns: auto 1fr auto auto; gap: 7px; margin-top: 18px; }
-  .form-actions button { padding: 7px 12px; font-size: 0.75rem; }
+  .form-actions button { padding: 7px 12px; font-size: var(--text-xs); }
   .form-actions .primary { border-color: var(--primary); background: var(--primary); color: white; }
   .form-actions .danger { color: var(--danger); }
 

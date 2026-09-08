@@ -216,7 +216,7 @@
     background: transparent;
     color: var(--primary);
     font: inherit;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     cursor: pointer;
   }
 
@@ -295,7 +295,7 @@
     gap: 0.35rem;
     flex: 0 0 auto;
     color: var(--text-tertiary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     text-decoration: none;
   }
 

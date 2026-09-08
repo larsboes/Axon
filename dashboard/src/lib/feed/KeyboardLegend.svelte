@@ -34,7 +34,7 @@
     gap: 0.5rem 0.75rem;
     margin: 0 0 0.5rem;
     color: var(--text-tertiary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .pair {

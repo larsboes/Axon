@@ -302,7 +302,7 @@
 
   .weekday {
     color: var(--text-secondary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -320,7 +320,7 @@
     background: transparent;
     color: var(--text-primary);
     font: inherit;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     font-weight: 600;
     cursor: pointer;
   }
@@ -421,7 +421,17 @@
   .slot:hover,
   .slot:focus-visible {
     background: var(--primary-soft);
-    outline: none;
+  }
+
+  /* The tint is the hover feel; the ring is the focus indicator. They were one rule with
+     `outline: none` in it, which left a keyboard reader with an 8%-alpha wash and nothing
+     else — 1.11:1 against the surface, where WCAG 1.4.11 asks for 3:1. Inset by 2px on
+     purpose: this control sits inside a scrolling container, so a ring drawn outside its
+     own box is clipped away by the ancestor's overflow. `--primary` on the tint measures
+     4.81:1 light and 7.83:1 dark. Same idiom as `$lib/rail/RailSection.svelte`. */
+  .slot:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: -2px;
   }
 
   .now {
@@ -446,7 +456,7 @@
     background: color-mix(in srgb, var(--entry-color) var(--fill, 18%), var(--card-bg));
     color: var(--text-primary);
     font: inherit;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     text-align: left;
     cursor: pointer;
   }
@@ -504,7 +514,7 @@
   }
 
   .detail .chip {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .detail .timed {
@@ -514,7 +524,7 @@
   .paint-hint {
     margin: 7px 4px 0;
     color: var(--text-secondary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .add-btn {

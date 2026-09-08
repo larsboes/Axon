@@ -377,8 +377,20 @@ body of `GET /__axon/freshness`, which answers "is data still reaching this capa
 `local-inference` is excluded from that query for the same reason: a machine whose collectors
 have all stopped must not be held green by a local model answering a drain.
 
+**A request that names no `offset` resumes the sweep; one that names an offset gets that page.**
+The receipt's cursor carries how far the chain in progress has come, and until 2026-09-08 nothing
+read it back: `tools/feed-sweep.ts` posts `{days: 3650, limit: 100}` nightly with no offset, so
+every night re-scored the same newest hundred rows. The deployment's cursor stood at
+`@3650:100` with 175 of its 374 scored items still `lexical`, every one of them at offset 100 or
+beyond. A chain is resumed only at its own window, a narrower window may not take a wider chain
+over — the Feed panel's button asks for 90 days and would otherwise reset the nightly sweep on
+every press — and reaching the end of a list resets the progress so the next pass starts over.
+New items do not wait for the sweep to come round: `enrich_many_in_background` scores an item
+when it is ingested.
+
 `comms relevance backfill [--days N=3650] [--batch N=100] [--max N] [--force]` pages that route
-until every item in the window has been seen, printing the mode each page answered in. Only a
+until every item in the window has been seen, printing the mode each page answered in. It names
+every offset it sends, so it walks the corpus itself. Only a
 chain that ran the full 3650-day window marks the corpus complete at the current relevance
 revision: a narrower pass reaches the end of its own window after a handful of rows, and stamping
 the corpus done from there left every row it never saw reading as current forever. It is an HTTP

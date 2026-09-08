@@ -10,7 +10,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  backupAgeState,
   checkStateMountCoverage,
+  classifyScheduledProducer,
+  formatAge,
+  parseLaunchdJobs,
+  parseLaunchdSchedule,
+  classifyArchiveAtTarget,
+  parseReceiptTimestamp,
   classifyProbeOutcome,
   resolveProbeTargets,
   PROBE_TIMEOUT_MS,
@@ -603,5 +610,173 @@ describe("systems reachability failure classification", () => {
     // caller resolves DNS before it ever gets here. Asserted so the precondition cannot be
     // quietly dropped from the probe without a test going red.
     expect(classifyProbeOutcome({ code: "ConnectionRefused" })).toBe("refused");
+  });
+});
+
+describe("backup receipts", () => {
+  test("the receipt stamp backup.sh actually writes parses to its UTC epoch", () => {
+    // The exact string tools/backup.sh emits — `date -u +%Y%m%dT%H%M%SZ` — copied from the live
+    // overlay's finance receipt on 2026-09-08. A stamp invented here would only prove that this
+    // parser agrees with itself.
+    expect(parseReceiptTimestamp("20260906T210709Z")).toBe(Date.UTC(2026, 8, 6, 21, 7, 9) / 1000);
+  });
+
+  test("anything that is not that shape is no usable receipt, never a guess", () => {
+    // Each of these would date a backup wrongly if it were coerced, and a wrongly dated backup
+    // reports fresh. ISO-with-separators is the near miss worth pinning: it is what a second
+    // writer would naturally emit, and it must be refused rather than half-read.
+    for (const bad of ["2026-09-06T21:07:09Z", "20260906T210709", "20261306T210709Z", "", "never"]) {
+      expect(parseReceiptTimestamp(bad)).toBeNull();
+    }
+  });
+
+  test("the two thresholds mean different things, and never outranks both", () => {
+    const day = 86_400;
+    // capabilities/store's real contract: advise 1, stale 2.
+    expect(backupAgeState(null, 1, 2)).toBe("never");
+    expect(backupAgeState(2 * 3600, 1, 2)).toBe("ok");
+    expect(backupAgeState(1.8 * day, 1, 2)).toBe("due");
+    expect(backupAgeState(2.1 * day, 1, 2)).toBe("overdue");
+    // A manifest that declares no cadence gets no invented one.
+    expect(backupAgeState(400 * day, Number.NaN, Number.NaN)).toBe("unknown");
+    // A zero threshold is a declaration, not an absence: `stale = 0` is the strictest contract
+    // expressible, and `stale || default` would turn it into the loosest.
+    expect(backupAgeState(60, 0, 0)).toBe("overdue");
+  });
+
+  test("a receipt whose archive is gone or short is a failure, not a fresh backup", () => {
+    expect(classifyArchiveAtTarget({ exists: false, sizeBytes: null, flags: "", receiptBytes: 2361 }).level)
+      .toBe("bad");
+    expect(classifyArchiveAtTarget({ exists: true, sizeBytes: 12, flags: "", receiptBytes: 2361 }).level)
+      .toBe("bad");
+    expect(classifyArchiveAtTarget({ exists: true, sizeBytes: 2361, flags: "-", receiptBytes: 2361 }).level)
+      .toBe("ok");
+  });
+
+  test("an evicted archive is listed, named, correctly sized and not there", () => {
+    // The live destination's own flag string on 2026-09-08, for capabilities/store's archive.
+    // This is the case the shipped detector could not see: every other signal about it is right.
+    const verdict = classifyArchiveAtTarget({
+      exists: true,
+      sizeBytes: 39_973_563,
+      flags: "compressed,dataless",
+      receiptBytes: 39_973_563,
+    });
+    expect(verdict.level).toBe("warn");
+    expect(verdict.detail).toContain("cloud placeholder");
+    // `compressed` on its own is ordinary APFS compression and says nothing about eviction.
+    expect(classifyArchiveAtTarget({ exists: true, sizeBytes: 10, flags: "compressed", receiptBytes: 10 }).level)
+      .toBe("ok");
+  });
+});
+
+describe("scheduled producers", () => {
+  test("launchctl's real table is parsed, header and dashes and all", () => {
+    // Captured verbatim from `launchctl list` on 2026-09-08. The dash columns are the shapes a
+    // hand-written fixture would omit: a scheduled job is not running most of the time, so its PID
+    // is always `-`, and `com.axon.backup` carries the last exit status that matters here.
+    const jobs = parseLaunchdJobs(
+      [
+        "PID\tStatus\tLabel",
+        "-\t0\tcom.axon.sparpreis-watch",
+        "787\t0\tcom.axon.axon-status",
+        "-\t1\tcom.axon.backup",
+      ].join("\n"),
+    );
+    expect(jobs.size).toBe(3);
+    expect(jobs.get("com.axon.backup")).toEqual({ pid: null, lastExit: 1 });
+    expect(jobs.get("com.axon.axon-status")).toEqual({ pid: 787, lastExit: 0 });
+    // The header must not become a job. It would make `loaded` true for a label called "Label",
+    // which is harmless — and it would also make the table's size a lie in any count derived here.
+    expect(jobs.has("Label")).toBe(false);
+    // Absent, which is how "launchd does not have this unit" is spelled.
+    expect(jobs.get("com.axon.host-patch")).toBeUndefined();
+  });
+
+  test("the unit's own interval and log paths are read out of the plist", () => {
+    // The shape tools/templates/launchd-schedule.plist.tmpl renders, so the parser is pinned to
+    // the file service-runner.sh actually writes rather than to a plist invented here.
+    const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.axon.feed-sweep</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>21600</integer>
+  <key>StandardOutPath</key>
+  <string>/tmp/axon-feed-sweep-schedule.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/axon-feed-sweep-schedule.err</string>
+</dict>
+</plist>`;
+    expect(parseLaunchdSchedule(plist)).toEqual({
+      intervalSeconds: 21600,
+      stdoutPath: "/tmp/axon-feed-sweep-schedule.log",
+      stderrPath: "/tmp/axon-feed-sweep-schedule.err",
+    });
+    // A watchdog unit has no StartInterval. Reading one out of it would invent a cadence.
+    expect(parseLaunchdSchedule("<dict><key>KeepAlive</key><true/></dict>").intervalSeconds).toBeNull();
+  });
+
+  const producer = (over: Partial<Parameters<typeof classifyScheduledProducer>[0]>) =>
+    classifyScheduledProducer({
+      name: "feed-sweep",
+      unitInstalled: true,
+      loaded: true,
+      lastExit: 0,
+      intervalSeconds: 21600,
+      lastOutputAgeSeconds: 600,
+      ...over,
+    });
+
+  test("a producer that ran inside its interval is the only ok answer", () => {
+    expect(producer({}).level).toBe("ok");
+    expect(producer({ lastOutputAgeSeconds: 21_599 }).level).toBe("ok");
+  });
+
+  test("one interval late is a warning, three is a fault", () => {
+    // Three, not two, because launchd's StartInterval does not fire while the machine sleeps and
+    // fires once on wake — so a closed lid legitimately costs an hourly job two intervals.
+    expect(producer({ lastOutputAgeSeconds: 21_600 }).level).toBe("warn");
+    expect(producer({ lastOutputAgeSeconds: 64_799 }).level).toBe("warn");
+    expect(producer({ lastOutputAgeSeconds: 64_800 }).level).toBe("bad");
+    expect(producer({ lastOutputAgeSeconds: 64_800 }).message).toContain("missed at least two runs");
+  });
+
+  test("a failed run outranks a healthy age, because a fast failure still touches the log", () => {
+    const v = producer({ lastExit: 1, lastOutputAgeSeconds: 5 });
+    expect(v.level).toBe("bad");
+    expect(v.message).toContain("exited 1");
+  });
+
+  test("an unloaded unit is a timer that cannot fire, whatever its logs say", () => {
+    // The state the orchestrator left com.axon.host-patch in on 2026-09-08. Its log is recent
+    // because it ran before it was unloaded, so age alone reports it perfectly healthy.
+    const v = producer({ loaded: false, lastOutputAgeSeconds: 60 });
+    expect(v.level).toBe("warn");
+    expect(v.message).toContain("launchd has not loaded it");
+  });
+
+  test("no output on record is not the claim that it never ran", () => {
+    const v = producer({ lastOutputAgeSeconds: null });
+    expect(v.level).toBe("warn");
+    expect(v.message).toContain("no output this machine still holds");
+  });
+
+  test("a missing unit is named here and judged by the persistence check", () => {
+    // finance-prices' real state: a manifest declaring `schedule = "24h"` and no installed unit.
+    // Counting it as a fault here too would print one condition as two problems.
+    const v = producer({ name: "finance-prices", unitInstalled: false, loaded: false });
+    expect(v.level).toBe("ok");
+    expect(v.message).toContain("no unit installed");
+  });
+
+  test("ages read as the unit a person would use", () => {
+    expect(formatAge(9)).toBe("9s");
+    expect(formatAge(600)).toBe("10m");
+    expect(formatAge(21_600)).toBe("6.0h");
+    expect(formatAge(345_600)).toBe("4.0d");
   });
 });

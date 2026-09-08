@@ -232,6 +232,8 @@ jobs:
         run: tools/check-publication-hygiene.sh
       - name: Bun dependency installs do not run lifecycle hooks
         run: tools/check-bun-install-policy.sh
+      - name: No capability begins a deferred transaction
+        run: tools/check-store-transactions.sh
       - name: Set up Bun
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         with:

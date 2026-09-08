@@ -247,7 +247,7 @@ pub fn replace_items(
         return Ok(false);
     }
     let now = crate::store::stamp();
-    let transaction = conn.transaction()?;
+    let transaction = axon_store::write_transaction(&mut conn)?;
     transaction.execute(
         &format!("DELETE FROM {prefix}_pack_list_items WHERE pack_list_id = ?1"),
         params![&list_id],

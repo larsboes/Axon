@@ -62,8 +62,11 @@ const mail: DecisionKind<TriageItem[], MailRow> = {
   whyHere: (item) => item.rationale,
   startOrDueAt: (item) => item.internal_date,
   candidateStatus: () => "proposed",
-  // The only kind with a real answer: comms publishes a class on every triage item.
-  dataClass: (item) => item.data_class,
+  // CONTRACT: comms publishes a class on every triage item. `?? null` all the same — the
+  // contract says `DataClass | null`, and a row that reached the ladder from somewhere
+  // other than `GET /comms/mail/triage` would otherwise return `undefined` and make this
+  // function's declared type a lie.
+  dataClass: (item) => item.data_class ?? null,
   processingRoute: () => null,
 };
 

@@ -10,16 +10,36 @@
    * beside `whyHere` whenever a model produced the rank.
    *
    * Every optional field renders nothing when null. The data class is shown where a
-   * capability publishes one — mail today — and is silent where none does, rather than
-   * guessed: the dashboard owns no data (dashboard/README.md:7-9) and a class it invented
-   * would be a false provenance claim.
+   * capability publishes one — mail, feed, finance, calendar, vault tasks and scouting
+   * since B50 — and is silent where none does, rather than guessed: the dashboard owns no
+   * data (dashboard/README.md:7-9) and a class it invented would be a false provenance
+   * claim.
    *
-   * The chip names the CLASS ("Private", "Sensitive"), where the page it replaces printed
-   * the word "Redacted" on the same two classes. A deliberate departure from the design,
-   * recorded here rather than left silent: nothing on this row is redacted — a mail row
-   * renders its subject and its snippet in full — so "Redacted" claimed a reduction that
-   * had not happened. The class is the true statement, it is what says where the row may
-   * be processed, and it stays inert on rank either way.
+   * The chip names the CLASS, where the page it replaces printed the word "Redacted" on
+   * the strict two. A deliberate departure from the design, recorded here rather than left
+   * silent: nothing on this row is redacted — a mail row renders its subject and its
+   * snippet in full — so "Redacted" claimed a reduction that had not happened. The class
+   * is the true statement, it is what says where the row may be processed, and it stays
+   * inert on rank either way.
+   *
+   * The four WORDS are not this file's to choose. `PRD Axon.md` §6.1's class table names
+   * them — C0 Public, C1 Mine, C2 Others, C3 Secret — under a ruling whose own sentence is
+   * "two vocabularies standing side by side is the one outcome not allowed", and
+   * `libs/content-item/src/lib.rs` (`DataClass::new`) is the implementation the PRD names.
+   * This component printed Public/Money/Private/Sensitive until 2026-09-08: "Private" is
+   * the pre-Q27 name of the retired `vault` class, and "Money" was wrong on its face —
+   * every calendar entry, every vault note and every unclassified feed item is c1, and
+   * none of them is about money. B50 lights the chip on five more surfaces, so it had to
+   * go first.
+   *
+   * Corrected by the verifier, 2026-09-08. This paragraph also said "nothing rendered it
+   * on a c1 row before B50, which is how it survived". That is not true and the reason
+   * matters: `content_item::DataClass::classify_mail` ends "Mail metadata is Mine by
+   * default", so c1 is the ORDINARY class of a triage row, and `kinds/mail.ts` has fed it
+   * to `MailRow`, which has handed it here, for as long as the chip has existed. Home has
+   * been printing "Money" on ordinary mail. How many live rows is not measurable from the
+   * repo — it needs the store — so the honest statement is that the code path was always
+   * there, not that nothing walked it.
    */
   let {
     whyHere,
@@ -38,21 +58,32 @@
 
   const CLASS_LABEL: Record<DataClass, string> = {
     c0: "Public",
-    c1: "Money",
-    c2: "Private",
-    c3: "Sensitive",
+    c1: "Mine",
+    c2: "Others",
+    c3: "Secret",
   };
 
-  const redacted = $derived(dataClass === "c2" || dataClass === "c3");
+  /**
+   * A literal outside the vocabulary reads back as the STRICTEST word, never the loosest.
+   *
+   * The same arm `libs/content-item/src/lib.rs` (`DataClass::new`) carries for the same
+   * reason — "a stale literal must not render as Public". `dataClass` is typed, so this is
+   * unreachable from a caller svelte-check saw; it is reachable from JSON, which is where
+   * every class on this row comes from. Without it the lookup returned undefined and the
+   * chip rendered EMPTY, so a class nobody could read looked like no class at all.
+   */
+  const label = $derived(dataClass === null ? null : (CLASS_LABEL[dataClass] ?? CLASS_LABEL.c3));
+
+  const redacted = $derived(label === CLASS_LABEL.c2 || label === CLASS_LABEL.c3);
 </script>
 
 <p class="why">
   {#if whyHere}<span class="text">{whyHere}</span>{/if}
   {#if method}<span class="method mono" title="What ranked this row">{method}</span>{/if}
-  {#if dataClass}
+  {#if label}
     <!-- Visible, and with no effect on rank: the ranking policy states plainly that the
          data class does not move a score. It says where the row may be processed. -->
-    <span class="class" class:redacted>{CLASS_LABEL[dataClass]}</span>
+    <span class="class" class:redacted>{label}</span>
   {/if}
   {#if processingRoute}<span class="route">{processingRoute}</span>{/if}
   {#if candidateStatus === "accepted"}
