@@ -74,6 +74,7 @@ describe("a kind reports the class its capability published, and never one of it
       ["mail", { data_class: "c2" }, "c2"],
       ["finance", { data_class: "c1" }, "c1"],
       ["calendar", { data_class: "c1" }, "c1"],
+      ["task", { data_class: "c2" }, "c2"],
     ];
     for (const [key, row, expected] of cases) {
       const kind = byKey.get(key);
@@ -89,8 +90,7 @@ describe("a kind reports the class its capability published, and never one of it
     // says in as many words that inventing that answer is the failure mode, so they stay
     // null until the operator rules.
     //
-    // `task` and `opportunity` come off this list as their capabilities start publishing
-    // a class.
+    // `opportunity` comes off this list when scouting starts publishing a class.
     const silent = kinds
       .filter(({ kind }) => kind.dataClass({ data_class: "c2" } as never) === null)
       .map(({ kind }) => kind.key)
@@ -99,7 +99,6 @@ describe("a kind reports the class its capability published, and never one of it
       "host",
       "opportunity",
       "system",
-      "task",
       "trip",
       "trip-retrospective",
     ]);
