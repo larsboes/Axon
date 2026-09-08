@@ -262,7 +262,7 @@
 
   .journey-time strong {
     font-family: var(--font-mono);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
   }
 
   .journey-time span,
@@ -277,7 +277,7 @@
 
   .journey-route strong {
     overflow: hidden;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -310,7 +310,7 @@
   }
 
   .journey-action strong {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .save {
@@ -399,7 +399,7 @@
 
   .leg-list strong {
     display: block;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .leg-stop {
@@ -477,7 +477,7 @@
 
   .stats dd {
     margin: 0.1rem 0 0;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     font-weight: 700;
   }
 

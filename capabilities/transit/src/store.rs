@@ -196,7 +196,7 @@ impl TransitStore {
             .into());
         }
         let mut conn = self.conn()?;
-        let tx = conn.transaction()?;
+        let tx = axon_store::write_transaction(&mut conn)?;
 
         let existing: Option<String> = tx
             .query_row(

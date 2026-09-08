@@ -99,6 +99,44 @@ pub fn month_of(date: &str) -> Option<String> {
     valid_iso_date(date).then(|| date[0..7].to_string())
 }
 
+/// One [`now_timestamp`] stamp back as epoch seconds, or `None` when the string
+/// is not one.
+///
+/// The inverse of [`now_timestamp`] and of nothing else: exactly twenty
+/// characters, `YYYY-MM-DDTHH:MM:SSZ`, UTC. Every stamp this reads was written
+/// by that function, so a wider parser would only widen what can be misread.
+/// `None` rather than a best effort, because the one caller is
+/// `GET /__axon/freshness`: a guessed epoch there is a claim about when data
+/// last arrived, and a wrong one reads as green.
+///
+/// Rejects the shape AND the calendar -- `iso_day` refuses 2026-02-29 -- and the
+/// clock: hour 24 and minute 60 are not times. Second 60 is refused with them,
+/// because `now_timestamp` divides a Unix count and never writes a leap second.
+pub fn epoch_seconds(timestamp: &str) -> Option<i64> {
+    let bytes = timestamp.as_bytes();
+    if bytes.len() != 20 || bytes[10] != b'T' || bytes[13] != b':' || bytes[16] != b':' {
+        return None;
+    }
+    if bytes[19] != b'Z' {
+        return None;
+    }
+    let day = iso_day(&timestamp[0..10])?;
+    let hour = two_digits(&timestamp[11..13], 23)?;
+    let minute = two_digits(&timestamp[14..16], 59)?;
+    let second = two_digits(&timestamp[17..19], 59)?;
+    Some(day * 86_400 + hour * 3_600 + minute * 60 + second)
+}
+
+/// Two ASCII digits as a number, bounded. `parse` alone would accept `" 9"`,
+/// `"+9"` and `"9\u{0}"`; the digit check is what makes the bound mean anything.
+fn two_digits(value: &str, max: i64) -> Option<i64> {
+    if !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let parsed = value.parse::<i64>().ok()?;
+    (parsed <= max).then_some(parsed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,6 +167,59 @@ mod tests {
         assert!(!valid_iso_date("2026-02-29"));
         assert!(!valid_iso_date("2026-13-01"));
         assert!(!valid_iso_date("202610-01-08"));
+    }
+
+    /// The round trip is the property worth asserting: whatever `now_timestamp`
+    /// writes, `epoch_seconds` reads back, so the freshness contract reports the
+    /// second the fetch row records rather than an offset from it.
+    #[test]
+    fn a_timestamp_round_trips_through_epoch_seconds() {
+        assert_eq!(epoch_seconds("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(epoch_seconds("2026-09-07T21:40:05Z"), Some(1_788_817_205));
+        // Against the reference implementation, not against a second copy of the
+        // arithmetic: the day count comes from civil_date, the rest is a division.
+        //
+        // Read the clock on BOTH sides of `now_timestamp`, and compare only when
+        // the two agree. `now_timestamp` takes its own reading, so one reading
+        // taken before it is a different second whenever the boundary falls
+        // between the two calls -- roughly one run in a million, and a test that
+        // fails for no reason teaches its reader to re-run rather than to look.
+        // Watched: with a 1.1s sleep between the two calls the original form fails
+        // `left: Some(1788886710), right: Some(1788886709)`. The retry keeps the
+        // exact equality rather than widening it into a range.
+        let unix_seconds = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64
+        };
+        let (stamp, now) = loop {
+            let before = unix_seconds();
+            let stamp = now_timestamp();
+            if before == unix_seconds() {
+                break (stamp, before);
+            }
+        };
+        assert_eq!(epoch_seconds(&stamp), Some(now));
+    }
+
+    #[test]
+    fn a_stamp_that_is_not_a_timestamp_is_none_rather_than_a_guess() {
+        // Shape.
+        assert_eq!(epoch_seconds(""), None);
+        assert_eq!(epoch_seconds("2026-09-07"), None);
+        assert_eq!(epoch_seconds("2026-09-07T21:40:05"), None);
+        assert_eq!(epoch_seconds("2026-09-07T21:40:05+02:00"), None);
+        assert_eq!(epoch_seconds("2026-09-07 21:40:05Z"), None);
+        assert_eq!(epoch_seconds("2026-09-07T21:40:05.0Z"), None);
+        // Calendar.
+        assert_eq!(epoch_seconds("2026-02-29T00:00:00Z"), None);
+        // Clock.
+        assert_eq!(epoch_seconds("2026-09-07T24:00:00Z"), None);
+        assert_eq!(epoch_seconds("2026-09-07T21:60:00Z"), None);
+        assert_eq!(epoch_seconds("2026-09-07T21:40:60Z"), None);
+        // A digit check `parse` alone would let through.
+        assert_eq!(epoch_seconds("2026-09-07T+1:40:05Z"), None);
     }
 
     #[test]

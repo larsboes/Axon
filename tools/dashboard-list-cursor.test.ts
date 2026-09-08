@@ -10,15 +10,29 @@
 // plain `bun test` can reach.
 
 import { describe, expect, test } from "bun:test";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { extname, join } from "node:path";
 import {
   INTERACTIVE,
   clampIndex,
   clampToSelectable,
+  focusRow,
   nextSelectable,
   prevSelectable,
   shouldIgnoreKey,
   type CursorRow,
 } from "../dashboard/src/lib/list-cursor.svelte.ts";
+
+const SRC = join(import.meta.dir, "../dashboard/src");
+
+/** Every .svelte and .ts file the dashboard ships, minus its own tests. */
+function sources(dir: string): string[] {
+  return readdirSync(dir).flatMap((name) => {
+    const full = join(dir, name);
+    if (statSync(full).isDirectory()) return sources(full);
+    return [".svelte", ".ts"].includes(extname(name)) && !name.endsWith(".test.ts") ? [full] : [];
+  });
+}
 
 /** A keydown whose target reports the `closest()` answer the test wants. */
 function keydown(overrides: Partial<KeyboardEvent> & { inside?: boolean } = {}): KeyboardEvent {
@@ -135,5 +149,82 @@ describe("a list whose rows are not all selectable", () => {
 
   test("a list of headers alone selects nothing", () => {
     expect(clampToSelectable([{ kind: "header", id: "h1" }], 0)).toBe(-1);
+  });
+});
+
+describe("moving the cursor moves real focus, not a class", () => {
+  /** An element that records what the cursor did to it, in order. */
+  function fakeRow() {
+    const calls: string[] = [];
+    let focusOptions: FocusOptions | undefined;
+    let scrollOptions: ScrollIntoViewOptions | undefined;
+    const element = {
+      focus(options?: FocusOptions) {
+        calls.push("focus");
+        focusOptions = options;
+      },
+      scrollIntoView(options?: ScrollIntoViewOptions) {
+        calls.push("scrollIntoView");
+        scrollOptions = options;
+      },
+    };
+    return {
+      element: element as unknown as HTMLElement,
+      calls,
+      get focusOptions() {
+        return focusOptions;
+      },
+      get scrollOptions() {
+        return scrollOptions;
+      },
+    };
+  }
+
+  test("the row is focused, and focused before it is scrolled", () => {
+    const row = fakeRow();
+    focusRow(row.element);
+    expect(row.calls).toEqual(["focus", "scrollIntoView"]);
+  });
+
+  test("the scroll focus() would do on its own is suppressed and asked for again", () => {
+    // focus() alone puts the row at the top of the viewport and loses the rows above it.
+    const row = fakeRow();
+    focusRow(row.element);
+    expect(row.focusOptions).toEqual({ preventScroll: true });
+    expect(row.scrollOptions?.block).toBe("nearest");
+  });
+
+  test("a row that is not on screen yet is not an error", () => {
+    expect(() => focusRow(null)).not.toThrow();
+    expect(() => focusRow(undefined)).not.toThrow();
+  });
+});
+
+describe("no list scrolls a row into view without focusing it", () => {
+  // The defect this replaces: /feed's `moveCursor` called `scrollIntoView` and nothing
+  // else, for every row the operator reached with j or k. A `.selected` class and a
+  // scroll offset are a paint — no assistive technology is told the selection moved, and
+  // a keyboard reader's Tab position never leaves wherever it was before the first key.
+  //
+  // Stated as "the only scrollIntoView is focusRow's" rather than as a per-file rule,
+  // because the failure mode is a NEW page hand-rolling the scroll again. A second call
+  // site is exactly the shape of that mistake, so a second call site fails here and its
+  // author has to say why.
+  const files = sources(SRC);
+
+  test("there are sources to scan, so a passing run means something", () => {
+    expect(files.length).toBeGreaterThan(100);
+  });
+
+  test("scrollIntoView appears once, inside focusRow", () => {
+    const callers = files
+      .filter((file) => /\.scrollIntoView\s*\(/.test(readFileSync(file, "utf8")))
+      .map((file) => file.slice(SRC.length + 1));
+    expect(callers).toEqual(["lib/list-cursor.svelte.ts"]);
+  });
+
+  test("/feed's own cursor calls focusRow", () => {
+    const feed = readFileSync(join(SRC, "routes/feed/+page.svelte"), "utf8");
+    expect(feed).toContain("focusRow(document.getElementById(rowDomId(row.id)))");
   });
 });

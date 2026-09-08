@@ -2124,7 +2124,7 @@
     margin: 0 0 1rem;
     padding: 0.75rem 0.9rem;
     border-radius: var(--radius-md);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
   }
 
   .notice.error {
@@ -2156,7 +2156,7 @@
     padding: 0.45rem 0.65rem;
     border-radius: var(--radius-md);
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     font-weight: 600;
   }
 
@@ -2207,7 +2207,7 @@
   .board-empty p {
     margin: 0.2rem 0 0;
     color: var(--text-tertiary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   /* Candidate rows in the rail: when and where, what it is, why it surfaced, then
@@ -2236,7 +2236,7 @@
   }
 
   .candidate-when strong {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .candidate-when span {
@@ -2251,7 +2251,7 @@
     display: block;
     margin-top: 0.15rem;
     color: var(--text-primary);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     font-weight: 600;
     line-height: 1.3;
   }
@@ -2264,7 +2264,7 @@
     display: block;
     margin-top: 0.2rem;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     line-height: 1.4;
   }
 
@@ -2314,7 +2314,7 @@
     background: var(--primary-soft);
     color: var(--primary);
     font: inherit;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     cursor: pointer;
   }
 
@@ -2328,7 +2328,7 @@
   .rail-hint {
     margin: 0 0 0.4rem;
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     line-height: 1.45;
   }
 
@@ -2454,7 +2454,7 @@
   .board-toolbar p {
     margin: 0.1rem 0 0;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .plan-filters {
@@ -2470,7 +2470,7 @@
     background: transparent;
     color: var(--text-secondary);
     font: inherit;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     cursor: pointer;
   }
 
@@ -2582,7 +2582,7 @@
 
   .option-date strong {
     font-family: var(--font-mono);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .option-date small,
@@ -2598,7 +2598,7 @@
   .option-route strong {
     overflow: hidden;
     margin: 0.15rem 0;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -2629,7 +2629,7 @@
     border-radius: var(--radius-sm);
     background: transparent;
     color: var(--text-secondary);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     cursor: pointer;
   }
 
@@ -2642,7 +2642,7 @@
   .planner-lede {
     margin: -0.5rem 0 1rem;
     color: var(--text-tertiary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .planner-notice {
@@ -2685,7 +2685,7 @@
   .mode-field legend {
     margin-bottom: 0.3rem;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -2705,7 +2705,7 @@
     background: var(--surface);
     color: var(--text-secondary);
     font: inherit;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .mode-field button {
@@ -2722,7 +2722,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.3rem;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
     color: var(--text-tertiary);
     text-transform: uppercase;
@@ -2736,7 +2736,7 @@
     background: transparent;
     color: var(--text-secondary);
     font: inherit;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     cursor: pointer;
   }
 
@@ -2760,7 +2760,7 @@
     border-top: 1px solid var(--card-border);
     background: var(--surface);
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .planner-context span {
@@ -2778,7 +2778,7 @@
   .import-origin p {
     margin: 0.15rem 0 0;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .import-origin {
@@ -2826,7 +2826,7 @@
   }
 
   .import-list strong {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .import-list span,
@@ -2848,7 +2848,7 @@
     background: var(--primary-soft);
     color: var(--primary);
     font: inherit;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .import-list button {
@@ -2874,7 +2874,7 @@
     border: 1px dashed var(--card-border);
     border-radius: var(--radius-md);
     color: var(--text-tertiary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .section-heading {
@@ -2954,7 +2954,7 @@
     background: transparent;
     color: var(--primary);
     font: inherit;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     cursor: pointer;
   }
 
@@ -2966,7 +2966,7 @@
   .trip-head p {
     margin: 0.15rem 0 0;
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .trip-head-actions {
@@ -2982,7 +2982,7 @@
     background: var(--card-bg);
     color: var(--text-secondary);
     font: inherit;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     cursor: pointer;
   }
 
@@ -2997,7 +2997,7 @@
     align-items: center;
     gap: 0.35rem;
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .stage-strip {
@@ -3039,7 +3039,7 @@
   }
 
   .stage-summary strong {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .stage-summary small,
@@ -3068,7 +3068,7 @@
   .stage-fields select {
     min-height: 2.15rem;
     padding: 0.4rem 0.5rem;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .stage-modes {
@@ -3112,7 +3112,7 @@
   .past-summary p {
     margin: 0;
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .past-summary .past-intent {
@@ -3140,7 +3140,7 @@
   .history-list time,
   .history-list span {
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .history-list strong,
@@ -3199,7 +3199,7 @@
     margin-top: 0.15rem;
     overflow: hidden;
     color: var(--text-tertiary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     text-overflow: ellipsis;
     white-space: nowrap;
   }
@@ -3295,7 +3295,7 @@
 
   .calendar-anchors > header > a {
     color: var(--primary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .calendar-anchors ol {
@@ -3327,7 +3327,7 @@
 
   .calendar-anchors li div > a,
   .calendar-anchors li strong {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     font-weight: 650;
   }
 
@@ -3375,13 +3375,13 @@
     border: 1px solid var(--card-border);
     border-radius: var(--radius);
     color: var(--text-secondary);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
   }
 
   .source-notice {
     margin: 0 0 0.75rem;
     color: var(--warning-ink);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .results-grid {
@@ -3452,7 +3452,7 @@
   }
 
   .event-list a {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     font-weight: 600;
   }
 
@@ -3465,7 +3465,7 @@
     overflow: hidden;
     margin: 0.15rem 0;
     color: var(--text-secondary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
     line-clamp: 2;
@@ -3520,7 +3520,7 @@
   }
 
   .activity-list a {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     font-weight: 600;
   }
 
@@ -3529,7 +3529,7 @@
     overflow: hidden;
     margin: 0.2rem 0 0;
     color: var(--text-secondary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     -webkit-box-orient: vertical;
     -webkit-line-clamp: 2;
     line-clamp: 2;
@@ -3541,7 +3541,7 @@
     border: 1px solid var(--card-border);
     border-radius: var(--radius);
     color: var(--text-tertiary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .empty a {
@@ -3567,7 +3567,7 @@
   }
 
   .itinerary-heading strong {
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .saved-notice {
@@ -3576,7 +3576,7 @@
     border-radius: var(--radius-sm);
     background: var(--success-soft);
     color: var(--success);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
   }
 
   .itinerary-empty {
@@ -3589,7 +3589,7 @@
 
   .itinerary-empty p {
     margin: 0.5rem 0 0;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .itinerary-list li {
@@ -3632,7 +3632,7 @@
 
   .itinerary-list strong {
     margin: 0.1rem 0;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .itinerary-list button {

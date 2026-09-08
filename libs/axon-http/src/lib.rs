@@ -120,14 +120,23 @@ fn header_token(raw: &str) -> String {
     }
 }
 
-/// A client builder that already carries the user-agent and the timeout.
+/// A client builder that already carries the user-agent, the timeout and the redirect
+/// policy.
 ///
 /// For the four sites that need an option this crate does not decide: gzip
 /// (`comms/google.rs`, `comms/media.rs`, `calendar/google_sync/auth.rs`), a cookie
 /// store (`finance/price.rs`), a redirect policy (`comms/media.rs`) and the one
 /// deliberate user-agent override (`scouting/adapters/meetup.rs`, which spoofs a
 /// browser because the site refuses anything else). Calling `.user_agent()` again on
-/// the result replaces the default, which is what that override relies on.
+/// the result replaces the default, which is what that override relies on, and
+/// `.redirect()` replaces the policy the same way — comms is the one caller that does,
+/// because its chain has an allowlist this crate does not know about.
+///
+/// [`guard::redirect_policy`] is set here rather than left to the caller because a
+/// redirect is the one hop a caller cannot see. Thirty-three of the thirty-four call
+/// sites in this workspace ran reqwest's default, which follows ten hops and checks
+/// nothing (`rg 'axon_http::(client|builder)\('` against `rg '\.redirect\('`,
+/// 2026-09-08).
 ///
 /// The result is not cached — the caller's extra options are invisible to this crate,
 /// so two callers with the same purpose could not safely share one client.
@@ -135,6 +144,7 @@ pub fn builder(purpose: Purpose, timeout: Duration) -> reqwest::blocking::Client
     reqwest::blocking::Client::builder()
         .user_agent(user_agent(purpose))
         .timeout(timeout)
+        .redirect(guard::redirect_policy())
 }
 
 type Pool = Mutex<HashMap<(Purpose, Duration), reqwest::blocking::Client>>;

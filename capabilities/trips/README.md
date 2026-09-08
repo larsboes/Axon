@@ -350,6 +350,22 @@ seven fields across 13 distinct trip types. That measurement is why `template_ke
 text over the notes' own vocabulary rather than a template table — a template is a filter
 over attributes the data already carries, and a second copy of a filter drifts.
 
+**What shipped is the write PATH. No import has been run.** Measured 2026-09-08 on a copy of
+the deployment's database: `interior_item` holds 29 `piece` and 18 `slot` rows and **no
+`gear` row at all**, no row carries any of the seven attributes, and no `interior_item_state`
+row carries the import's note. The 65 notes are still only notes. B51 lifted a refusal, which
+is not the same event as a write, and a reader of "gear import shipped" can take it for one —
+so the distinction is written here rather than left to be inferred. Running
+`trips gear import --apply` is the operator's, against a live interior.
+
+The path itself was checked rather than assumed, on the same date and against a temp
+database, never the deployment's: the body this side sends deserializes into interior's
+`Item`, and the row comes back `kind = gear` with all seven attributes. What has no test on
+either side is the two capabilities agreeing — interior's handler is not exercised by any
+trips test and cannot be, because a capability may not depend on a sibling's crate.
+`interior_client`'s own tests pin the half trips owns: the body is one flat object, because
+interior flattens the item and a nested one would be a 422 per proposal.
+
 ## Why a capability
 
 Trip planning is a bounded domain with its own persistent state. Putting plan items in

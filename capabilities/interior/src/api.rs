@@ -921,7 +921,27 @@ pub async fn serve(flat: &str, port: u16) {
     let state = Arc::new(AppState {
         flat: flat.to_string(),
     });
-    let app = Router::new()
+    axon_server::serve_local("interior", port, build_router(state)).await;
+}
+
+/// Der Name dieser Capability, fuer die Umgebungsvariable der Origin-Sperre
+/// (`AXON_INTERIOR_ALLOWED_ORIGIN_HOSTS`).
+const CAPABILITY: &str = "interior";
+
+/// Der verdrahtete Router, damit ein Test das echte Ding fahren kann statt einen Handler.
+///
+/// Diese Capability traegt keine CORS-Schicht, also kann eine fremde Seite die Antwort
+/// nicht lesen — und genau das hat die Luecke verdeckt. `POST /api/vault/writeback` nimmt
+/// keinen Request-Body, ist damit eine *einfache* Anfrage im Sinne von CORS, laeuft ohne
+/// Preflight und schreibt in die Obsidian-Vault. Ob der Browser die Antwort danach
+/// weiterreicht, ist fuer einen Schreibvorgang gleichgueltig; er ist schon passiert. Die
+/// Sperre weist die Anfrage zurueck, bevor der Handler laeuft, und schliesst das.
+///
+/// Die Sperre liegt absichtlich unter allen Routen: axum umhuellt nur die Routen, die VOR
+/// einem `.layer()`-Aufruf registriert wurden (axum 0.7 `src/docs/routing/layer.md`), eine
+/// darunter angehaengte Route verloere sie stillschweigend.
+fn build_router(state: Arc<AppState>) -> Router {
+    Router::new()
         .route("/", get(index))
         .route("/health", get(health))
         .route("/routes", get(routes))
@@ -959,8 +979,12 @@ pub async fn serve(flat: &str, port: u16) {
         .route("/api/search", post(api_search))
         .route("/api/compose", post(api_compose))
         .route("/api/auftraege/:id", get(api_auftrag))
-        .with_state(state);
-    axon_server::serve_local("interior", port, app).await;
+        // NEUE ROUTEN UEBER DIESE ZEILE. Darunter verlieren sie die Origin-Sperre.
+        .layer(axum::middleware::from_fn_with_state(
+            CAPABILITY,
+            axon_server::origin::refuse_foreign_origins,
+        ))
+        .with_state(state)
 }
 
 #[cfg(test)]
@@ -975,6 +999,74 @@ mod route_manifest_tests {
             fehlend.is_empty(),
             "ausgeliefert, aber nicht beschrieben: {fehlend:?}"
         );
+    }
+}
+
+/// Der Beweis auf Router-Ebene, den die Praedikat-Tests in `libs/axon-server` nicht fuehren
+/// koennen: eine Route UNTER dem `.layer()`-Aufruf besteht jeden Test von
+/// `origin_allowed_by` und antwortet einer fremden Seite trotzdem.
+///
+/// `tower::ServiceExt::oneshot` statt eines Loopback-Listeners, damit der Test weder einen
+/// Port noch einen HTTP-Client braucht.
+///
+/// `/routes` ist die Gegenprobe und nicht `/api/inventory`: jeder Datenhandler hier oeffnet
+/// die SQLite-Datei der Installation, und das darf ein Test nicht. Die Zurueckweisung wird
+/// auf den Datenrouten geprueft, wo die Sperre vor dem Handler antwortet und nichts oeffnet.
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    async fn antwort(methode: &str, pfad: &str, origin: Option<&str>) -> StatusCode {
+        let mut anfrage = Request::builder().method(methode).uri(pfad);
+        if let Some(origin) = origin {
+            anfrage = anfrage.header("origin", origin);
+        }
+        build_router(Arc::new(AppState {
+            flat: "wohnung".to_string(),
+        }))
+        .oneshot(anfrage.body(Body::empty()).unwrap())
+        .await
+        .expect("der Router antwortet")
+        .status()
+    }
+
+    /// `POST /api/vault/writeback` nimmt keinen Body und ist damit als einfache Anfrage
+    /// ohne Preflight erreichbar. Genau deshalb weist die Sperre die Anfrage zurueck,
+    /// statt nur einen Antwort-Header wegzulassen.
+    #[tokio::test]
+    async fn eine_fremde_seite_erreicht_weder_das_inventar_noch_die_vault() {
+        for (methode, pfad) in [
+            ("GET", "/api/inventory"),
+            ("GET", "/api/wishlist"),
+            ("GET", "/api/model"),
+            ("POST", "/api/vault/writeback"),
+            ("POST", "/api/items"),
+        ] {
+            assert_eq!(
+                antwort(methode, pfad, Some("https://evil.example")).await,
+                StatusCode::FORBIDDEN,
+                "{methode} {pfad} hat einer fremden Herkunft geantwortet — die Route steht unter der Sperre"
+            );
+        }
+    }
+
+    /// Die andere Haelfte. 200 von `/routes` heisst: ein Handler hat geantwortet.
+    #[tokio::test]
+    async fn das_dashboard_und_ein_nicht_browser_aufrufer_erreichen_den_handler() {
+        for origin in [
+            None,
+            Some("http://localhost:47117"),
+            Some("https://mac.tailnet.ts.net"),
+        ] {
+            assert_eq!(
+                antwort("GET", "/routes", origin).await,
+                StatusCode::OK,
+                "die Sperre hat einen Aufrufer zurueckgewiesen, den sie zulassen muss: {origin:?}"
+            );
+        }
     }
 }
 
@@ -1092,6 +1184,32 @@ mod tests {
         assert_eq!(a.stand.len(), AUFTRAEGE_MAX, "und keiner ist verschwunden");
         assert!((0..AUFTRAEGE_MAX as u64).all(|id| a.stand.contains_key(&id)));
     }
+
+    /// Eine einzige Panik unter der Sperre beendete bis hierher die drei Wege, die
+    /// die Karte anfassen: `expect("Auftragskarte")` auf einem vergifteten Schloss
+    /// ist die zweite Panik, und `map_err(boom)` im Abholer waere 500 fuer die
+    /// Lebensdauer des Prozesses gewesen.
+    ///
+    /// Das vergiftet die echte prozessweite Karte mit Absicht. Dass jeder andere
+    /// Test in dieser Binaerdatei danach weiterlaeuft, ist die Zusage unter den
+    /// ausgeschriebenen.
+    #[test]
+    fn eine_vergiftete_auftragskarte_legt_weiter_an_und_liest_weiter() {
+        let vergiften = std::thread::spawn(|| {
+            let _sperre = super::auftraege();
+            panic!("jemand ist mit der Auftragskarte in der Hand gestuerzt");
+        })
+        .join();
+        assert!(vergiften.is_err(), "der Hilfsfaden muss wirklich stuerzen");
+
+        let id = super::auftraege()
+            .anlegen()
+            .expect("die Karte legt weiter an");
+        assert!(
+            super::auftraege().stand.contains_key(&id),
+            "eine erholte Sperre muss den Eintrag noch zeigen"
+        );
+    }
 }
 
 // ---------------------------------------------------------------- lange Rechnungen
@@ -1166,9 +1284,34 @@ impl Auftraege {
     }
 }
 
-fn auftraege() -> &'static std::sync::Mutex<Auftraege> {
+/// Die Auftragskarte, gesperrt, mit einem vergifteten Schloss erholt statt weitergereicht.
+///
+/// Sie gibt die Sperre zurueck und nicht den `Mutex`: drei Aufrufstellen schrieben je eine
+/// eigene Behandlung — zweimal `expect("Auftragskarte")`, einmal `map_err(boom)` — und eine
+/// Entscheidung, die an jeder Aufrufstelle wiederholt wird, faellt an der vierten anders aus.
+/// Jetzt sperrt nur diese Stelle, also muss auch nur diese Stelle stimmen.
+///
+/// **Erholen, nicht toedlich.** Vergiftet ist das Schloss, wenn jemand mit der Sperre in der
+/// Hand in Panik geraten ist. Unter der Sperre liegt nichts Dauerhaftes: `Auftraege` ist eine
+/// `BTreeMap` von Nummern auf Zustaende im Prozess, sicheres Rust kann sie nicht halb
+/// beschrieben hinterlassen, und der schlechteste Fall ist ein Eintrag, der `Laeuft` sagt,
+/// waehrend sein Faden weg ist — genau der Zustand, den `anlegen` schon kennt und nicht
+/// verdraengt.
+///
+/// Die Kosten der Gegenrichtung sind das Argument. Ein `expect` auf ein vergiftetes Schloss
+/// ist eine zweite Panik, also wuerden `POST /api/search`, `POST /api/compose` und
+/// `GET /api/auftraege/:id` fuer die Lebensdauer des Prozesses umfallen, weil irgendwann
+/// einmal jemand mit der Sperre gestuerzt ist — und das Ergebnis einer Suche, die Minuten
+/// gelaufen ist, waere unerreichbar. Dieselbe Wahl trifft
+/// `capabilities/scouting/src/config.rs`' `env_lock` mit derselben Begruendung.
+///
+/// Was das ausdruecklich NICHT tut: die erste Panik verstecken. Die laeuft weiter auf, landet
+/// in der Standardfehlerausgabe des Runners und bleibt das, was man liest.
+fn auftraege() -> std::sync::MutexGuard<'static, Auftraege> {
     static A: std::sync::OnceLock<std::sync::Mutex<Auftraege>> = std::sync::OnceLock::new();
     A.get_or_init(|| std::sync::Mutex::new(Auftraege::default()))
+        .lock()
+        .unwrap_or_else(|vergiftet| vergiftet.into_inner())
 }
 
 /// Eine Rechnung im Hintergrund starten und sofort ihre Nummer zurueckgeben.
@@ -1181,13 +1324,11 @@ where
     F: FnOnce() -> Result<serde_json::Value, String> + Send + 'static,
 {
     let id = auftraege()
-        .lock()
-        .expect("Auftragskarte")
         .anlegen()
         .map_err(|e| (StatusCode::SERVICE_UNAVAILABLE, e))?;
     tokio::task::spawn_blocking(move || {
         let ergebnis = f();
-        let mut a = auftraege().lock().expect("Auftragskarte");
+        let mut a = auftraege();
         if let Some((_, stand)) = a.stand.get_mut(&id) {
             *stand = match ergebnis {
                 Ok(v) => Auftragsstand::Fertig { ergebnis: v },
@@ -1199,7 +1340,7 @@ where
 }
 
 async fn api_auftrag(Path(id): Path<u64>) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let a = auftraege().lock().map_err(boom)?;
+    let a = auftraege();
     let (start, stand) = a
         .stand
         .get(&id)

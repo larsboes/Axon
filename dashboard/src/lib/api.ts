@@ -266,6 +266,12 @@ export interface ScoutingOpportunity {
   latitude: number | null;
   longitude: number | null;
   event_route: EventRoute | null;
+  /** What this row is worth protecting, from the source that fetched it.
+   *
+   *  Declared per source in `scouting.json` and resolved by the server, never by a row:
+   *  an opportunity whose source declares nothing is `c1`, the fail-closed default, which
+   *  is what every hardcoded adapter answers. `c0` means somebody said so. */
+  data_class: DataClass;
 }
 
 export interface ScoutingSource {
@@ -276,6 +282,10 @@ export interface ScoutingSource {
   root_path: string | null;
   url: string | null;
   opportunity_type: string;
+  /** The declaration behind every row this source fetched. `c1` here is either what the
+   *  source declared or what its silence means — `GET /opportunities` cannot tell those
+   *  apart and neither can this. */
+  data_class: DataClass;
 }
 
 export interface AxonStatusHealth {
@@ -2128,6 +2138,16 @@ export interface CalendarEntry {
   payload: unknown;
   created_at: string;
   updated_at: string;
+  /** What this entry is worth protecting, as the three entry LISTS state it since
+   *  2026-09-08: `/api/entries`, `/api/proposals` and `/api/google/drafts`.
+   *
+   *  Calendar declares one class for the whole source rather than one per row —
+   *  `capabilities/calendar/src/content.rs`, `classification()`: "where the operator is
+   *  and when is personal, whatever the event itself is". So this is c1 on every row a
+   *  list serves, and the `?` is the contract gap, not caution: `GET /api/entries/:id`,
+   *  the create and the patch answer with the bare row and state no class. A reader
+   *  treats `undefined` as "not stated", which is not the same claim as any of the four. */
+  data_class?: DataClass;
 }
 
 export interface CalendarNewEntry {
@@ -2704,6 +2724,17 @@ export interface Task {
   projects: string[];
   /** `obsidian://open?…` — where the operator goes to act on it. */
   uri: string;
+  /** What the note is worth protecting, decided by `content-item`'s vault classifier:
+   *  the folder sets it, the note's own `class:` key overrides it (PRD Q9a).
+   *
+   *  Not optional, unlike the feed's and the calendar's: `/api/tasks` is the only route
+   *  the vault server serves, so there is no second path a task can arrive by without
+   *  one. Never `c0` — publishing is an act, and no folder means "already public". */
+  data_class: DataClass;
+  /** Why that class, in the classifier's words. The one branch the value cannot show is a
+   *  note whose `class:` key is not a class at all: it is refused rather than honoured or
+   *  escalated, so it reads as its folder's default and only this sentence says so. */
+  data_class_rationale: string;
 }
 
 export type TaskStatus = 'open' | 'done';

@@ -275,11 +275,53 @@ struct App {
 }
 
 impl App {
+    /// The four accessors below, and nothing else, take these two locks.
+    ///
+    /// **A poisoned lock is recovered, not fatal**, and the choice is the same for both
+    /// because both hold the same kind of thing: a plain in-memory value with no durable
+    /// invariant behind it. `Scape` is what is playing; `Option<Holder>` is which browser
+    /// owns the audio output and when it last checked in. Safe Rust cannot leave either half
+    /// written, the persister works off a broadcast copy rather than off the lock, and the
+    /// worst state a panic can leave is a holder whose `last_seen` is stale — which
+    /// [`App::host`] already treats as no holder, because expiry is decided on read.
+    ///
+    /// `expect("host lock poisoned")` was the shape before, nine times over. One panic under
+    /// any guard would have made `GET /api/soundscape/state`, `/stream`, `/host/claim` and
+    /// `/host/release` all panic for the life of the process — a panel that is dead until a
+    /// restart, with the audio still playing and nothing able to release it. That is a
+    /// strictly worse outcome than reading a value the panic did not corrupt.
+    ///
+    /// The first panic still unwinds and still reaches the runner's stderr. This hides
+    /// nothing; it declines to multiply.
+    fn scape_read(&self) -> std::sync::RwLockReadGuard<'_, Scape> {
+        self.scape
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn scape_write(&self) -> std::sync::RwLockWriteGuard<'_, Scape> {
+        self.scape
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn holder_read(&self) -> std::sync::RwLockReadGuard<'_, Option<Holder>> {
+        self.holder
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn holder_write(&self) -> std::sync::RwLockWriteGuard<'_, Option<Holder>> {
+        self.holder
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     /// The live host, or none. Expiry is decided on read rather than by a clock:
     /// a host is live because it checked in recently, not because a timer has not
     /// fired yet.
     fn host(&self) -> Option<Host> {
-        let holder = self.holder.read().expect("host lock poisoned");
+        let holder = self.holder_read();
         holder
             .as_ref()
             .filter(|h| h.last_seen.elapsed() < HOST_TTL)
@@ -288,7 +330,7 @@ impl App {
 
     fn view(&self) -> StateView {
         StateView {
-            scape: self.scape.read().expect("state lock poisoned").clone(),
+            scape: self.scape_read().clone(),
             host: self.host(),
         }
     }
@@ -359,7 +401,7 @@ async fn claim_host(
     Json(claim): Json<Claim>,
 ) -> Result<Json<StateView>, (StatusCode, Json<serde_json::Value>)> {
     {
-        let mut holder = app.holder.write().expect("host lock poisoned");
+        let mut holder = app.holder_write();
         let live = holder
             .as_ref()
             .filter(|h| h.last_seen.elapsed() < HOST_TTL)
@@ -407,7 +449,7 @@ async fn claim_host(
 /// that took over from it.
 async fn release_host(State(app): State<App>, Json(release): Json<Release>) -> Json<StateView> {
     let released = {
-        let mut holder = app.holder.write().expect("host lock poisoned");
+        let mut holder = app.holder_write();
         match holder.as_ref() {
             Some(h) if h.host.id == release.id => {
                 *holder = None;
@@ -432,7 +474,7 @@ fn spawn_host_reaper(app: &App) {
         loop {
             ticker.tick().await;
             let expired = {
-                let mut holder = app.holder.write().expect("host lock poisoned");
+                let mut holder = app.holder_write();
                 match holder.as_ref() {
                     Some(h) if h.last_seen.elapsed() >= HOST_TTL => {
                         *holder = None;
@@ -455,7 +497,7 @@ fn spawn_session_reaper(app: &App) {
         loop {
             ticker.tick().await;
             let finished = {
-                let mut scape = app.scape.write().expect("state lock poisoned");
+                let mut scape = app.scape_write();
                 let finished = scape
                     .session
                     .as_ref()
@@ -503,7 +545,7 @@ async fn post_state(
 
     let origin = patch.origin;
     {
-        let mut scape = app.scape.write().expect("state lock poisoned");
+        let mut scape = app.scape_write();
         if let Some(preset) = patch.preset {
             scape.preset = preset;
         }
@@ -564,7 +606,7 @@ async fn stream(
 
 async fn health(State(app): State<App>) -> Json<serde_json::Value> {
     let host = app.host();
-    let scape = app.scape.read().expect("state lock poisoned");
+    let scape = app.scape_read();
     Json(json!({
         "ok": true,
         "version": env!("CARGO_PKG_VERSION"),
@@ -828,7 +870,7 @@ mod tests {
 
         // Age the heartbeat past the TTL rather than waiting it out.
         {
-            let mut holder = app.holder.write().expect("host lock");
+            let mut holder = app.holder_write();
             let held = holder.as_mut().expect("held");
             held.last_seen = std::time::Instant::now()
                 .checked_sub(HOST_TTL + std::time::Duration::from_secs(1))
@@ -963,6 +1005,42 @@ mod tests {
         // a state API driven by two different clients.
         let result: Result<Patch, _> = serde_json::from_str(r#"{"prest":"focus"}"#);
         assert!(result.is_err());
+    }
+
+    /// One panic under either lock used to end this capability: nine
+    /// `expect("… lock poisoned")` sites meant `GET /state`, `/stream`,
+    /// `/host/claim` and `/host/release` all panicked from then on, leaving the
+    /// audio playing with nothing able to release it.
+    ///
+    /// Each lock is poisoned separately, because recovering one and forgetting
+    /// the other would still leave the panel dead — and this test is the only
+    /// thing that would notice.
+    #[tokio::test]
+    async fn a_poisoned_lock_leaves_the_panel_answering() {
+        for poison_the_holder in [false, true] {
+            let app = test_app();
+            let victim = app.clone();
+            let poisoning = std::thread::spawn(move || {
+                if poison_the_holder {
+                    let _guard = victim.holder_write();
+                    panic!("something panicked while holding the host lock");
+                } else {
+                    let _guard = victim.scape_write();
+                    panic!("something panicked while holding the state lock");
+                }
+            })
+            .join();
+            assert!(poisoning.is_err(), "the helper thread must actually panic");
+
+            // Read: what GET /api/soundscape/state and the SSE stream both call.
+            assert_eq!(app.view().scape.preset, "edm");
+
+            // Write: the claim path, which takes the host lock and then reads both.
+            let Json(view) = claim_host(State(app.clone()), Json(claim_of("panel", false)))
+                .await
+                .expect("a recovered lock must still admit a claim");
+            assert_eq!(view.host.expect("held").id, "panel");
+        }
     }
 }
 

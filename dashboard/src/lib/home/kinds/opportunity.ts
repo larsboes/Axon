@@ -161,7 +161,9 @@ const opportunity: DecisionKind<OpportunitySource, ScoutingOpportunity> = {
   whyHere: (row, ctx) => cleanRationale(row.rationale) || opportunityRankHint(ctx, row),
   startOrDueAt: (row) => row.starts_at || null,
   candidateStatus: () => "proposed",
-  dataClass: () => null,
+  // CONTRACT: scouting resolves this from the declaration in its own config -- the source
+  // says what it collects, and a source that says nothing yields c1. Read, never computed.
+  dataClass: (row) => row.data_class ?? null,
   processingRoute: () => null,
 };
 

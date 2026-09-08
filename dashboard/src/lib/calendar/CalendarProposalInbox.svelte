@@ -171,14 +171,14 @@
 {/if}
 
 <style>
-  .hint { margin: 0 0 0.5rem; color: var(--text-secondary); font-size: 0.75rem; line-height: 1.45; }
+  .hint { margin: 0 0 0.5rem; color: var(--text-secondary); font-size: var(--text-xs); line-height: 1.45; }
   .message { margin: 0 0 0.5rem; padding: 0.5rem 0.6rem; border-radius: var(--radius-sm); font-size: 0.78rem; }
   .error { color: var(--danger); background-color: var(--danger-soft); }
   .empty { margin: 0; color: var(--text-tertiary); font-size: 0.78rem; }
   .proposal-list { display: flex; flex-direction: column; }
   .proposal { padding: 0.6rem 0; border-top: 1px solid var(--card-border); }
   .details { min-width: 0; }
-  .details strong { display: block; font-size: 0.8125rem; font-weight: 600; }
+  .details strong { display: block; font-size: var(--text-sm); font-weight: 600; }
   .details p { margin: 0.15rem 0 0; color: var(--text-secondary); font-size: 0.72rem; }
   .details .source { color: var(--text-tertiary); }
   .details .analysis-meta { margin-top: 0.35rem; font-weight: 600; text-transform: capitalize; }

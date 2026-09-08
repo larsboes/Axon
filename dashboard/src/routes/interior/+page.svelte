@@ -969,7 +969,7 @@
             {planNew ? "Cancel" : "+ New plan"}
           </button>
           {#if planNew}
-            <input placeholder="bett-an-der-ostwand" bind:value={newId} />
+            <input aria-label="Id for the new plan" placeholder="bett-an-der-ostwand" bind:value={newId} />
             <label>
               <input type="checkbox" bind:checked={newCopy} disabled={selected === null} />
               start from {selected ?? "an empty room"}
@@ -1072,7 +1072,7 @@
             <button class="ghost" disabled={!dirty || savingPlan} onclick={savePlan}>
               {savingPlan ? "Saving…" : "Save into this layout"}
             </button>
-            <input placeholder="save as new id…" bind:value={saveAs} />
+            <input aria-label="Id to save this layout as" placeholder="save as new id…" bind:value={saveAs} />
             <button class="ghost" disabled={!saveAs.trim() || savingPlan} onclick={savePlanAs}>
               Save as
             </button>
@@ -1782,7 +1782,7 @@
     border-radius: var(--radius-sm);
     color: var(--text-secondary);
     cursor: pointer;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     padding: 0.4rem 0.85rem;
   }
   .views button.active {
@@ -1834,11 +1834,11 @@
   .variants .tally,
   .measured {
     color: var(--text-tertiary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
   .verdict {
     color: var(--danger);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
@@ -1856,11 +1856,11 @@
   }
   .where strong {
     color: var(--text-primary);
-    font-size: 0.9375rem;
+    font-size: var(--text-base);
   }
   .where .id {
     color: var(--text-tertiary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   /* The list of plans and the way to add one are one grid column, not two. */
@@ -1882,7 +1882,7 @@
     color: var(--text-secondary);
     cursor: pointer;
     font: inherit;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     padding: 0.35rem 0.7rem;
   }
   .newplan button:disabled {
@@ -1895,7 +1895,7 @@
     border-radius: 5px;
     color: var(--text-primary);
     font: inherit;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     padding: 0.3rem 0.45rem;
     width: 100%;
   }
@@ -1976,7 +1976,7 @@
   }
   .corridors caption {
     color: var(--text-tertiary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     padding-bottom: 0.35rem;
     text-align: left;
   }
@@ -1988,7 +1988,7 @@
   .corridors th,
   .corridors td {
     border-top: 1px solid var(--card-border);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     padding: 0.3rem 0;
   }
   .corridors td {
@@ -2005,7 +2005,7 @@
   .violations li {
     border-left: 2px solid var(--danger);
     color: var(--text-secondary);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     padding-left: 0.6rem;
   }
   .violations.soft li {
@@ -2021,7 +2021,7 @@
   .rule-text {
     color: var(--text-tertiary);
     display: block;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     margin-top: 0.15rem;
   }
 
@@ -2060,7 +2060,7 @@
     color: var(--text-secondary);
     cursor: pointer;
     font: inherit;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     padding: 0.3rem 0.7rem;
   }
 
@@ -2075,14 +2075,14 @@
     border-radius: 5px;
     color: var(--text-primary);
     font: inherit;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     padding: 0.3rem 0.45rem;
     width: 9rem;
   }
 
   .planbar .moved {
     color: var(--warning-ink);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     margin-right: 0.2rem;
   }
 
@@ -2102,7 +2102,7 @@
     color: var(--card-bg);
     cursor: pointer;
     font: inherit;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     padding: 0.3rem 0.7rem;
   }
 
@@ -2150,7 +2150,7 @@
 
   .editor .id {
     color: var(--text-tertiary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     font-weight: 400;
   }
 
@@ -2282,13 +2282,13 @@
     align-items: center;
     color: var(--warning-ink);
     display: flex;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     gap: 0.35rem;
     margin: 0.85rem 0 0;
   }
 
   .budget h2 {
-    font-size: 0.9375rem;
+    font-size: var(--text-base);
     margin: 0 0 0.5rem;
   }
   .budget .sum {
@@ -2305,11 +2305,11 @@
   .upper,
   .over {
     color: var(--text-tertiary);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
   }
   .finance {
     color: var(--text-secondary);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     margin: 0.75rem 0 0;
   }
   .finance strong {
@@ -2322,7 +2322,7 @@
   .group {
     align-items: baseline;
     display: flex;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     gap: 0.35rem;
     letter-spacing: 0.06em;
     margin: 1.5rem 0 0.6rem;
@@ -2359,7 +2359,7 @@
     background: var(--primary-soft);
     border-radius: var(--radius-sm);
     color: var(--text-secondary);
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     padding: 0.05rem 0.35rem;
   }
   .tag.slot {
@@ -2368,18 +2368,18 @@
   .dims,
   .price {
     color: var(--text-secondary);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
   }
   .unpriced {
     color: var(--warning-ink);
   }
   .guess {
     color: var(--warning-ink);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
   .target {
     color: var(--text-tertiary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     margin: 0.25rem 0 0;
   }
 
@@ -2405,13 +2405,13 @@
     border-radius: var(--radius-sm);
     color: white;
     cursor: pointer;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     padding: 0.45rem 0.9rem;
   }
   .empty,
   .error {
     color: var(--text-tertiary);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
   }
   .error {
     align-items: center;
@@ -2426,7 +2426,7 @@
   /* By how much, not whether. */
   .reserve {
     color: var(--text-secondary);
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     margin: 0.85rem 0 0;
   }
   .reserve.tight {
@@ -2438,7 +2438,7 @@
   .holds,
   .of {
     color: var(--text-tertiary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
   .holds.tight {
     color: var(--warning-ink);
@@ -2450,7 +2450,7 @@
   .reserves summary {
     color: var(--text-tertiary);
     cursor: pointer;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
   .reserves .slack {
     text-align: right;
@@ -2471,7 +2471,7 @@
   .movein li {
     border-top: 1px solid var(--card-border);
     display: grid;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     gap: 0.5rem;
     grid-template-columns: 10rem 5rem 1fr 1fr;
     padding: 0.35rem 0;
@@ -2487,7 +2487,7 @@
   /* One row per day, one column per hour: a year on four lines. */
   .sun {
     border-collapse: collapse;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     margin-top: 0.5rem;
   }
   .sun th {
@@ -2513,14 +2513,14 @@
   }
   .sunlist {
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     list-style: none;
     margin: 0.5rem 0 0;
     padding: 0;
   }
 
   .solver h2 {
-    font-size: 0.9375rem;
+    font-size: var(--text-base);
     margin: 0 0 0.5rem;
   }
   .picks {
@@ -2535,7 +2535,7 @@
     align-items: center;
     color: var(--text-secondary);
     display: inline-flex;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     gap: 0.35rem;
   }
   .stepper input,
@@ -2555,12 +2555,12 @@
     padding: 0.6rem 0;
   }
   .composed h3 {
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     margin: 0 0 0.3rem;
   }
   .places {
     color: var(--text-tertiary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     list-style: none;
     margin: 0.35rem 0 0;
     padding: 0;
@@ -2579,7 +2579,7 @@
     background: var(--surface);
     border-radius: var(--radius-sm);
     color: var(--text-secondary);
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     margin: 0.35rem 0;
     padding: 0.4rem 0.6rem;
     white-space: pre-wrap;
