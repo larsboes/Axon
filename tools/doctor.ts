@@ -459,6 +459,102 @@ export function formatFetchAge(fetchEpochSeconds: number | null, nowEpochSeconds
   return `fetched ${Math.floor(hours / 24)} day(s) ago`;
 }
 
+// --- backup receipts -------------------------------------------------------------------------
+//
+// `tools/backup.sh` writes one receipt per capability into <overlay>/backup/receipts/<cap>.json
+// after the destination's byte count matched. It is the only local record that a backup landed:
+// cleanup() removes the staging tree and the tarball, so nothing else here can answer "when was
+// the last successful backup".
+//
+// Read directly rather than through axon-status. That surface reads the same files and its
+// `backup_state` is the rule mirrored below — but it deliberately drops `target`, `tarball` and
+// `sha256` from its projection so no destination can reach an HTTP response
+// (capabilities/axon-status/src/status/backup.rs, on the Receipt struct), and those are exactly
+// the fields needed to go and look at the archive. It also has to be running, and doctor's whole
+// point is to work on a machine where things are not.
+//
+// So there are two readers of one file, in two languages, and that is a drift risk stated out
+// loud rather than hidden: the timestamp parser and the state rule below are ports of
+// `parse_receipt_ts` and `backup_state`, and doctor.test.ts pins both against a receipt written
+// in `date -u +%Y%m%dT%H%M%SZ` form, which is what backup.sh actually emits.
+export type BackupReceipt = {
+  capability?: string;
+  completed_at?: string;
+  target?: string;
+  tarball?: string;
+  bytes?: number;
+};
+
+/// `20260906T210709Z` — fixed-width UTC, the shape `date -u +%Y%m%dT%H%M%SZ` produces.
+/// null on anything else, which reads downstream as "no usable receipt": the same answer as a
+/// missing file, and the right one, because a receipt this process cannot date cannot be used to
+/// claim a backup is fresh.
+export function parseReceiptTimestamp(stamp: string): number | null {
+  const m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z$/.exec(stamp);
+  if (!m) return null;
+  const [y, mo, d, h, mi, s] = m.slice(1).map(Number);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || s > 60) return null;
+  return Math.floor(Date.UTC(y, mo - 1, d, h, mi, s) / 1000);
+}
+
+/// Age against the capability's own two thresholds — the port of axon-status' `backup_state`,
+/// including why the two words differ: `due` means the data is older than the owner said it
+/// should be, `overdue` means the schedule that should have refreshed it did not. `never` outranks
+/// everything, because a capability with a backup contract and no receipt has the problem whatever
+/// its thresholds say, and `unknown` is what a manifest declaring no cadence gets — a red badge
+/// derived from a number Axon invented is worse than no badge.
+export function backupAgeState(
+  ageSeconds: number | null,
+  adviseDays: number,
+  staleDays: number,
+): "never" | "overdue" | "due" | "unknown" | "ok" {
+  if (ageSeconds === null) return "never";
+  const days = Math.floor(ageSeconds / 86_400);
+  if (Number.isFinite(staleDays) && days >= staleDays) return "overdue";
+  if (Number.isFinite(adviseDays) && days >= adviseDays) return "due";
+  if (!Number.isFinite(staleDays) && !Number.isFinite(adviseDays)) return "unknown";
+  return "ok";
+}
+
+/// Is the archive the receipt names still AT the destination, with the byte count the receipt
+/// recorded?
+///
+/// This exists because a receipt is a claim about the past and a destination is a live directory.
+/// The vault's first archive shipped 704 MB, verified its size at the target, wrote a receipt,
+/// reported success and could never have been restored (2026-08-29, tools/backup.sh
+/// verify_archive) — and separately, the destination this deployment ships to is an iCloud folder
+/// that evicts under disk pressure, which leaves the archive listed, named, sized and not there
+/// (2026-09-08, three of four archives). Both are invisible to anything that reads only the
+/// receipt.
+///
+/// `flags` is BSD `stat -f %Sf`, empty where that is not available. `dataless` in it is macOS'
+/// SF_DATALESS: the file provider evicted the contents and kept the name.
+export function classifyArchiveAtTarget(input: {
+  exists: boolean;
+  sizeBytes: number | null;
+  flags: string;
+  receiptBytes: number;
+}): { level: "ok" | "warn" | "bad"; detail: string } {
+  if (!input.exists) {
+    return { level: "bad", detail: "the archive the receipt names is not at the destination" };
+  }
+  if (input.sizeBytes !== input.receiptBytes) {
+    return {
+      level: "bad",
+      detail: `the archive holds ${input.sizeBytes} bytes, the receipt recorded ${input.receiptBytes}`,
+    };
+  }
+  if (input.flags.split(",").includes("dataless")) {
+    return {
+      level: "warn",
+      detail:
+        "the archive is a cloud placeholder, not a file — a restore needs the network and a full download first " +
+        '(in Finder, right-click the destination and choose "Keep Downloaded")',
+    };
+  }
+  return { level: "ok", detail: `${input.receiptBytes} bytes, present at the destination` };
+}
+
 // How long a single reachability probe may take, absent an overlay saying otherwise. Public Axon
 // ships the default; a deployment that knows one of its endpoints is legitimately slow raises it
 // for that entry via `probe_timeout_ms` rather than muting the check or raising it for everything.
@@ -1829,6 +1925,161 @@ const CHECKS: Check[] = [
         } else {
           ctx.ok(`${service.name} — data arrived ${age} ago`);
         }
+      }
+    },
+  },
+
+  // Backup freshness, and then the archive itself.
+  //
+  // D10 is the argument for both halves. The vault's only backup died and stayed dead for 27 days
+  // before anyone noticed, and what made it invisible was not a subtle bug — it was that nothing
+  // asked. The dashboard has shown backup ages since (axon-status' /backups), but a dashboard is
+  // something you have to open; doctor is what runs before a change, and it said nothing about
+  // backups at all.
+  //
+  // The second half exists because the first is not enough. A receipt is a claim about a past
+  // moment, and the destination is a live directory that a full disk, an unmounted volume, a
+  // retention rule or a cloud provider's eviction can empty afterwards. Checking the receipt alone
+  // is the same instrument that reported 704 MB shipped and verified for an archive that could
+  // never have been restored.
+  {
+    name: "Backups (receipts, and the archives they name)",
+    async run(ctx) {
+      if (!ctx.overlayPath || !existsSync(ctx.overlayPath)) {
+        return ctx.warn("skipped — no overlay to read backup receipts from");
+      }
+      const proc = Bun.spawnSync({
+        cmd: [join(ctx.root, "tools/capability.sh"), "registry"],
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (proc.exitCode !== 0) return ctx.warn("capability.sh registry failed — skipping");
+      let registry: Array<Record<string, string>>;
+      try {
+        registry = JSON.parse(proc.stdout.toString());
+      } catch {
+        return ctx.warn("capability.sh registry did not return JSON — skipping");
+      }
+
+      // The machine's own enabled list, exactly as the freshness check above uses it: the registry
+      // answers for both roots, and this must only speak about contracts that run here. `scope`
+      // drops a capability this machine merely consumes — its data lives on the deployment that
+      // provides it, and so does its backup (tools/backup-all.sh makes the same cut).
+      const enabled = new Set<string>(
+        Array.isArray(ctx.machineToml?.capabilities) ? ctx.machineToml.capabilities : [],
+      );
+      const contracts = registry.filter(
+        (s) => s.backup_target && s.scope !== "external" && (enabled.size === 0 || enabled.has(s.name)),
+      );
+      if (contracts.length === 0) return ctx.ok("no capability on this machine declares a backup contract");
+
+      // Destination coordinates are a fact about a deployment, so they are in the overlay. An
+      // unreadable file is the overlay's finding, not this one's — say the archives could not be
+      // located rather than reporting every one of them missing.
+      let targets: Record<string, any> = {};
+      const systemsLocal = join(ctx.overlayPath, "config", "systems.local.toml");
+      if (existsSync(systemsLocal)) {
+        try {
+          targets = await readToml(systemsLocal);
+        } catch {
+          ctx.warn("overlay systems.local.toml is unreadable — archives cannot be located");
+        }
+      }
+
+      const now = Math.floor(Date.now() / 1000);
+      for (const service of contracts) {
+        const declared = (v: string | undefined) => (v && v.trim() !== "" ? Number(v) : Number.NaN);
+        const advise = declared(service.backup_advise_days);
+        const stale = declared(service.backup_stale_days);
+        const receiptPath = join(ctx.overlayPath, "backup", "receipts", `${service.name}.json`);
+        let receipt: BackupReceipt | null = null;
+        if (existsSync(receiptPath)) {
+          try {
+            receipt = JSON.parse(readFileSync(receiptPath, "utf8")) as BackupReceipt;
+          } catch {
+            // An unreadable receipt is not a fresh backup. Falling through to `never` is the
+            // honest reading and matches axon-status, which parses the same file with the same
+            // "unparseable means no usable receipt" rule.
+            ctx.bad(`${service.name} — ${receiptPath} is not readable JSON; treat this contract as unverified`);
+            continue;
+          }
+        }
+        const at = receipt?.completed_at ? parseReceiptTimestamp(receipt.completed_at) : null;
+        // saturating: a receipt dated in the future is a clock problem, not a negative age.
+        const age = at === null ? null : Math.max(0, now - at);
+        const state = backupAgeState(age, advise, stale);
+        const days = age === null ? 0 : (age / 86_400).toFixed(1);
+        switch (state) {
+          case "never":
+            ctx.bad(`${service.name} — declares a backup contract and has no usable receipt; nothing has ever landed (tools/backup.sh ${service.name})`);
+            continue;
+          case "overdue":
+            ctx.bad(`${service.name} — last backup ${days}d ago, past its ${stale}d stale threshold; the schedule that should refresh it is not working`);
+            break;
+          case "due":
+            ctx.warn(`${service.name} — last backup ${days}d ago (due past ${advise}d)`);
+            break;
+          case "unknown":
+            ctx.warn(`${service.name} — last backup ${days}d ago, and the manifest declares no cadence to judge that against`);
+            break;
+          default:
+            ctx.ok(`${service.name} — backed up ${days}d ago`);
+        }
+
+        // Now go and look. Everything below is about the artifact, not the record of it.
+        const targetId = receipt?.target ?? "";
+        const tarball = receipt?.tarball ?? "";
+        const bytes = typeof receipt?.bytes === "number" ? receipt.bytes : Number.NaN;
+        if (!targetId || !tarball || !Number.isFinite(bytes)) {
+          ctx.warn(`${service.name} — its receipt names no target/tarball/bytes, so the archive cannot be verified`);
+          continue;
+        }
+        const target = targets[targetId];
+        if (!target) {
+          ctx.warn(`${service.name} — receipt names target '${targetId}', which the overlay does not declare`);
+          continue;
+        }
+        // `ssh` is the default kind, exactly as tools/backup.sh resolves it.
+        const kind = typeof target.kind === "string" && target.kind ? target.kind : "ssh";
+        if (kind !== "local") {
+          // Not a gap that can be closed here. Reaching a push target costs an ssh round trip and
+          // an unlocked vault agent (backup.sh says so at its head), and doctor is offline by
+          // contract. Reported as a skip with the reason, never passed over — "nothing to check"
+          // must not read as "checked fine".
+          ctx.ok(`${service.name} — archive not verified: target '${targetId}' is kind=${kind}, which needs ssh and an unlocked vault`);
+          continue;
+        }
+        const rawPath = typeof target.path === "string" ? target.path : "";
+        if (!rawPath) {
+          ctx.warn(`${service.name} — target '${targetId}' is kind=local and declares no path`);
+          continue;
+        }
+        const archive = join(expandHome(rawPath), service.name, tarball);
+        // stat, never read. The archive is up to 4 GB and, at this destination, may be an evicted
+        // placeholder — opening one would pull the whole thing back over the network, which is the
+        // opposite of what a health check should cost.
+        let exists = false;
+        let size: number | null = null;
+        try {
+          size = statSync(archive).size;
+          exists = true;
+        } catch {
+          exists = false;
+        }
+        // BSD st_flags, the only place SF_DATALESS is visible. `stat -f` is BSD-only and Node's
+        // Stats does not carry st_flags at all, so this is a shell-out on Darwin and an empty
+        // string everywhere else — which classifyArchiveAtTarget reads as "not asked", not as
+        // "not evicted".
+        let flags = "";
+        if (exists && process.platform === "darwin") {
+          const st = Bun.spawnSync({ cmd: ["stat", "-f", "%Sf", archive], stdout: "pipe", stderr: "pipe" });
+          if (st.exitCode === 0) flags = st.stdout.toString().trim();
+        }
+        const verdict = classifyArchiveAtTarget({ exists, sizeBytes: size, flags, receiptBytes: bytes });
+        const line = `${service.name} — ${tarball}: ${verdict.detail}`;
+        if (verdict.level === "bad") ctx.bad(line);
+        else if (verdict.level === "warn") ctx.warn(line);
+        else ctx.ok(line);
       }
     },
   },

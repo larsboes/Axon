@@ -10,7 +10,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  backupAgeState,
   checkStateMountCoverage,
+  classifyArchiveAtTarget,
+  parseReceiptTimestamp,
   classifyProbeOutcome,
   resolveProbeTargets,
   PROBE_TIMEOUT_MS,
@@ -603,5 +606,62 @@ describe("systems reachability failure classification", () => {
     // caller resolves DNS before it ever gets here. Asserted so the precondition cannot be
     // quietly dropped from the probe without a test going red.
     expect(classifyProbeOutcome({ code: "ConnectionRefused" })).toBe("refused");
+  });
+});
+
+describe("backup receipts", () => {
+  test("the receipt stamp backup.sh actually writes parses to its UTC epoch", () => {
+    // The exact string tools/backup.sh emits — `date -u +%Y%m%dT%H%M%SZ` — copied from the live
+    // overlay's finance receipt on 2026-09-08. A stamp invented here would only prove that this
+    // parser agrees with itself.
+    expect(parseReceiptTimestamp("20260906T210709Z")).toBe(Date.UTC(2026, 8, 6, 21, 7, 9) / 1000);
+  });
+
+  test("anything that is not that shape is no usable receipt, never a guess", () => {
+    // Each of these would date a backup wrongly if it were coerced, and a wrongly dated backup
+    // reports fresh. ISO-with-separators is the near miss worth pinning: it is what a second
+    // writer would naturally emit, and it must be refused rather than half-read.
+    for (const bad of ["2026-09-06T21:07:09Z", "20260906T210709", "20261306T210709Z", "", "never"]) {
+      expect(parseReceiptTimestamp(bad)).toBeNull();
+    }
+  });
+
+  test("the two thresholds mean different things, and never outranks both", () => {
+    const day = 86_400;
+    // capabilities/store's real contract: advise 1, stale 2.
+    expect(backupAgeState(null, 1, 2)).toBe("never");
+    expect(backupAgeState(2 * 3600, 1, 2)).toBe("ok");
+    expect(backupAgeState(1.8 * day, 1, 2)).toBe("due");
+    expect(backupAgeState(2.1 * day, 1, 2)).toBe("overdue");
+    // A manifest that declares no cadence gets no invented one.
+    expect(backupAgeState(400 * day, Number.NaN, Number.NaN)).toBe("unknown");
+    // A zero threshold is a declaration, not an absence: `stale = 0` is the strictest contract
+    // expressible, and `stale || default` would turn it into the loosest.
+    expect(backupAgeState(60, 0, 0)).toBe("overdue");
+  });
+
+  test("a receipt whose archive is gone or short is a failure, not a fresh backup", () => {
+    expect(classifyArchiveAtTarget({ exists: false, sizeBytes: null, flags: "", receiptBytes: 2361 }).level)
+      .toBe("bad");
+    expect(classifyArchiveAtTarget({ exists: true, sizeBytes: 12, flags: "", receiptBytes: 2361 }).level)
+      .toBe("bad");
+    expect(classifyArchiveAtTarget({ exists: true, sizeBytes: 2361, flags: "-", receiptBytes: 2361 }).level)
+      .toBe("ok");
+  });
+
+  test("an evicted archive is listed, named, correctly sized and not there", () => {
+    // The live destination's own flag string on 2026-09-08, for capabilities/store's archive.
+    // This is the case the shipped detector could not see: every other signal about it is right.
+    const verdict = classifyArchiveAtTarget({
+      exists: true,
+      sizeBytes: 39_973_563,
+      flags: "compressed,dataless",
+      receiptBytes: 39_973_563,
+    });
+    expect(verdict.level).toBe("warn");
+    expect(verdict.detail).toContain("cloud placeholder");
+    // `compressed` on its own is ordinary APFS compression and says nothing about eviction.
+    expect(classifyArchiveAtTarget({ exists: true, sizeBytes: 10, flags: "compressed", receiptBytes: 10 }).level)
+      .toBe("ok");
   });
 });
