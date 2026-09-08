@@ -7,7 +7,8 @@
 //! geocoder base. The guard belongs on the way in to `client.get(url)`, which is
 //! this crate, so one lib owns both halves of the same door.
 //!
-//! Two rules, and they close two halves of one hole:
+//! Three rules. The first two close two halves of one hole, and the third closes the
+//! door the first two cannot see through:
 //!
 //! - [`check_scheme`] refuses anything that is not plain http(s). `file://` would
 //!   make an extractor read the local disk.
@@ -16,10 +17,16 @@
 //!   binds loopback (`libs/axon-server`), so without it an ingested link drives an
 //!   internal API from the outside. CodeQL `rust/request-forgery` reported exactly
 //!   that against comms' `extract_article`.
+//! - [`redirect_policy`] refuses a *hop* that leaves the public internet for this
+//!   machine or this network. It is opt-out rather than opt-in, because it is the one
+//!   rule a caller cannot apply for itself: the caller checks the URL it wrote, and a
+//!   redirect is by definition a URL it did not write. Every client [`super::client`]
+//!   and [`super::builder`] hand out carries it.
 //!
 //! Nothing here reads configuration. The allowlist [`check_destination`] consults is
 //! the caller's, passed as a closure so a capability that has none pays nothing and
 //! a capability that has one does not read its config file on the ordinary path.
+//! [`redirect_policy`] needs no allowlist at all — see its own note.
 
 use std::fmt;
 use std::net::{IpAddr, ToSocketAddrs};
@@ -200,6 +207,123 @@ pub fn is_public(ip: IpAddr) -> bool {
                 None => true,
             }
         }
+    }
+}
+
+/// Does every address this URL resolves to sit on the public internet?
+///
+/// `false` for a name that cannot be resolved at all, because "unknown" and "inside"
+/// have to be treated the same by anything that then decides whether to fetch it.
+/// ALL, not ANY, for the reason [`check_destination`] gives: a name that answers with
+/// one public address and one private address is the ordinary bypass.
+fn resolves_public(url: &reqwest::Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let port = url.port_or_known_default().unwrap_or(80);
+    match (host, port).to_socket_addrs() {
+        Ok(addrs) => {
+            let addrs: Vec<_> = addrs.collect();
+            !addrs.is_empty() && addrs.iter().all(|a| is_public(a.ip()))
+        }
+        Err(_) => false,
+    }
+}
+
+/// How many hops any client from this crate will follow. reqwest's own default.
+pub const MAX_REDIRECTS: usize = 10;
+
+/// The redirect policy every client this crate builds carries.
+///
+/// ## Why a default and not an option
+///
+/// [`check_destination`] checks the URL the caller handed over, and the caller is the
+/// one place a redirect is invisible. `capabilities/comms/src/media/http.rs` wrote this
+/// out first — "checking only the URL the caller handed over leaves
+/// `302 -> http://169.254.169.254/` as a complete bypass" — and then hand-rolled the
+/// policy for itself, which left it as one capability's habit rather than the crate's
+/// behaviour. Measured 2026-09-08: thirty-four call sites in this workspace build a
+/// client through this crate and exactly one of them — comms' — set a redirect policy.
+/// The other thirty-three ran reqwest's default, which follows ten hops and checks
+/// nothing, so the *remote server* chose the final destination on every scouting feed
+/// fetch, every Nominatim and Open-Meteo call, every Hugging Face dataset download and
+/// every price provider.
+///
+/// ## The rule, and why it is not "refuse every private hop"
+///
+/// A hop is refused when it leaves the public internet for this machine or this
+/// network. A chain that started inside stays free to move inside: eight call sites in
+/// this workspace point a client at `http://127.0.0.1:<port>` on purpose, because that
+/// is how one capability calls another (`capabilities/trips/src/finance_client.rs`,
+/// `interior_client.rs`, `places/src/backfill.rs`, calendar's trips client), and a
+/// policy that refused a private destination outright would break them the first time
+/// axum answered a 307. The pivot is the attack; a loopback caller reaching loopback is
+/// the architecture.
+///
+/// It also means no configuration. comms' `check_destination` needs an allowlist
+/// because `tools/demo-up` legitimately points *ingest* at loopback; this needs none,
+/// because a chain that begins at that same loopback origin is already inside.
+///
+/// ## What it does not close
+///
+/// The two residuals [`check_destination`] records are unchanged and are the same two.
+/// DNS rebinding: the name is resolved here and again by the connector, so a one-second
+/// TTL can answer public here and private there. And this resolve is synchronous inside
+/// reqwest's own runtime thread, so a slow resolver on a hop can push a request past
+/// its timeout. Neither is made worse by running the check; both are the price of
+/// checking a name rather than pinning an address.
+///
+/// The second one reaches further here than it did at comms' one-client-per-fetch call
+/// site, and the difference is worth writing down rather than inheriting. [`super::client`]
+/// pools a client per `(purpose, timeout)`, and `reqwest::blocking::Client` drives every
+/// request over one background current-thread runtime (reqwest-0.13.4
+/// `src/blocking/client.rs`, `new_current_thread` plus `tokio::spawn` per request). So a
+/// slow resolve in this callback holds up any other request in flight on the same pooled
+/// client, not only the one being redirected. It is still the right trade against
+/// following an unchecked hop, and it is the reason not to add a second resolve here.
+pub fn redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        match check_redirect(attempt.previous(), attempt.url()) {
+            Ok(()) => attempt.follow(),
+            Err(refusal) => attempt.error(refusal),
+        }
+    })
+}
+
+/// The decision [`redirect_policy`] makes, as a function of the chain so far and the
+/// next URL. Separated from the policy so it can be driven with address literals: a
+/// test of the rule must not need the internet to supply a public host, and
+/// `to_socket_addrs` parses a literal without touching a resolver.
+pub fn check_redirect(previous: &[reqwest::Url], next: &reqwest::Url) -> Result<(), Refused> {
+    // `>`, not `>=`: `previous` starts with the initial URL, which is not a redirection
+    // (reqwest-0.13.4 `src/redirect.rs`, whose own `Policy::limited` compares the same
+    // way). comms found this the hard way — with `>=` the error said ten and followed
+    // nine.
+    if previous.len() > MAX_REDIRECTS {
+        return Err(Refused(format!(
+            "refused: more than {MAX_REDIRECTS} redirects"
+        )));
+    }
+    if check_scheme(next.as_str()).is_err() {
+        return Err(Refused(format!(
+            "refused: redirect to a non-http(s) URL ({})",
+            next.scheme()
+        )));
+    }
+    // The cheap order. A public destination is the overwhelmingly common case and costs
+    // one resolution; only a private one pays for a second.
+    if resolves_public(next) {
+        return Ok(());
+    }
+    match previous.first() {
+        // The chain began inside already: one capability calling another. Staying
+        // inside is the architecture, not a pivot.
+        Some(initial) if !resolves_public(initial) => Ok(()),
+        _ => Err(Refused(format!(
+            "refused: redirect to {} leaves the public internet for this network",
+            next.host_str().unwrap_or("an unnamed host")
+        ))),
     }
 }
 
@@ -413,5 +537,177 @@ mod tests {
         // Relative, and host-less: neither names an origin.
         assert_eq!(normalize_origin("127.0.0.1:8099"), None);
         assert_eq!(normalize_origin(""), None);
+    }
+
+    fn url(raw: &str) -> reqwest::Url {
+        reqwest::Url::parse(raw).expect("a test URL parses")
+    }
+
+    /// Address literals, never names. `to_socket_addrs` parses a literal before it
+    /// resolves anything, so this whole set runs with no resolver and no network — and
+    /// a test of an SSRF rule that needed the internet to supply a public host would be
+    /// a test nobody could run offline.
+    ///
+    /// 93.184.216.34 is the documentation address for example.com (RFC 2606's name,
+    /// IANA's address); nothing here connects to it.
+    const PUBLIC: &str = "http://93.184.216.34/feed.xml";
+
+    /// The attack the crate-wide policy exists for: an operator-configured feed URL on
+    /// a public host answers 302 and names something inside this machine or this
+    /// network. `check_destination` cannot see it, because the caller never wrote it.
+    #[test]
+    fn a_redirect_off_the_public_internet_into_this_network_is_refused() {
+        for inside in [
+            // Loopback, where every Axon capability binds.
+            "http://127.0.0.1:8082/api/axon-status/capabilities",
+            "http://[::1]:8090/api/dashboard",
+            // The cloud metadata service, which is why `is_public` refuses link-local.
+            "http://169.254.169.254/latest/meta-data/",
+            // A LAN host and a tailnet peer.
+            "http://192.168.1.1/",
+            "http://100.100.100.100/",
+        ] {
+            let refusal = check_redirect(&[url(PUBLIC)], &url(inside))
+                .expect_err("a pivot inward must be refused");
+            assert!(
+                refusal.to_string().contains("leaves the public internet"),
+                "{inside}: {refusal}"
+            );
+        }
+    }
+
+    /// The control, and the reason the rule is a pivot rather than a ban. Eight call
+    /// sites in this workspace point a client at loopback on purpose, because that is
+    /// how one capability calls another; a chain that began inside may stay inside.
+    #[test]
+    fn a_chain_that_began_inside_may_stay_inside() {
+        assert!(check_redirect(
+            &[url("http://127.0.0.1:8086/api/plans")],
+            &url("http://127.0.0.1:8090/api/dashboard"),
+        )
+        .is_ok());
+    }
+
+    /// The other control: an ordinary public redirect, which is most redirects.
+    #[test]
+    fn a_public_redirect_is_followed() {
+        assert!(check_redirect(&[url(PUBLIC)], &url("http://93.184.216.34/moved")).is_ok());
+    }
+
+    /// The two limits that are not about addresses at all.
+    #[test]
+    fn the_chain_is_bounded_and_stays_on_http() {
+        let chain: Vec<_> = std::iter::repeat_n(url(PUBLIC), MAX_REDIRECTS + 1).collect();
+        let refusal = check_redirect(&chain, &url("http://93.184.216.34/again"))
+            .expect_err("the eleventh hop must be refused");
+        assert!(refusal.to_string().contains("more than 10 redirects"));
+        // One below the limit still follows, so the boundary is asserted from both
+        // sides rather than assumed.
+        let chain: Vec<_> = std::iter::repeat_n(url(PUBLIC), MAX_REDIRECTS).collect();
+        assert!(check_redirect(&chain, &url("http://93.184.216.34/again")).is_ok());
+
+        let refusal = check_redirect(&[url(PUBLIC)], &url("file:///etc/passwd"))
+            .expect_err("a scheme change must be refused");
+        assert!(refusal.to_string().contains("non-http(s)"), "{refusal}");
+    }
+}
+
+/// The policy driven through a real client, because a rule that is correct and not
+/// installed is the failure this whole crate exists to prevent.
+///
+/// Everything here is loopback, so it runs with no network. That bounds what it can
+/// prove: the refusal it exercises is the hop limit, not the pivot — reaching the
+/// pivot end to end would need a public host that answers 302, which is exactly the
+/// dependency the unit tests above avoid. What it does prove is that
+/// [`super::builder`] installs THIS policy rather than reqwest's default, which is the
+/// half a unit test of `check_redirect` cannot see.
+#[cfg(test)]
+mod wired_tests {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+
+    /// `Connection: close` on every reply, matching the stub
+    /// `capabilities/places/src/geocode.rs` already uses. Without it hyper keeps the
+    /// connection alive, this one-request-per-socket loop drops it, and the client
+    /// reports `IncompleteMessage` for a response that was in fact complete — measured
+    /// while writing these two tests.
+    fn found(location: &str) -> String {
+        format!(
+            "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+    }
+
+    fn ok(body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// Bind first, so the replies can name the port; then answer from `replies` in
+    /// order, repeating the last one. Returns the base URL.
+    fn serve(replies: impl Fn(&str) -> Vec<String>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+        let base = format!("http://{}", listener.local_addr().expect("an address"));
+        let scripted = replies(&base);
+        std::thread::spawn(move || {
+            for (index, stream) in listener.incoming().enumerate() {
+                let Ok(mut stream) = stream else { break };
+                let mut buffer = [0_u8; 4096];
+                let _ = stream.read(&mut buffer);
+                let reply = scripted
+                    .get(index)
+                    .or_else(|| scripted.last())
+                    .cloned()
+                    .unwrap_or_default();
+                let _ = stream.write_all(reply.as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        base
+    }
+
+    /// One capability redirecting to another over loopback still works. This is the
+    /// case a policy written as "refuse every private destination" would have broken,
+    /// and nothing in this workspace would have failed until a capability answered its
+    /// first 307.
+    #[test]
+    fn a_loopback_redirect_is_followed() {
+        let base = serve(|base| vec![found(&format!("{base}/second")), ok("arrived")]);
+        let client = crate::client(
+            crate::Purpose::new("test-redirect"),
+            std::time::Duration::from_secs(5),
+        )
+        .expect("client builds");
+        let body = client
+            .get(format!("{base}/first"))
+            .send()
+            .expect("the redirect is followed")
+            .text()
+            .expect("a body");
+        assert_eq!(body, "arrived");
+    }
+
+    /// The refusal, end to end, and the proof that `builder` installs THIS policy:
+    /// reqwest's own default answers "too many redirects", and this one names the
+    /// number it enforces. Swap `redirect_policy()` out of `builder` and this assertion
+    /// is the thing that fails.
+    #[test]
+    fn a_redirect_loop_is_refused_with_this_crates_message() {
+        let base = serve(|base| vec![found(&format!("{base}/again"))]);
+        let client = crate::client(
+            crate::Purpose::new("test-redirect-loop"),
+            std::time::Duration::from_secs(5),
+        )
+        .expect("client builds");
+        let error = client
+            .get(format!("{base}/start"))
+            .send()
+            .expect_err("an endless redirect must fail");
+        let printed = format!("{error:?}");
+        assert!(
+            printed.contains("more than 10 redirects"),
+            "the crate's own policy is not installed: {printed}"
+        );
     }
 }

@@ -247,7 +247,30 @@ async fn main() {
         vault_root: Arc::new(vault.path().to_string_lossy().into_owned()),
     };
     let port = axon_server::resolve_port(None, None, 8094);
-    let app = Router::new()
+    axon_server::serve_local("vault-server", port, build_router(state)).await;
+}
+
+/// This capability's name, for the origin guard's env var
+/// (`AXON_VAULT_ALLOWED_ORIGIN_HOSTS`).
+const CAPABILITY: &str = "vault";
+
+/// The wired router, so a test can drive the real thing rather than a handler.
+///
+/// `CorsLayer::permissive()` alone said any web page may read this, and the
+/// sentence that used to stand here — no control surface, no secret, loopback
+/// bind — is all true and still leaves that open. What `/api/tasks` returns is
+/// every open action under `Projects/`, each with the note path that names the
+/// project it belongs to: what the operator is working on this week, readable
+/// by any page open in their browser. The guard decides who may ask; CORS stays
+/// underneath it and decides what a permitted answer may say.
+///
+/// The origin guard sits below every route on purpose: axum wraps only the
+/// routes registered BEFORE a `.layer()` call (axum 0.7
+/// `src/docs/routing/layer.md`: "you have to first add your routes (and / or
+/// fallback) and then call `layer`"), so a route appended under it would
+/// silently lose the refusal.
+fn build_router(state: AppState) -> Router {
+    Router::new()
         .route("/routes", get(routes))
         .route("/health", get(health))
         .route("/ready", get(ready))
@@ -269,9 +292,18 @@ async fn main() {
         // leaves this route readable by any origin. Whether this server should
         // refuse without a token is an operator ruling and not a comment's to
         // make, so the comment stops at saying what is true.
+        //
+        // Since 2026-09-08 the origin guard below is what makes that concrete:
+        // a page on an origin this deployment does not name cannot read the
+        // route at all, token or no token. The token question above is still
+        // open and still the operator's.
+        // ADD NEW ROUTES ABOVE THIS LINE. Below it they lose the origin guard.
+        .layer(axum::middleware::from_fn_with_state(
+            CAPABILITY,
+            axon_server::origin::refuse_foreign_origins,
+        ))
         .layer(CorsLayer::permissive())
-        .with_state(state);
-    axon_server::serve_local("vault-server", port, app).await;
+        .with_state(state)
 }
 
 #[cfg(test)]
@@ -466,5 +498,71 @@ mod route_manifest_tests {
     fn the_manifest_covers_every_served_route() {
         let missing = route_manifest::undeclared_routes(include_str!("server.rs"), super::ROUTES);
         assert!(missing.is_empty(), "served but undocumented: {missing:?}");
+    }
+}
+
+/// The router-level proof that `libs/axon-server`'s own predicate tests cannot
+/// give: a route registered BELOW the `.layer()` call passes every test of
+/// `origin_allowed_by` and still answers a hostile page.
+///
+/// Driven with `tower::ServiceExt::oneshot` rather than over a loopback listener
+/// (the pattern `capabilities/places` uses), because this crate has no HTTP
+/// client and reqwest would pull a whole TLS stack into a test build to send one
+/// request to itself. `tower` is already in the graph under axum.
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    /// A vault root that is deliberately absent. The guard runs before the
+    /// handler, so the refusal does not need a vault — and the control below
+    /// reads its 503 as proof that the request got past the guard to a handler
+    /// that then found no vault.
+    fn router() -> Router {
+        let absent = std::env::temp_dir().join(format!("vault-origin-{}", std::process::id()));
+        build_router(AppState {
+            vault_root: Arc::new(absent.to_string_lossy().into_owned()),
+        })
+    }
+
+    async fn tasks_status(origin: Option<&str>) -> StatusCode {
+        let mut request = Request::builder().uri("/api/tasks");
+        if let Some(origin) = origin {
+            request = request.header("origin", origin);
+        }
+        router()
+            .oneshot(request.body(Body::empty()).unwrap())
+            .await
+            .expect("the router answers")
+            .status()
+    }
+
+    #[tokio::test]
+    async fn a_foreign_origin_cannot_read_the_task_list() {
+        assert_eq!(
+            tasks_status(Some("https://evil.example")).await,
+            StatusCode::FORBIDDEN,
+            "/api/tasks answered a foreign origin — it is registered below the guard layer"
+        );
+    }
+
+    /// The other half, and the reason the test above is not just asserting that
+    /// this server is broken: the callers that legitimately reach it still do.
+    /// 503 is the absent vault, which is a handler answering.
+    #[tokio::test]
+    async fn the_dashboard_and_a_non_browser_caller_still_reach_the_handler() {
+        for origin in [
+            None,
+            Some("http://localhost:47117"),
+            Some("https://mac.tailnet.ts.net"),
+        ] {
+            assert_eq!(
+                tasks_status(origin).await,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "the guard refused a caller it must admit: {origin:?}"
+            );
+        }
     }
 }

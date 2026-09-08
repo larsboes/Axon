@@ -899,6 +899,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tower 0.5.3",
  "tower-http 0.5.2",
 ]
 
@@ -1687,6 +1688,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tokio",
+ "tower 0.5.3",
  "tower-http 0.5.2",
 ]
 
@@ -2496,6 +2498,7 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "toml 0.8.23",
+ "tower 0.5.3",
 ]
 
 [[package]]
@@ -4444,6 +4447,7 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+ "tower 0.5.3",
  "tower-http 0.5.2",
  "transit",
 ]
@@ -5416,6 +5420,7 @@ dependencies = [
  "station-time",
  "thiserror 1.0.69",
  "tokio",
+ "tower 0.5.3",
  "tower-http 0.5.2",
 ]
 
@@ -5640,6 +5645,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tower 0.5.3",
  "tower-http 0.5.2",
 ]
 
