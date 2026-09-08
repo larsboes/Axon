@@ -37,7 +37,7 @@ impl Store {
         enforce_tier: bool,
     ) -> Result<bool, Box<dyn std::error::Error>> {
         let mut conn = self.conn()?;
-        let transaction = conn.transaction()?;
+        let transaction = axon_store::write_transaction(&mut conn)?;
         let tier = provenance::ranking_tier(&evaluation.mode);
         let gate = if enforce_tier {
             format!(

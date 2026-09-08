@@ -1,44 +1,36 @@
 <script lang="ts">
-  import { link } from "$lib/nav";
-  import type { Decision } from "$lib/finance/invest-api";
+  import type { Decision } from "../../finance/invest-api";
+  import Icon from "../../Icon.svelte";
+  import ListRow from "../../ListRow.svelte";
+  import RowMeta from "../../RowMeta.svelte";
+  import { metaParts } from "../format";
+  import type { DecisionRowProps } from "../decisions";
 
   /**
    * The ladder row `kinds/finance.ts` names through `view: "FinanceRow"`.
    *
-   * MERGE NOTE, 2026-09-06: this file lands in a directory the dashboard-refresh
-   * stream owns and had not created when it was written. `registry.ts` there
-   * resolves `view` through `import.meta.glob` over this directory and THROWS on
-   * a name it cannot resolve, inside a snippet with no boundary — so a kind
-   * without its row takes the whole Home page down, not just its own row.
+   * MERGE NOTE DISCHARGED, 2026-09-08: this row was written on a branch where
+   * `ListRow`, `RowMeta` and `DecisionRowProps` did not exist, so it drew its own
+   * markup and typed its props by hand. Both primitives are here now, and the note
+   * asked for exactly this swap. The visible consequence is the one B50 was about:
+   * the props declared `dataClass`, the row never destructured it, and the class
+   * `finance_decisions` validates on every row reached the page and rendered nothing.
+   * A chip that exists in a type and not in a pixel is not a published class.
    *
-   * It is deliberately self-contained: it renders its own markup instead of that
-   * stream's `ListRow`/`RowMeta` primitives, which do not exist on this branch
-   * and could not be imported without failing `bun run check` here. Re-point it
-   * at those primitives on merge, the way `TripRow.svelte` uses them; the props
-   * below are `DecisionRowProps<Decision>` minus the fields this row does not
-   * read, so the swap is an import and a type, not a rewrite.
-   *
-   * The row carries the decision owed and no valuation, no balance and no
+   * The row still carries the decision owed and no valuation, no balance and no
    * portfolio total (PRD:2233). Accept and Reject live on /finance, because Home
    * does not write.
    */
   let {
     row,
-    href = link("/finance?view=investments"),
-    whyHere = "",
-  }: {
-    row: Decision;
-    id?: string;
-    current?: boolean;
-    tone?: string;
-    href?: string;
-    whyHere?: string;
-    dataClass?: string | null;
-    processingRoute?: "local" | "cloud" | null;
-    candidateStatus?: "proposed" | "accepted" | "open";
-    busy?: boolean;
-    act?: (run: () => Promise<void>, options?: { dismiss?: boolean }) => void;
-  } = $props();
+    id,
+    current,
+    tone,
+    href,
+    whyHere,
+    dataClass,
+    candidateStatus,
+  }: DecisionRowProps<Decision, Decision[]> = $props();
 
   // Formatting only. Every number here is computed by the capability: the drift
   // arrives in basis points and the amount in cents, and neither is derived,
@@ -53,52 +45,24 @@
     if (proposal.amount_cents !== null) return money(proposal.amount_cents, proposal.currency);
     return null;
   });
+
+  const kind = $derived(metaParts("Investment", row.proposal.kind, figure));
 </script>
 
-<div class="row">
-  <div>
-    <a class="title" {href}>{row.proposal.title}</a>
-    <p class="why">
-      {row.proposal.kind}
-      {#if figure}· {figure}{/if}
-      {#if whyHere}· {whyHere}{/if}
-    </p>
-  </div>
-  <a class="action" {href}>Decide</a>
-</div>
+<ListRow {id} {current} {tone} {href}>
+  {#snippet mark()}<Icon name="wallet" size={15} />{/snippet}
 
-<style>
-  .row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    width: 100%;
-  }
+  <span class="row-kind">{#each kind as part}<span>{part}</span>{/each}</span>
+  <a class="row-title" {href}>{row.proposal.title}</a>
 
-  .title {
-    font-weight: 600;
-    color: var(--text-primary);
-    text-decoration: none;
-  }
+  {#snippet meta()}
+    <!-- `rung` rather than `model_revision`: the kind states that this path runs no
+         model call, so naming a revision beside the class would credit a rank to
+         something that never ran. The rung is which ladder produced the proposal. -->
+    <RowMeta {whyHere} {dataClass} {candidateStatus} method={row.rung} />
+  {/snippet}
 
-  .title:hover {
-    text-decoration: underline;
-  }
-
-  .why {
-    margin: 0.1rem 0 0;
-    font-size: 0.75rem;
-    color: var(--text-tertiary);
-  }
-
-  .action {
-    flex: none;
-    padding: 0.3rem 0.7rem;
-    border: 1px solid var(--card-border);
-    border-radius: var(--radius-sm);
-    font-size: 0.8rem;
-    color: var(--text-secondary);
-    text-decoration: none;
-  }
-</style>
+  {#snippet actions()}
+    <a class="btn btn-soft" {href}>Decide</a>
+  {/snippet}
+</ListRow>

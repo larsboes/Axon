@@ -57,6 +57,9 @@ const opportunity = (id: string, latitude = 10.1, longitude = 10): ScoutingOppor
   country_code: "XX",
   latitude,
   longitude,
+  // The fixture source declares nothing, so it is c1 -- what `class_for_source` answers
+  // for a source that is not in `sources[]`, which is every one of them here.
+  data_class: "c1",
   event_route: {
     route: "travel_candidate",
     basis: "coordinates",

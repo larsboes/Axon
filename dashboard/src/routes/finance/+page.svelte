@@ -511,11 +511,11 @@
   <table>
     <thead>
       <tr>
-        <th>Subscription</th>
-        <th>State</th>
-        <th class="num">Monthly</th>
-        <th class="num">Value</th>
-        <th>Category</th>
+        <th scope="col">Subscription</th>
+        <th scope="col">State</th>
+        <th class="num" scope="col">Monthly</th>
+        <th class="num" scope="col">Value</th>
+        <th scope="col">Category</th>
       </tr>
     </thead>
     <tbody>
@@ -666,7 +666,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.25rem;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--muted, #888);
   }
 
@@ -694,19 +694,19 @@
   }
 
   .figure {
-    font-size: 1.75rem;
+    font-size: var(--text-xl);
     font-weight: 600;
     font-variant-numeric: tabular-nums;
   }
 
   .unit {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--muted, #888);
   }
 
   .count {
     margin: 0;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
   }
 
   .actions {
@@ -720,7 +720,7 @@
     align-items: center;
     gap: 0.35rem;
     font: inherit;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     padding: 0.4rem 0.7rem;
     border: 1px solid var(--border, #333);
     border-radius: 6px;
@@ -836,7 +836,7 @@
 
   .upcoming h2 {
     margin: 0 0 0.5rem;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -868,7 +868,7 @@
   }
 
   th {
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
@@ -885,7 +885,7 @@
   }
 
   .state {
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     text-transform: uppercase;
     letter-spacing: 0.04em;
     padding: 0.1rem 0.4rem;
@@ -923,7 +923,7 @@
 
   .plan {
     margin-left: 0.4rem;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     letter-spacing: 0.03em;
     padding: 0.05rem 0.35rem;
     border-radius: 4px;
@@ -958,7 +958,7 @@
 
   .pane h3 {
     margin: 0;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.06em;
@@ -975,7 +975,7 @@
     display: flex;
     flex-direction: column;
     gap: 0.2rem;
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     color: var(--muted, #888);
     flex: 1;
   }
@@ -983,7 +983,7 @@
   .pane input,
   .pane select {
     font: inherit;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     padding: 0.3rem 0.45rem;
     border: 1px solid var(--border, #333);
     border-radius: 5px;
@@ -995,7 +995,7 @@
   .pane button {
     align-self: flex-start;
     font: inherit;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     padding: 0.35rem 0.7rem;
     border: 1px solid var(--border, #333);
     border-radius: 6px;
@@ -1012,22 +1012,22 @@
   .history ul {
     margin: 0;
     padding-left: 1rem;
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     line-height: 1.6;
   }
 
   .history code {
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     opacity: 0.75;
   }
 
   .small {
-    font-size: 0.6875rem;
+    font-size: var(--text-2xs);
     margin: 0.2rem 0 0;
   }
 
   .notice {
-    font-size: 0.8125rem;
+    font-size: var(--text-sm);
     margin: 0 0 1rem;
   }
 

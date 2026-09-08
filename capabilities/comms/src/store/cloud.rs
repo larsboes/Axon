@@ -109,7 +109,7 @@ impl Store {
         // approved, with no window in which the approval could vanish between the
         // check and the insert. A transaction buys that, and the read still has to
         // match all four columns, so a stale hash is refused the way it was.
-        let transaction = conn.transaction()?;
+        let transaction = axon_store::write_transaction(&mut conn)?;
         let approved_at = transaction
             .query_row(
                 &format!(
@@ -782,7 +782,7 @@ impl Store {
     ) -> Result<bool, Box<dyn std::error::Error>> {
         let result = serde_json::to_string(result)?;
         let mut conn = self.conn()?;
-        let transaction = conn.transaction()?;
+        let transaction = axon_store::write_transaction(&mut conn)?;
         let attempt_updated = transaction.execute(
             &format!(
                 "UPDATE {}_content_cloud_attempts
@@ -822,7 +822,7 @@ impl Store {
     ) -> Result<bool, Box<dyn std::error::Error>> {
         let error: String = error.chars().take(500).collect();
         let mut conn = self.conn()?;
-        let transaction = conn.transaction()?;
+        let transaction = axon_store::write_transaction(&mut conn)?;
         let attempt_updated = transaction.execute(
             &format!(
                 "UPDATE {}_content_cloud_attempts
