@@ -192,14 +192,21 @@ try {
       considered?: number;
       rescored?: number;
       reused_relevance?: number;
+      offset?: number;
       has_more?: boolean;
       embedding?: { mode?: string; error_class?: string | null };
     };
+    // `offset` is in the line because it is now the route's answer rather than this job's
+    // question, and it is the one number that says whether the sweep is moving. A log that
+    // read the same every night is what let it stand still at 0 unnoticed.
     console.log(
-      `feed-sweep: relevance considered=${page.considered ?? 0} re-scored=${page.rescored ?? 0} ` +
+      `feed-sweep: relevance offset=${page.offset ?? 0} considered=${page.considered ?? 0} ` +
+        `re-scored=${page.rescored ?? 0} ` +
         `re-evaluated=${page.reused_relevance ?? 0} mode=${page.embedding?.mode ?? "unknown"}` +
         (page.embedding?.error_class ? ` fallback=${page.embedding.error_class}` : "") +
-        (page.has_more ? " (more pages remain — run `comms relevance backfill`)" : ""),
+        (page.has_more
+          ? " (more pages remain — tomorrow's page continues from here, or run `comms relevance backfill` now)"
+          : ""),
     );
   }
 } catch (error) {
