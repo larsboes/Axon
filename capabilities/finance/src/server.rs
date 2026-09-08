@@ -172,6 +172,11 @@ const ROUTES: &[route_manifest::Route] = &[
     ),
     r(
         "GET",
+        "/__axon/freshness",
+        "When data last arrived, for the freshness contract. No parameters.",
+    ),
+    r(
+        "GET",
         "/api/decisions",
         "The decision ledger. Optional ?status=open|accepted|rejected|superseded|all, default open.",
     ),
@@ -2005,6 +2010,48 @@ async fn prices_status(State(state): State<AppState>) -> ApiResponse {
     }
 }
 
+/// `GET /__axon/freshness` — when this capability last took delivery of data.
+///
+/// The shared shape behind `freshness_advise_hours` / `freshness_stale_hours` in
+/// `capabilities/finance/service.toml`, and the same one
+/// `capabilities/comms/src/server/source_handlers.rs` serves: one integer,
+/// `last_arrival_at`, epoch seconds, or `null` if nothing has ever arrived.
+/// `tools/doctor` compares it against the two declared hours; anything else this
+/// endpoint might usefully say belongs to `GET /api/prices/status`, which is the
+/// surface a person reads.
+///
+/// ARRIVAL, not the newest observation date. A market that was shut on Friday is
+/// quiet, not broken, and a contract keyed on `observed_on` would call a long
+/// weekend a fault and teach the reader to skim past it. What this exists to
+/// catch is a producer that stopped — `capabilities/finance-prices`, whose 24h
+/// schedule is the only unattended caller of `finance-cli prices fetch`.
+///
+/// A parse failure is a 500 and never a `null`. `null` is the specific claim
+/// "nothing has ever arrived", which doctor reports as a fault, and a stamp this
+/// process could not read is a different thing entirely — one is the machine's
+/// state, the other is this code's bug.
+async fn freshness(State(state): State<AppState>) -> ApiResponse {
+    let database_path = state.database_path.clone();
+    match tokio::task::spawn_blocking(move || -> Result<Option<i64>, String> {
+        let store = FinanceStore::open(&database_path).map_err(|error| error.to_string())?;
+        let Some(stamp) = store
+            .newest_price_arrival()
+            .map_err(|error| error.to_string())?
+        else {
+            return Ok(None);
+        };
+        finance::clock::epoch_seconds(&stamp)
+            .map(Some)
+            .ok_or_else(|| format!("stored fetch stamp is not a timestamp: {stamp}"))
+    })
+    .await
+    {
+        Ok(Ok(last)) => response(StatusCode::OK, json!({ "last_arrival_at": last })),
+        Ok(Err(error)) => failed(error),
+        Err(error) => failed(error.to_string()),
+    }
+}
+
 async fn list_decisions(
     State(state): State<AppState>,
     Query(query): Query<StatusQuery>,
@@ -2477,6 +2524,7 @@ async fn main() {
         .route("/api/dashboard", get(dashboard_projection))
         .route("/api/portfolio", get(portfolio))
         .route("/api/prices/status", get(prices_status))
+        .route("/__axon/freshness", get(freshness))
         .route("/api/decisions", get(list_decisions))
         .route("/api/decisions/run", post(run_decisions))
         .route("/api/decisions/:id/verdict", post(record_verdict))

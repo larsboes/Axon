@@ -1137,6 +1137,51 @@ impl FinanceStore {
             .collect())
     }
 
+    /// The most recent moment any provider delivered an observation, as the
+    /// stamp it was written with. The whole body of `GET /__axon/freshness`.
+    ///
+    /// `status = 'ok'` and nothing else, for the reason
+    /// `capabilities/comms/src/store/source_state.rs` gives for reading
+    /// `last_success_at` rather than `last_run_at`: an attempt that refused
+    /// still ran, so a run column stays fresh while nothing arrives. `refused`
+    /// is Yahoo answering a gate page and `error` is a dead route, and neither
+    /// may answer "yes, data is still reaching finance".
+    ///
+    /// `empty` is excluded with them, and that is the one judgement call here.
+    /// `run_provider` writes `empty` when a provider answered correctly and
+    /// produced no observation at all -- an instrument with no configured
+    /// ticker, a series with no rows. Nothing was delivered, so nothing
+    /// arrived. It is NOT the idempotent case: a nightly re-fetch that returns
+    /// the same closes it returned yesterday is `ok` with `rows_written = 0`,
+    /// because the provider handed over observations and the UNIQUE tuple
+    /// dropped them. So the normal quiet night still moves this forward, which
+    /// is what keeps the contract about the producer rather than about the
+    /// market calendar.
+    ///
+    /// MAX over providers, not per provider: one working source means the
+    /// capability is still being fed, and a single provider that has stopped is
+    /// the narrower fault `GET /api/prices/status` already reports per provider.
+    ///
+    /// `MAX` on the TEXT column is chronological because every value comes from
+    /// `clock::now_timestamp`: twenty characters, fixed width, UTC. A stamp in
+    /// another shape would sort wrong here and is refused at the other end --
+    /// `clock::epoch_seconds` answers `None` rather than guessing.
+    ///
+    /// `None` when no attempt has ever succeeded, which doctor reads as "never"
+    /// rather than as "fresh".
+    pub fn newest_price_arrival(&self) -> Fallible<Option<String>> {
+        let prefix = &self.prefix;
+        let conn = self.conn()?;
+        Ok(conn.query_row(
+            &format!(
+                "SELECT MAX(fetched_at) FROM {prefix}_price_fetches
+                 WHERE status = 'ok' AND fetched_at <> ''"
+            ),
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )?)
+    }
+
     // -----------------------------------------------------------------------
     // The decision ledger
     // -----------------------------------------------------------------------
