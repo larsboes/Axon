@@ -22,3 +22,32 @@ a declaration gap, and a gap can be closed from either end; here the missing end
 
 That unit also named one capability, `backup.sh store`, while three declare a contract — so the
 vault and finance were outside the schedule that was supposed to protect everything.
+
+## Why this shape: a finished run is not a checked backup
+
+Every one of this capability's historical failures was something reporting success without looking
+at the artifact. The schedule reported success while backing up nothing for 8.3 days, because
+`bun` was missing from launchd's PATH and an empty derived set read as "no contracts declared".
+The vault's first archive shipped 704 MB, verified its byte count on the target, wrote a receipt
+and could never have been extracted. The destination's eviction detector searched for a
+placeholder form the file provider stopped writing years ago, and answered 0 against three evicted
+archives. None of those is a subtle bug. Each is a tool trusting its own report.
+
+So the run and the check are separate, and the check reads the artifact:
+
+- `tools/doctor`'s **Backups** section reads the receipt for its age against the capability's own
+  `backup_advise_days` / `backup_stale_days`, then resolves the target the *receipt* names and
+  looks at the archive: present, right byte count, and not a cloud placeholder. It stats, never
+  reads — one of these archives is 4 GB and evicted, and opening it would download it.
+- `tools/doctor`'s **Scheduled producers** section asks whether the timer behind this capability
+  fired at all, and what its last run exited. A `schedule` job has no supervisor, so it cannot be
+  "down"; it stops, and nothing else notices.
+- `tools/backup.sh` counts evicted archives at a `kind = "local"` destination on every run, in both
+  forms a provider writes them — the legacy `.icloud` placeholder and the modern `SF_DATALESS`
+  flag on the file's own name.
+
+**The named limit.** An archive on an `ssh` target is not verified. Reaching it costs a round trip
+and an unlocked vault agent, and doctor is offline by contract — so that row says it was not
+checked, and why, rather than passing over it. The prevention half has a limit too: macOS records
+Finder's "Keep Downloaded" as an extended attribute a tool can read and no CLI can set, so `pin the
+destination` stays an operator action that this capability can only report the absence of.
