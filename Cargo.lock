@@ -608,7 +608,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower 0.4.13",
- "tower-http 0.5.2",
+ "tower-http",
 ]
 
 [[package]]
@@ -900,7 +900,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower 0.5.3",
- "tower-http 0.5.2",
+ "tower-http",
 ]
 
 [[package]]
@@ -1109,7 +1109,7 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 1.0.69",
  "tokio",
- "tower-http 0.5.2",
+ "tower-http",
 ]
 
 [[package]]
@@ -1689,7 +1689,7 @@ dependencies = [
  "sha2 0.10.9",
  "tokio",
  "tower 0.5.3",
- "tower-http 0.5.2",
+ "tower-http",
 ]
 
 [[package]]
@@ -3739,7 +3739,7 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
- "tower-http 0.5.2",
+ "tower-http",
 ]
 
 [[package]]
@@ -4180,7 +4180,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "tower 0.5.3",
- "tower-http 0.6.11",
+ "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
@@ -4448,7 +4448,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tower 0.5.3",
- "tower-http 0.5.2",
+ "tower-http",
  "transit",
 ]
 
@@ -4762,7 +4762,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-stream",
- "tower-http 0.5.2",
+ "tower-http",
 ]
 
 [[package]]
@@ -5308,31 +5308,6 @@ dependencies = [
 
 [[package]]
 name = "tower-http"
-version = "0.5.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e9cd434a998747dd2c4276bc96ee2e0c7a2eadf3cae88e52be55a05fa9053f5"
-dependencies = [
- "bitflags 2.13.1",
- "bytes",
- "futures-util",
- "http",
- "http-body",
- "http-body-util",
- "http-range-header",
- "httpdate",
- "mime",
- "mime_guess",
- "percent-encoding",
- "pin-project-lite",
- "tokio",
- "tokio-util",
- "tower-layer",
- "tower-service",
- "tracing",
-]
-
-[[package]]
-name = "tower-http"
 version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
@@ -5345,6 +5320,11 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "http-range-header",
+ "httpdate",
+ "mime",
+ "mime_guess",
+ "percent-encoding",
  "pin-project-lite",
  "tokio",
  "tokio-util",
@@ -5421,7 +5401,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tower 0.5.3",
- "tower-http 0.5.2",
+ "tower-http",
 ]
 
 [[package]]
@@ -5444,7 +5424,7 @@ dependencies = [
  "station-time",
  "thiserror 1.0.69",
  "tokio",
- "tower-http 0.5.2",
+ "tower-http",
 ]
 
 [[package]]
@@ -5646,7 +5626,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tower 0.5.3",
- "tower-http 0.5.2",
+ "tower-http",
 ]
 
 [[package]]
