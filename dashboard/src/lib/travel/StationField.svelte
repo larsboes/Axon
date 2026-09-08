@@ -154,6 +154,16 @@
   li button:focus-visible {
     background-color: var(--primary-soft);
     color: var(--primary);
-    outline: none;
+  }
+
+  /* The tint is the hover feel; the ring is the focus indicator. They were one rule with
+     `outline: none` in it, which left a keyboard reader with an 8%-alpha wash and nothing
+     else — 1.11:1 against the surface, where WCAG 1.4.11 asks for 3:1. Inset by 2px on
+     purpose: this control sits inside a scrolling container, so a ring drawn outside its
+     own box is clipped away by the ancestor's overflow. `--primary` on the tint measures
+     4.81:1 light and 7.83:1 dark. Same idiom as `$lib/rail/RailSection.svelte`. */
+  li button:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: -2px;
   }
 </style>
