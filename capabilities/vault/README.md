@@ -104,7 +104,7 @@ for one where none is, which is an instrument that cannot be wrong.
 
 ## The server
 
-`vault-server` on `8094`, loopback. Four routes:
+`vault-server` on `8094`, loopback. Five routes:
 
 | Route | Answers |
 |---|---|
@@ -112,6 +112,7 @@ for one where none is, which is an instrument that cannot be wrong.
 | `GET /ready` | Readiness: the vault root and its `Projects/` folder resolve. |
 | `GET /routes` | This manifest, as data. |
 | `GET /api/tasks?status=open\|done` | Every action note under `Projects/`, read live. |
+| `GET /api/people` | `last_contact`, `met_at` and `mention_count` per person, computed from `Journal/` backlinks. |
 
 One task is `{id, title, done, due, priority, summary, projects, uri}`. `id` is
 the vault-relative path; `uri` is the `obsidian://open` address of the note.
@@ -135,6 +136,34 @@ renders the row (beside `title`, which is the filename, not a key), `due` and
 decision at all. The other six — `scheduled`, `context`, `energy`, `focus`,
 `events` and `blocked_by` — have no reader, and a served field with no reader
 is a contract nothing checks.
+
+### `/api/people` — D2, served instead of written
+
+`last_contact`, `met_at` and `mention_count` sit on 70 of the 89 `Atlas/People`
+notes and have no producer. All three come out of `Journal/` backlinks and
+`vault people` has computed them since 2026-09-07 — and refused to write them,
+because **D3** is unresolved: machine-owned frontmatter has no protection
+mechanism, so a producer could not tell its own value from a human's correction
+and would overwrite the correction on its next run.
+
+**A computed read does not need D3 ruled first.** Nothing is stored, so nothing
+can be overwritten; the answer is recomputed off the notes on every request and
+is stale for exactly as long as the request takes. The three fields reach a
+reader without Axon becoming a second writer of files a human edits.
+
+The drift is served beside the value — `stored` and `disagrees` per person, the
+4 notes whose written value contradicts the Journal — because a computed number
+served alone would read as authoritative, and the stored one is what a human
+typed.
+
+The route reads `Atlas/People/` and `Journal/` and not the vault: 442 notes in
+20 ms against 2,757 in 155 ms, measured 2026-09-08. A vault with People and no
+`Journal/` answers **503 and names the folder**, rather than 89 people at zero
+mentions — that is the reading `people.rs` refuses, because zero is a
+measurement and a missing producer is not.
+
+`contact_frequency` is not served, and that is **D1**: how often you want to see
+someone is a judgement, not a backlink count.
 
 **What counts as a task** is `capabilities/vault/src/tasks.rs`'s module doc: the
 vault's own `Resources/Bases/Tasks.base` filter, scoped to `Projects/`, minus

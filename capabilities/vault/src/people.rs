@@ -21,6 +21,14 @@ use serde::Serialize;
 
 use crate::note::Note;
 
+/// Where the People notes live. Named once, because the CLI reads the whole vault and
+/// `vault-server` reads exactly this folder and `JOURNAL` — two spellings of the same folder is
+/// how the two front ends would start answering differently.
+pub const FOLDER: &str = "Atlas/People";
+
+/// Where the evidence lives. All three computed fields are backlinks from here.
+pub const JOURNAL: &str = "Journal";
+
 /// One person, as the Journal describes them.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct PersonFacts {
@@ -87,14 +95,15 @@ fn linked_basenames(note: &Note) -> Vec<String> {
 }
 
 pub fn report(notes: &[Note]) -> PeopleReport {
+    let prefix = format!("{FOLDER}/");
     let people: Vec<&Note> = notes
         .iter()
-        .filter(|note| note.folder == "Atlas" && note.id.starts_with("Atlas/People/"))
+        .filter(|note| note.id.starts_with(&prefix))
         .collect();
 
     // basename -> (mentions, earliest, latest)
     let mut seen: BTreeMap<String, (usize, Option<String>, Option<String>)> = BTreeMap::new();
-    for note in notes.iter().filter(|note| note.folder == "Journal") {
+    for note in notes.iter().filter(|note| note.folder == JOURNAL) {
         let Some(date) = journal_date(&note.id) else {
             continue;
         };
