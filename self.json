@@ -43,11 +43,19 @@
       }
     },
     {
-      "name": "axon-server",
+      "name": "axon-http",
       "kind": "lib",
       "code": {
         "files": 4,
-        "nodes": 51
+        "nodes": 45
+      }
+    },
+    {
+      "name": "axon-server",
+      "kind": "lib",
+      "code": {
+        "files": 6,
+        "nodes": 80
       }
     },
     {
@@ -60,7 +68,7 @@
       },
       "code": {
         "files": 12,
-        "nodes": 124
+        "nodes": 128
       }
     },
     {
@@ -68,7 +76,7 @@
       "kind": "lib",
       "code": {
         "files": 3,
-        "nodes": 39
+        "nodes": 41
       }
     },
     {
@@ -105,6 +113,14 @@
       }
     },
     {
+      "name": "civil-date",
+      "kind": "lib",
+      "code": {
+        "files": 3,
+        "nodes": 24
+      }
+    },
+    {
       "name": "cognitive-load",
       "kind": "pack",
       "code": {
@@ -121,8 +137,8 @@
         "port": "8083"
       },
       "code": {
-        "files": 75,
-        "nodes": 1238
+        "files": 88,
+        "nodes": 1530
       }
     },
     {
@@ -164,8 +180,16 @@
         "port": "47117"
       },
       "code": {
-        "files": 104,
-        "nodes": 628
+        "files": 159,
+        "nodes": 983
+      }
+    },
+    {
+      "name": "deliberation",
+      "kind": "pack",
+      "code": {
+        "files": 14,
+        "nodes": 76
       }
     },
     {
@@ -173,7 +197,7 @@
       "kind": "lib",
       "code": {
         "files": 14,
-        "nodes": 195
+        "nodes": 196
       }
     },
     {
@@ -195,8 +219,22 @@
         "port": "8090"
       },
       "code": {
-        "files": 18,
-        "nodes": 570
+        "files": 24,
+        "nodes": 827
+      }
+    },
+    {
+      "name": "finance-prices",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [
+          "finance"
+        ]
+      },
+      "code": {
+        "files": 1,
+        "nodes": 10
       }
     },
     {
@@ -211,6 +249,10 @@
         "files": 1,
         "nodes": 9
       }
+    },
+    {
+      "name": "harness",
+      "kind": "pack"
     },
     {
       "name": "home-assistant",
@@ -230,7 +272,7 @@
       "kind": "pack",
       "code": {
         "files": 26,
-        "nodes": 335
+        "nodes": 343
       }
     },
     {
@@ -291,7 +333,7 @@
       },
       "code": {
         "files": 31,
-        "nodes": 536
+        "nodes": 558
       }
     },
     {
@@ -299,7 +341,7 @@
       "kind": "pack",
       "code": {
         "files": 11,
-        "nodes": 169
+        "nodes": 170
       }
     },
     {
@@ -357,6 +399,14 @@
       }
     },
     {
+      "name": "packs",
+      "kind": "capability",
+      "service": {
+        "kind": "data",
+        "requires": []
+      }
+    },
+    {
       "name": "people-registry",
       "kind": "capability",
       "service": {
@@ -390,8 +440,8 @@
         "port": "8093"
       },
       "code": {
-        "files": 12,
-        "nodes": 223
+        "files": 13,
+        "nodes": 289
       }
     },
     {
@@ -399,7 +449,7 @@
       "kind": "capability",
       "code": {
         "files": 3,
-        "nodes": 58
+        "nodes": 59
       }
     },
     {
@@ -428,7 +478,7 @@
       "kind": "spine",
       "code": {
         "files": 5,
-        "nodes": 1040
+        "nodes": 772
       }
     },
     {
@@ -441,7 +491,7 @@
       },
       "code": {
         "files": 30,
-        "nodes": 530
+        "nodes": 526
       }
     },
     {
@@ -509,15 +559,15 @@
       "kind": "lib",
       "code": {
         "files": 4,
-        "nodes": 107
+        "nodes": 109
       }
     },
     {
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 138,
-        "nodes": 1119
+        "files": 155,
+        "nodes": 1209
       }
     },
     {
@@ -538,7 +588,7 @@
       "kind": "pack",
       "code": {
         "files": 4,
-        "nodes": 37
+        "nodes": 38
       }
     },
     {
@@ -550,8 +600,8 @@
         "port": "8086"
       },
       "code": {
-        "files": 13,
-        "nodes": 241
+        "files": 19,
+        "nodes": 460
       }
     },
     {
@@ -559,7 +609,7 @@
       "kind": "pack",
       "code": {
         "files": 8,
-        "nodes": 85
+        "nodes": 87
       }
     },
     {
@@ -593,7 +643,7 @@
       "kind": "pack",
       "code": {
         "files": 40,
-        "nodes": 377
+        "nodes": 379
       }
     }
   ],
@@ -660,6 +710,16 @@
     },
     {
       "from": "calendar",
+      "to": "axon-http",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/calendar/Cargo.toml"
+      ]
+    },
+    {
+      "from": "calendar",
       "to": "axon-server",
       "kinds": [
         "cargo-dep"
@@ -671,6 +731,16 @@
     {
       "from": "calendar",
       "to": "axon-store",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/calendar/Cargo.toml"
+      ]
+    },
+    {
+      "from": "calendar",
+      "to": "civil-date",
       "kinds": [
         "cargo-dep"
       ],
@@ -711,6 +781,16 @@
     {
       "from": "comms",
       "to": "axon-config",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/comms/Cargo.toml"
+      ]
+    },
+    {
+      "from": "comms",
+      "to": "axon-http",
       "kinds": [
         "cargo-dep"
       ],
@@ -820,6 +900,16 @@
     },
     {
       "from": "finance",
+      "to": "axon-http",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/finance/Cargo.toml"
+      ]
+    },
+    {
+      "from": "finance",
       "to": "axon-server",
       "kinds": [
         "cargo-dep"
@@ -841,6 +931,26 @@
     {
       "from": "finance",
       "to": "candidate-fingerprint",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/finance/Cargo.toml"
+      ]
+    },
+    {
+      "from": "finance",
+      "to": "civil-date",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/finance/Cargo.toml"
+      ]
+    },
+    {
+      "from": "finance",
+      "to": "content-item",
       "kinds": [
         "cargo-dep"
       ],
@@ -879,6 +989,16 @@
       ]
     },
     {
+      "from": "inference",
+      "to": "axon-http",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "libs/inference/Cargo.toml"
+      ]
+    },
+    {
       "from": "interior",
       "to": "axon-config",
       "kinds": [
@@ -910,6 +1030,16 @@
     },
     {
       "from": "interior",
+      "to": "markdown-root",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/interior/Cargo.toml"
+      ]
+    },
+    {
+      "from": "interior",
       "to": "route-manifest",
       "kinds": [
         "cargo-dep"
@@ -921,6 +1051,16 @@
     {
       "from": "places",
       "to": "axon-config",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/places/Cargo.toml"
+      ]
+    },
+    {
+      "from": "places",
+      "to": "axon-http",
       "kinds": [
         "cargo-dep"
       ],
@@ -960,6 +1100,16 @@
     },
     {
       "from": "places",
+      "to": "civil-date",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/places/Cargo.toml"
+      ]
+    },
+    {
+      "from": "places",
       "to": "route-manifest",
       "kinds": [
         "cargo-dep"
@@ -971,6 +1121,16 @@
     {
       "from": "punctuality",
       "to": "axon-config",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/punctuality/Cargo.toml"
+      ]
+    },
+    {
+      "from": "punctuality",
+      "to": "axon-http",
       "kinds": [
         "cargo-dep"
       ],
@@ -1011,6 +1171,16 @@
     {
       "from": "scouting",
       "to": "axon-config",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/scouting/Cargo.toml"
+      ]
+    },
+    {
+      "from": "scouting",
+      "to": "axon-http",
       "kinds": [
         "cargo-dep"
       ],
@@ -1109,8 +1279,38 @@
       ]
     },
     {
+      "from": "summarize",
+      "to": "axon-http",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "libs/summarize/Cargo.toml"
+      ]
+    },
+    {
+      "from": "tools",
+      "to": "axon-config",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "tools/storage/Cargo.toml"
+      ]
+    },
+    {
       "from": "transit",
       "to": "axon-config",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/transit/Cargo.toml"
+      ]
+    },
+    {
+      "from": "transit",
+      "to": "axon-http",
       "kinds": [
         "cargo-dep"
       ],
@@ -1180,6 +1380,16 @@
     },
     {
       "from": "trips",
+      "to": "axon-http",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/trips/Cargo.toml"
+      ]
+    },
+    {
+      "from": "trips",
       "to": "axon-server",
       "kinds": [
         "cargo-dep"
@@ -1191,6 +1401,16 @@
     {
       "from": "trips",
       "to": "axon-store",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/trips/Cargo.toml"
+      ]
+    },
+    {
+      "from": "trips",
+      "to": "civil-date",
       "kinds": [
         "cargo-dep"
       ],
@@ -1250,6 +1470,16 @@
     },
     {
       "from": "vault",
+      "to": "content-item",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/vault/Cargo.toml"
+      ]
+    },
+    {
+      "from": "vault",
       "to": "markdown-root",
       "kinds": [
         "cargo-dep"
@@ -1292,6 +1522,10 @@
     },
     {
       "name": "arrow-rs",
+      "verdict": "adopt"
+    },
+    {
+      "name": "asd-ste100-skill",
       "verdict": "adopt"
     },
     {
@@ -1347,6 +1581,10 @@
       "verdict": "inspiration"
     },
     {
+      "name": "ecb-data-portal",
+      "verdict": "adopt"
+    },
+    {
       "name": "esphome",
       "verdict": "reject"
     },
@@ -1357,6 +1595,10 @@
     {
       "name": "exo",
       "verdict": "inspiration"
+    },
+    {
+      "name": "frankfurter-api",
+      "verdict": "adopt"
     },
     {
       "name": "gitleaks",
@@ -1387,6 +1629,14 @@
       "verdict": "inspiration"
     },
     {
+      "name": "ibm-plex",
+      "verdict": "adopt"
+    },
+    {
+      "name": "interceptor",
+      "verdict": "adopt"
+    },
+    {
       "name": "lifeos",
       "verdict": "inspiration"
     },
@@ -1397,6 +1647,10 @@
     {
       "name": "local-llm",
       "verdict": "inspiration"
+    },
+    {
+      "name": "lucide",
+      "verdict": "quarry"
     },
     {
       "name": "macmon",
@@ -1453,6 +1707,10 @@
     {
       "name": "ocrs",
       "verdict": "inspiration"
+    },
+    {
+      "name": "open-meteo-api",
+      "verdict": "adopt"
     },
     {
       "name": "openfreemap",
@@ -1547,6 +1805,10 @@
       "verdict": "adopt"
     },
     {
+      "name": "stooq",
+      "verdict": "reject"
+    },
+    {
       "name": "stop-slop",
       "verdict": "reject"
     },
@@ -1569,6 +1831,10 @@
     {
       "name": "telekom-mcp-security",
       "verdict": "inspiration"
+    },
+    {
+      "name": "tradegate",
+      "verdict": "reject"
     },
     {
       "name": "trek-travel",
@@ -1615,14 +1881,22 @@
       "verdict": "adopt"
     },
     {
+      "name": "yahoo-finance-chart",
+      "verdict": "adopt"
+    },
+    {
+      "name": "yfinance",
+      "verdict": "inspiration"
+    },
+    {
       "name": "yq",
       "verdict": "adopt"
     }
   ],
   "graph": {
     "present": true,
-    "nodes": 11702,
-    "external": 10,
+    "nodes": 13192,
+    "external": 11,
     "stale": [],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",

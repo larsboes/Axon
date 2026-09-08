@@ -1,0 +1,62 @@
+{
+  "_doc": "SHAPE ONLY. The real corpus lives in the private overlay at config/comms-mail-stream-shadow.json, beside comms-redaction-shadow.json and with the same companion .md holding the write-up. Every fixture below is synthetic: no address, subject or preview here came from a mailbox. Read by comms-mail-model-eval, which takes the corpus path as argv[1] and makes zero model calls.",
+  "_method": "Export the threads the deterministic rules left at the aktiv fallback: id, sender domain, the STORED subject and snippet (already redacted for c2 and c3 at intake), the data class, and rule_stream. Then hand-write two labels per row -- the stream from rules::STREAMS and the urgency band 0-3 -- BEFORE reading any model output. Both in one pass: re-labelling to add the second one costs the same rows twice. Then run `comms mail classify --shadow`, then `comms-mail-model-eval <path>`.",
+  "_scope": "The fallback rows only. A thread a config rule or a heuristic decided is not this rung's question, and scoring it here would measure the rules.",
+  "acceptance": {
+    "_why": "minimum_agreement_percent, max_urgency_band_error and max_urgency_overstatement_percent are null on purpose. The first run's job is to find out what the number IS; a threshold invented before the measurement is a number chosen to be met. Write them in after the first run, the way minimum_recall_percent was set for the redaction corpus. max_false_eviction_percent is different in kind: it is a stated policy judgement, not a measurement. Every applied write is an eviction from aktiv, and a correctly-aktiv mail moved out of it vanishes from the operator's ladder -- the one failure here that costs a decision. The flip from shadow to live also needs model agreement >= control + 10 points; the 10 is a judgement, recorded and reversible.",
+    "minimum_agreement_percent": null,
+    "max_false_eviction_percent": 2.0,
+    "max_urgency_band_error": null,
+    "max_urgency_overstatement_percent": null
+  },
+  "fixtures": [
+    {
+      "id": "synthetic-thread-0001",
+      "language": "en",
+      "data_class": "c1",
+      "sender_domain": "example.com",
+      "subject": "Re: the quarterly figures",
+      "snippet": "Could you confirm the number before Friday?",
+      "rule_stream": "aktiv",
+      "label": "issue",
+      "urgency_band": 2,
+      "label_note": "Asks for a confirmation and names a date, which is what separates issue from aktiv. No built-in heuristic and none of the configured rules can produce issue at all."
+    },
+    {
+      "id": "synthetic-thread-0002",
+      "language": "de",
+      "data_class": "c1",
+      "sender_domain": "example.org",
+      "subject": "Neuigkeiten aus dem Verein",
+      "snippet": "Der Newsletter fuer diesen Monat.",
+      "rule_stream": "aktiv",
+      "label": "feed",
+      "urgency_band": 0,
+      "label_note": "Reading material with no List-Unsubscribe header, so the newsletter heuristic never saw it. Nothing is asked of the reader."
+    },
+    {
+      "id": "synthetic-thread-0003",
+      "language": "en",
+      "data_class": "c2",
+      "sender_domain": "example.net",
+      "subject": "Your booking [email]",
+      "snippet": "Reference [account]. Nothing further is needed from you.",
+      "rule_stream": "aktiv",
+      "label": "aktiv",
+      "urgency_band": 0,
+      "label_note": "The markers are the intake redactor's output and are stored that way. A c2 fixture is copied from the STORED columns, never from the mailbox."
+    },
+    {
+      "id": "synthetic-thread-0004",
+      "language": "de",
+      "data_class": "c3",
+      "sender_domain": "example.com",
+      "subject": "[redacted]",
+      "snippet": "[redacted]",
+      "rule_stream": "aktiv",
+      "label": "aktiv",
+      "urgency_band": 1,
+      "label_note": "A Secret row. The rung refuses it before a prompt is built, so its verdict is local_refused and the evaluator SKIPS it with that reason rather than scoring it. Kept in the corpus so the skip is visible and the refusal count can be checked against the pass receipt."
+    }
+  ]
+}

@@ -293,7 +293,7 @@
   }
 
   .risk.mixed {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .risk.bad {
@@ -490,7 +490,7 @@
   }
 
   .stats dd.mixed {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .stats dd.bad {

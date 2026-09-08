@@ -1,0 +1,9 @@
+# See schemas/pack.toml.example for the field reference.
+# The harness maintains the work; this Pack maintains the harness. It decides what
+# should exist (suggest-skills), what should stop being loaded (trim), and whether
+# every harness still matches the Packs that feed it (harness-sync). Authoring the
+# skill itself is Packs/writing (writing-skills) — see README.md#the-boundary.
+name        = "harness"
+description = "Keep the agent harness itself in shape: propose the skills the recorded work actually needs, shrink what loads into every session, and keep every harness in step with the Packs that feed it."
+skills      = ["suggest-skills", "trim", "harness-sync"]
+license     = "MIT"

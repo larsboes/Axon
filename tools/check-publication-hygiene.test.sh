@@ -43,6 +43,28 @@ printf '%s\n' 'portable metadata' > "$SCRATCH/leak.bin"
 git -C "$SCRATCH" add leak.bin
 expect_pass "cleaned index"
 
+# The dashboard's own lib/home/ is a directory in this repository, not a home directory.
+# Home's decision ladder lives there, so every import specifier below it matched the second
+# home marker and turned this gate red on a branch that leaked nothing.
+printf '%s\n' 'import mail from "$lib/''home/kinds/mail.ts";' > "$SCRATCH/import.txt"
+git -C "$SCRATCH" add import.txt
+expect_pass "an import specifier under the repository's own lib/home/"
+
+# ...and the two shapes that exemption must not cost, both of which begin after an
+# identifier character: a committed diff's a/ and b/ prefixes, and a relative path.
+printf '%s\n' 'diff prefix: a/''Users/private-user/Developer/project/' > "$SCRATCH/diffish.txt"
+git -C "$SCRATCH" add diffish.txt
+expect_fail_with "a workstation path behind a diff prefix" "diffish.txt"
+
+git -C "$SCRATCH" rm -q --cached diffish.txt
+rm -f "$SCRATCH/diffish.txt"
+printf '%s\n' 'relative: ../../''Users/private-user/Developer/project/' > "$SCRATCH/relative.txt"
+git -C "$SCRATCH" add relative.txt
+expect_fail_with "a workstation path written relative" "relative.txt"
+
+git -C "$SCRATCH" rm -q --cached relative.txt
+rm -f "$SCRATCH/relative.txt"
+
 printf '%s\n' 'private overlay: axon-family' > "$SCRATCH/instance.txt"
 git -C "$SCRATCH" add instance.txt
 expect_fail_with "named deployment marker" "instance.txt"

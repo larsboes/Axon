@@ -1,34 +1,20 @@
-//! Pure proleptic-Gregorian date math for rhythm materialization and window
-//! queries — no chrono: the dependency set stays identical to
-//! capabilities/trips (no new `upstreams.toml` verdicts), and the algorithms
-//! (Howard Hinnant's days-from-civil) are a few lines with round-trip tests.
-//! transit's `plan` subcommand made the same call for date-window sampling.
-
-use std::time::{SystemTime, UNIX_EPOCH};
+//! Proleptic-Gregorian date math for rhythm materialization and window queries,
+//! plus the entry-instant parsing built on it.
+//!
+//! The conversion pair itself is `libs/civil-date` — no chrono there either, for
+//! the reason this module recorded first: the dependency set stays identical to
+//! capabilities/trips (no new `upstreams.toml` verdicts), and the algorithm is a
+//! few lines with round-trip tests. What stays here is what is calendar's own:
+//! weekday tokens, the strict `parse_date` gate, and `parse_instant`.
 
 /// Days since 1970-01-01 for a civil date (proleptic Gregorian).
 pub fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400; // [0, 399]
-    let mp = (month as i64 + 9) % 12; // [0, 11], Mar = 0
-    let doy = (153 * mp + 2) / 5 + day as i64 - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146097 + doe - 719468
+    civil_date::ymd_to_unix_day(year, month, day)
 }
 
 /// Inverse of `days_from_civil`.
 pub fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = z - era * 146097; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
-    (if m <= 2 { y + 1 } else { y }, m as u32, d as u32)
+    civil_date::unix_day_to_ymd(z)
 }
 
 /// Weekday of a day count, 0 = Monday .. 6 = Sunday. 1970-01-01 was a Thursday.
@@ -126,11 +112,7 @@ pub fn instant_minutes(text: &str) -> Option<i64> {
 /// for rhythms. UTC rather than operator-local is fine at day granularity for
 /// the single-home-zone v1; documented in the README's time-model block.
 pub fn today_days() -> i64 {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    (secs / 86400) as i64
+    civil_date::today_unix_day()
 }
 
 #[cfg(test)]

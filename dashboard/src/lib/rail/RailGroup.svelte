@@ -34,13 +34,12 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
+    /* Sentence case, matching PageHeader's badge and Home's section kickers. */
     margin: 0;
-    padding: 0.5rem 0.25rem 0.4rem;
+    padding: var(--space-3) var(--space-1) var(--space-2);
     color: var(--text-tertiary);
-    font-size: 0.625rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
+    font-size: var(--text-2xs);
+    font-weight: 600;
   }
 
   .total {

@@ -14,4 +14,4 @@ path = "src/lib.rs"
 [dependencies]
 # The hash itself. Named here rather than by each caller so the two consumers
 # cannot end up on different versions of the digest that keys their live links.
-sha2 = "0.10"
+sha2.workspace = true

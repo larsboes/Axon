@@ -1,9 +1,14 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { page } from "$app/state";
   import Icon from "$lib/Icon.svelte";
   import PageHeader from "$lib/PageHeader.svelte";
   import FinanceDashboard from "$lib/finance/FinanceDashboard.svelte";
+  import InvestmentsPanel from "$lib/finance/InvestmentsPanel.svelte";
+  import DecisionsInbox from "$lib/finance/DecisionsInbox.svelte";
+  import * as invest from "$lib/finance/invest-api";
   import {
+    axonStatus,
     finance,
     type Burn,
     type FinanceDashboard as FinanceDashboardData,
@@ -13,8 +18,17 @@
     type WritebackResult,
   } from "$lib/api";
 
-  type View = "overview" | "planning" | "transactions" | "subscriptions";
-  let view = $state<View>("overview");
+  // The tab order, and the union derived from it: two lists would drift, and the
+  // one that drifted would be the one a deep link is checked against.
+  const VIEWS = ["overview", "planning", "transactions", "investments", "subscriptions"] as const;
+  type View = (typeof VIEWS)[number];
+
+  // Home's decision row links to /finance?view=investments, so the query has to
+  // land on the tab it names -- a link that opens a different tab is a link that
+  // did not work. Seeded ONCE rather than $derived: the tabs below write `view`,
+  // and a derived value would snap back to the URL on the next click.
+  const requestedView = page.url.searchParams.get("view");
+  let view = $state<View>(VIEWS.find((candidate) => candidate === requestedView) ?? "overview");
 
   // The date picker is the point of this page rather than a convenience on it. A
   // subscription's price is an append-only series, so "what am I paying" and "what
@@ -57,7 +71,43 @@
   const WELL_FORMED = /^\d{4}-\d{2}-\d{2}$/;
   const validAt = $derived(WELL_FORMED.test(at) ? at : null);
 
-  onMount(() => void load(at));
+  // Investments: loaded on demand, because a cold page must not pay for a
+  // portfolio nobody asked to see.
+  let portfolio = $state<invest.Portfolio | null>(null);
+  let priceStatus = $state<invest.PriceStatus | null>(null);
+  let openDecisions = $state<invest.Decision[]>([]);
+  let investError = $state<string | null>(null);
+  let investLoaded = $state(false);
+
+  async function loadInvestments() {
+    try {
+      const [book, prices, open] = await Promise.all([
+        invest.portfolio("EUR"),
+        invest.priceStatus(),
+        invest.decisions("open"),
+      ]);
+      portfolio = book;
+      priceStatus = prices;
+      openDecisions = open;
+      investError = null;
+    } catch (cause) {
+      investError = cause instanceof Error ? cause.message : String(cause);
+    } finally {
+      investLoaded = true;
+    }
+  }
+
+  // finance declares autostart = "false" in its manifest, and this page was the
+  // one finance surface that never started it — on a cold machine it showed a raw
+  // request error instead of a capability that had simply not been started.
+  onMount(() => {
+    void axonStatus.start("finance").catch(() => undefined);
+    void load(at);
+  });
+
+  $effect(() => {
+    if (view === "investments" && !investLoaded) void loadInvestments();
+  });
 
   $effect(() => {
     if (loaded && validAt) void load(validAt);
@@ -351,12 +401,21 @@
 />
 
 <nav aria-label="Finance views">
-  {#each ["overview", "planning", "transactions", "subscriptions"] as item (item)}
-    <button class:active={view === item} onclick={() => view = item as View}>{item}</button>
+  {#each VIEWS as item (item)}
+    <button class:active={view === item} onclick={() => view = item}>{item}</button>
   {/each}
 </nav>
 
-{#if view !== "subscriptions"}
+{#if view === "investments"}
+  {#if investError}
+    <p class="err"><Icon name="alert" size={14} /> {investError}</p>
+  {:else if !investLoaded}
+    <p class="muted">Loading…</p>
+  {:else if portfolio}
+    <DecisionsInbox decisions={openDecisions} onchanged={loadInvestments} />
+    <InvestmentsPanel {portfolio} prices={priceStatus} />
+  {/if}
+{:else if view !== "subscriptions"}
   <FinanceDashboard mode={view} onnavigate={(target) => view = target} />
 {:else if error}
   <p class="err"><Icon name="alert" size={14} /> {error}</p>

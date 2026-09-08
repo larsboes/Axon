@@ -111,6 +111,7 @@ mod tests {
                 api: axon_inference::Api::Ollama,
                 base_url: "http://127.0.0.1:11434".into(),
                 api_key_file: None,
+                provided_by: None,
             },
             model: "some-unmeasured-ocr-model".into(),
             provider_name: None,
@@ -124,6 +125,7 @@ mod tests {
             document_prefix: String::new(),
             chat_template_kwargs: None,
             request_overrides: None,
+            trusted_peer: false,
         };
         let error = read(Some(&role), &Document::image(b"pixels")).expect_err("gate not cleared");
         assert!(

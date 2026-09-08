@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from "$lib/Icon.svelte";
+  import { link } from "$lib/nav";
   import type {
     CalendarContext,
     CalendarEntry,
@@ -28,6 +29,8 @@
   type SourceCard = {
     key: string;
     title: string;
+    /** A field, not a ternary at the render site: the icon is a fact about the source. */
+    icon: string;
     role: string;
     count: number;
     status: string;
@@ -42,56 +45,65 @@
     return [
       {
         key: "obsidian",
+        icon: "compass",
         title: "Obsidian",
         role: "Profiles and curated personal context",
         count: configuredObsidian.length,
         status: configuredObsidian.every((source) => source.configured) ? "connected" : "check setup",
-        href: "/feed?view=discover",
+        href: link("/feed?view=discover"),
         action: "Use profiles",
       },
       {
         key: "calendar",
+        icon: "calendar",
         title: "Calendar",
         role: "Commitments, free time, and soft planning contexts",
         count: calendarEntries.length + contexts.length,
         status: "live",
-        href: "/calendar",
+        href: link("/calendar"),
         action: "Open",
       },
       {
         key: "discovery",
+        icon: "compass",
         title: "Luma & Discovery",
         role: "Events, meetups, hackathons, and other opportunities",
         count: opportunities.length,
         status: `${discoveryAdapters.filter((source) => source.enabled).length} active sources`,
-        href: "/feed?view=discover",
+        href: link("/feed?view=discover"),
         action: "Scan",
       },
       {
         key: "web",
+        // `compass`, the glyph the ternary this replaced gave this card: only `calendar`,
+        // `trips` and `feed` were named there and every other key fell through. Sharing
+        // the Calendar card's glyph would also stop telling the two cards apart.
+        icon: "compass",
         title: "Individual web sources",
         role: "Deliberately added event pages with their original evidence",
         count: webEntries.length,
         status: "curated",
-        href: "/calendar",
+        href: link("/calendar"),
         action: "View in calendar",
       },
       {
         key: "feed",
+        icon: "feed",
         title: "Feed",
         role: "Articles, videos, repositories, and observations",
         count: feedEntries.length,
         status: "30-day window",
-        href: "/feed",
+        href: link("/feed"),
         action: "Add a link",
       },
       {
         key: "trips",
+        icon: "map-pin",
         title: "Travel planning",
         role: "Places, stages, and decisions from Trips",
         count: plans.length,
         status: "connected",
-        href: "/travel",
+        href: link("/travel"),
         action: "Plan",
       },
     ];
@@ -109,7 +121,7 @@
     {#each cards as card (card.key)}
       <a href={card.href}>
         <header>
-          <span class="source-icon"><Icon name={card.key === "calendar" ? "calendar" : card.key === "trips" ? "map-pin" : card.key === "feed" ? "feed" : "compass"} size={15} /></span>
+          <span class="source-icon"><Icon name={card.icon as never} size={15} /></span>
           <em>{card.status}</em>
         </header>
         <strong>{card.title}</strong>
@@ -135,7 +147,7 @@
   .source-grid > a:hover { border-color: var(--primary); transform: translateY(-1px); }
   header { display: flex; align-items: center; justify-content: space-between; }
   .source-icon { display: grid; place-items: center; width: 2rem; height: 2rem; border-radius: var(--radius-sm); background: var(--primary-soft); color: var(--primary); }
-  header em { color: var(--text-tertiary); font-size: .58rem; font-style: normal; text-transform: uppercase; }
+  header em { color: var(--text-tertiary); font-size: var(--text-2xs); font-style: normal; }
   .source-grid strong { margin-top: .65rem; font-size: .8rem; }
   .source-grid p { margin: .25rem 0 .7rem; color: var(--text-secondary); font-size: .66rem; line-height: 1.4; }
   footer { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-top: auto; padding-top: .55rem; border-top: 1px solid var(--card-border); color: var(--text-tertiary); font-size: .58rem; }

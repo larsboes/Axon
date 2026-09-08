@@ -7,8 +7,6 @@ use crate::source::{SearchQuery, SourceAdapter, SourceError};
 
 const CONFERENCES_URL: &str =
     "https://raw.githubusercontent.com/abhshkdz/ai-deadlines/gh-pages/_data/conferences.yml";
-// Update once Axon goes public (no public GitHub remote yet, see PROJECTS.md).
-const USER_AGENT: &str = "Axon-Scouting/0.1 (+https://github.com/larsboes/Axon)";
 
 pub struct CfpConferencesAdapter {
     pub cache_dir: Option<PathBuf>,
@@ -169,10 +167,6 @@ impl SourceAdapter for CfpConferencesAdapter {
 
     fn rate_limit_per_min(&self) -> u32 {
         30
-    }
-
-    fn user_agent(&self) -> &str {
-        USER_AGENT
     }
 
     fn search(&self, query: &SearchQuery) -> Result<Vec<Opportunity>, SourceError> {

@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from "$lib/Icon.svelte";
+  import { link } from "$lib/nav";
   import { entryLink } from "$lib/calendar/types";
   import type { CalendarEntry, ScoutingOpportunity, TripPlan } from "$lib/api";
 
@@ -81,7 +82,7 @@
           title: plan.title,
           date: plan.date_start,
           meta: "Travel planning",
-          href: "/travel",
+          href: link("/travel"),
           rank: 700,
         });
       }

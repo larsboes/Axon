@@ -246,7 +246,7 @@
     gap: 0.45rem;
     font-size: 0.85rem;
     margin: 0 0 0.3rem;
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .err-hint {
@@ -312,7 +312,7 @@
   }
 
   .temp-value.warm {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .temp-value.hot {
@@ -408,7 +408,7 @@
     margin-left: auto;
     display: flex;
     align-items: center;
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .mem-row {

@@ -13,12 +13,17 @@ pub mod accounting;
 pub mod allocation;
 pub mod analytics;
 pub mod balance;
+pub mod clock;
 pub mod config;
+pub mod decision;
 pub mod import;
 pub mod investment;
 pub mod journal;
 pub mod obsidian;
 pub mod planning;
+pub mod portfolio;
+pub mod price;
+pub mod risk;
 pub mod store;
 pub mod subscription;
 

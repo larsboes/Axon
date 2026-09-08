@@ -25,6 +25,18 @@
 //! nicht ueberlappen, und keine Wohnung kann das erlauben. Sie deklarieren zu lassen hiesse,
 //! jede Wohnung eine Invariante wiederholen zu lassen, die sie nicht aendern kann, und die
 //! erste vergessene waere eine still abgeschaltete Pruefung.
+//!
+//! ## Eine Funktion je Regel
+//!
+//! [`check_layout`] entscheidet nichts. Es baut die `Pruefung` — Raum, Regeln, aufgestellte
+//! Stuecke, belegtes Gitter — und ruft jede Regel einmal damit auf; alle schreiben in dieselben
+//! `Befunde`. Bis 2026-09-05 stand alles davon in einer Funktion von 1008 Zeilen, in der die
+//! Regeln nur durch Bannerkommentare getrennt waren.
+//!
+//! Zwei Eigenschaften haengen daran und sind jetzt vom Compiler gehalten statt von der
+//! Aufmerksamkeit des Lesers: keine Regel kann die Grundlage einer anderen veraendern, weil sie
+//! sie nur geliehen bekommt; und keine liest, was eine andere geschrieben hat.
+//! Die Reihenfolge im Bericht ist weiterhin die Aufrufreihenfolge in [`check_layout`].
 
 use crate::geometry::{
     clearance_field, free_depth_on_side, overlap_area, point_in_polygon, rect_gap,
@@ -700,79 +712,147 @@ fn approach_rect(seg: &Segment, depth: i32) -> Rect {
     }
 }
 
+/// Was jede Regel zu lesen bekommt.
+///
+/// Der Raum, die Regeln, die gestellten Stuecke mit ihrer fertigen Grundflaeche und das Gitter,
+/// gegen das gemessen wird. Einmal gebaut, danach nur noch gelesen: keine Regel darf die
+/// Grundlage der naechsten veraendern, und dass sie es nicht kann, sagt hier der Compiler und
+/// nicht ein Kommentar.
+struct Pruefung<'a> {
+    model: &'a Model,
+    room: &'a Room,
+    rules: &'a Rules,
+    placed: Vec<Placed<'a>>,
+    /// Der Raum mit allem Belegten darin — Fixmoebel und gestellte Stuecke, aber ohne die
+    /// Tuerschwenkflaechen. Warum die fehlen, steht in [`Pruefung::neu`].
+    grid: Grid,
+}
+
+/// Was jede Regel schreiben darf, und mehr nicht.
+///
+/// Vier Listen statt vier Rueckgabewerten: eine Regel meldet Verstoesse in zwei Schweren, jede
+/// Messung als [`Reserve`] — auch die bestandene — und den Grund, wenn sie gar nicht laufen
+/// konnte. Weil alle Regeln in dieselben Listen schreiben, ist die Reihenfolge im Bericht
+/// weiterhin die Reihenfolge, in der [`check_layout`] sie aufruft.
+#[derive(Default)]
+struct Befunde {
+    hard: Vec<Violation>,
+    soft: Vec<Violation>,
+    /// Jede Messung, nicht nur die gescheiterten. Siehe [`Reserve`].
+    reserven: Vec<Reserve>,
+    /// Regeln, die laufen wollten und nicht konnten. Wird im Bericht mit den gar nicht
+    /// implementierten zusammengelegt — fuer den Leser ist beides dasselbe: nicht gemessen.
+    ausgefallen: Vec<(String, String)>,
+}
+
+impl<'a> Pruefung<'a> {
+    /// Stellt das Layout auf und belegt das Gitter damit.
+    ///
+    /// Die einzige Stelle, die etwas aufbaut. Danach lesen alle Regeln denselben Zustand, und
+    /// keine kann ihn der naechsten unter den Fuessen wegziehen.
+    fn neu(model: &'a Model, layout: &'a Layout) -> Result<Self, ModelError> {
+        let room = &model.room;
+        let cat: &Catalogue = &model.catalogue;
+
+        let mut placed: Vec<Placed> = Vec::new();
+        for it in &layout.items {
+            let (w, d, h) = footprint(it, cat)?;
+            placed.push(Placed {
+                it,
+                kind: kind_of(it),
+                item: cat.get(&it.reference),
+                w,
+                d,
+                h,
+                rect: Rect {
+                    x: it.x,
+                    y: it.y,
+                    w,
+                    d,
+                },
+            });
+        }
+
+        let mut grid = Grid::new(&room.hauptraum.polygon);
+        for f in &room.fix_moebel {
+            grid.occupy(&Rect {
+                x: f.x[0],
+                y: f.y[0],
+                w: f.x[1] - f.x[0],
+                d: f.y[1] - f.y[0],
+            });
+        }
+        // Tuerschwenk-Sperrflaechen werden hier absichtlich NICHT blockiert. Sie schraenken ein, wo
+        // Moebel stehen duerfen, nicht wo ein Mensch geht — durch den Schwenkbereich der eigenen
+        // Wohnungstuer laeuft man taeglich. Blockiert man sie, wird der Schwenkbogen selbst zur
+        // Engstelle jeder Route und meldet 50 cm, egal wo die Moebel stehen. `r2_tuerschwenk` prueft
+        // sie direkt gegen die Moebelgrundflaechen — so, wie rules.toml sie formuliert.
+        for p in &placed {
+            grid.occupy(&p.rect);
+        }
+
+        Ok(Self {
+            model,
+            room,
+            rules: &model.rules,
+            placed,
+            grid,
+        })
+    }
+}
+
+/// Beurteilt ein Layout gegen `rules.toml`.
+///
+/// Diese Funktion entscheidet nichts. Sie baut die `Pruefung`, laesst jede Regel einmal in
+/// dieselben `Befunde` schreiben und uebergibt beides an `bericht`. Die Reihenfolge hier ist
+/// die Reihenfolge im Bericht, und sie ist die einzige Verabredung zwischen den Regeln: keine
+/// liest, was eine andere geschrieben hat.
 pub fn check_layout(
     model: &Model,
     layout: &Layout,
 ) -> Result<CheckResult, crate::model::ModelError> {
-    let room = &model.room;
-    let rules = &model.rules;
-    let cat: &Catalogue = &model.catalogue;
-    let mut hard: Vec<Violation> = Vec::new();
-    let mut soft: Vec<Violation> = Vec::new();
-    // Jede Messung, nicht nur die gescheiterten. Siehe `Reserve`.
-    let mut reserven: Vec<Reserve> = Vec::new();
-    // Regeln, die laufen wollten und nicht konnten. Wird unten mit den gar nicht
-    // implementierten zusammengelegt — fuer den Leser ist beides dasselbe: nicht gemessen.
-    let mut ausgefallen: Vec<(String, String)> = Vec::new();
+    let pruefung = Pruefung::neu(model, layout)?;
+    let mut out = Befunde::default();
 
-    let mut placed: Vec<Placed> = Vec::new();
-    for it in &layout.items {
-        let (w, d, h) = footprint(it, cat)?;
-        placed.push(Placed {
-            it,
-            kind: kind_of(it),
-            item: cat.get(&it.reference),
-            w,
-            d,
-            h,
-            rect: Rect {
-                x: it.x,
-                y: it.y,
-                w,
-                d,
-            },
-        });
-    }
+    raumgrenze_und_kollision(&pruefung, &mut out);
+    r1_anlaufzonen(&pruefung, &mut out)?;
+    r2_tuerschwenk(&pruefung, &mut out)?;
+    r7_einbau_anlaufzonen(&pruefung, &mut out)?;
+    r3_lichtkorridor(&pruefung, &mut out)?;
+    r4_bettkopf(&pruefung, &mut out)?;
+    r5_seitenlicht(&pruefung, &mut out)?;
+    r6_blick_vom_eingang(&pruefung, &mut out)?;
+    r9_dauersonne(&pruefung, &mut out)?;
+    zugangsabstaende(&pruefung, &mut out)?;
+    let corridors = laufwege(&pruefung, &mut out)?;
 
-    // --- der Raum selbst -----------------------------------------------------
-    let mut grid = Grid::new(&room.hauptraum.polygon);
-    for f in &room.fix_moebel {
-        grid.occupy(&Rect {
-            x: f.x[0],
-            y: f.y[0],
-            w: f.x[1] - f.x[0],
-            d: f.y[1] - f.y[0],
-        });
-    }
-    // Tuerschwenk-Sperrflaechen werden hier absichtlich NICHT blockiert. Sie schraenken ein, wo
-    // Moebel stehen duerfen, nicht wo ein Mensch geht — durch den Schwenkbereich der eigenen
-    // Wohnungstuer laeuft man taeglich. Blockiert man sie, wird der Schwenkbogen selbst zur
-    // Engstelle jeder Route und meldet 50 cm, egal wo die Moebel stehen. R2 prueft sie unten
-    // direkt gegen die Moebelgrundflaechen — so, wie rules.toml sie formuliert.
-    for p in &placed {
-        grid.occupy(&p.rect);
-    }
+    Ok(bericht(&pruefung, layout, out, corridors))
+}
 
-    // --- Raumgrenze und gegenseitige Ueberlappung ---------------------------
-    //
-    // Das knappste Stueck an der Wand, als eine Reserve. Sie kam am 2026-08-31 dazu, und der
-    // Anlass war ein Bericht ueber die echte Wohnung: ein Layout meldete DURCHGEFALLEN und
-    // gleichzeitig „5 cm Reserve", weil die einzige verletzte Regel als einzige harte Regel
-    // gar nichts mass. Eine knappste Zahl, die die verletzte Regel auslaesst, ist schlimmer
-    // als keine — sie wird gelesen.
+/// Raumgrenze und gegenseitige Ueberlappung
+///
+/// Das knappste Stueck an der Wand, als eine Reserve. Sie kam am 2026-08-31 dazu, und der
+/// Anlass war ein Bericht ueber die echte Wohnung: ein Layout meldete DURCHGEFALLEN und
+/// gleichzeitig „5 cm Reserve", weil die einzige verletzte Regel als einzige harte Regel
+/// gar nichts mass. Eine knappste Zahl, die die verletzte Regel auslaesst, ist schlimmer
+/// als keine — sie wird gelesen.
+fn raumgrenze_und_kollision(ctx: &Pruefung, out: &mut Befunde) {
+    let room = ctx.room;
+    let placed = &ctx.placed;
+
     if let Some(engstes) = placed
         .iter()
         .min_by_key(|p| rect_in_polygon_cm(&p.rect, &room.hauptraum.polygon))
     {
         merken_nur_verstoss(
-            &mut reserven,
+            &mut out.reserven,
             "raumgrenze",
             Some(&engstes.it.reference),
             rect_in_polygon_cm(&engstes.rect, &room.hauptraum.polygon),
             "cm",
         );
     }
-    for p in &placed {
+    for p in placed {
         let corners = [
             [p.rect.x + 1, p.rect.y + 1],
             [p.rect.right() - 1, p.rect.y + 1],
@@ -783,7 +863,7 @@ pub fn check_layout(
             .iter()
             .all(|c| point_in_polygon([c[0] as f64, c[1] as f64], &room.hauptraum.polygon))
         {
-            hard.push(Violation {
+            out.hard.push(Violation {
                 rule: "raumgrenze".into(),
                 severity: Severity::Hart,
                 item: Some(p.it.reference.clone()),
@@ -809,7 +889,7 @@ pub fn check_layout(
                 engstes_paar = Some((gap, format!("{} / {}", a.it.reference, b.it.reference)));
             }
             if a.rect.overlaps(&b.rect) {
-                hard.push(Violation {
+                out.hard.push(Violation {
                     rule: "kollision".into(),
                     severity: Severity::Hart,
                     item: Some(format!("{} / {}", a.it.reference, b.it.reference)),
@@ -829,7 +909,7 @@ pub fn check_layout(
 
     if let Some((gap, paar)) = engstes_paar {
         merken(
-            &mut reserven,
+            &mut out.reserven,
             "kollision",
             None,
             Some(&paar),
@@ -840,8 +920,17 @@ pub fn check_layout(
             true,
         );
     }
+}
 
-    // --- R1 / R2 / R7: Anlauf- und Sperrzonen -------------------------------
+/// R1: die Anlaufzone einer Oeffnung bleibt frei.
+///
+/// R2 und R7 stellen dieselbe Frage an andere Flaechen — den Tuerschwenk und die Anlaufzone
+/// eines festen Einbaus — und stehen darum je fuer sich.
+fn r1_anlaufzonen(ctx: &Pruefung, out: &mut Befunde) -> Result<(), ModelError> {
+    let room = ctx.room;
+    let rules = ctx.rules;
+    let placed = &ctx.placed;
+
     for o in &room.oeffnungen {
         let Some(depth) = o.freihaltezone else {
             continue;
@@ -853,7 +942,7 @@ pub fn check_layout(
         // Das naechste Moebel an dieser Zone, ob es sie nun beruehrt oder nicht.
         if let Some(naechstes) = placed.iter().min_by_key(|p| rect_gap(&p.rect, &zone)) {
             merken(
-                &mut reserven,
+                &mut out.reserven,
                 "R1",
                 Some(&naechstes.it.reference),
                 Some(&o.id),
@@ -864,7 +953,7 @@ pub fn check_layout(
                 ist_hart(rules, "R1")?,
             );
         }
-        for p in &placed {
+        for p in placed {
             if p.rect.overlaps(&zone) {
                 einsortieren(
                     haus_regel(
@@ -878,18 +967,32 @@ pub fn check_layout(
                         None,
                         Some(depth),
                     )?,
-                    &mut hard,
-                    &mut soft,
+                    &mut out.hard,
+                    &mut out.soft,
                 );
             }
         }
     }
+
+    Ok(())
+}
+
+/// R2: kein Moebel im Schwenkbereich einer Tuer.
+///
+/// Diese Flaechen sind absichtlich nicht im Gitter belegt — warum, steht in [`Pruefung::neu`].
+/// Sie werden hier direkt gegen die Moebelgrundflaechen geprueft, so wie rules.toml sie
+/// formuliert.
+fn r2_tuerschwenk(ctx: &Pruefung, out: &mut Befunde) -> Result<(), ModelError> {
+    let room = ctx.room;
+    let rules = ctx.rules;
+    let placed = &ctx.placed;
+
     for o in &room.oeffnungen {
         let Some(sp) = o.sperrflaeche else { continue };
         let zone = sp.rect();
         if let Some(naechstes) = placed.iter().min_by_key(|p| rect_gap(&p.rect, &zone)) {
             merken(
-                &mut reserven,
+                &mut out.reserven,
                 "R2",
                 Some(&naechstes.it.reference),
                 Some(&o.id),
@@ -900,7 +1003,7 @@ pub fn check_layout(
                 ist_hart(rules, "R2")?,
             );
         }
-        for p in &placed {
+        for p in placed {
             if p.rect.overlaps(&zone) {
                 einsortieren(
                     haus_regel(
@@ -914,15 +1017,26 @@ pub fn check_layout(
                         None,
                         None,
                     )?,
-                    &mut hard,
-                    &mut soft,
+                    &mut out.hard,
+                    &mut out.soft,
                 );
             }
         }
     }
-    // R7 galt bis 2026-08-30 fuer genau ein Moebel, das der Code beim Namen kannte. Sie gilt
-    // jetzt fuer jeden festen Einbau, der eine Anlaufzone deklariert — und die Schwelle schlaegt
-    // er ueber ihren Namen in rules.toml nach, statt sie mitzubringen.
+
+    Ok(())
+}
+
+/// R7: die Anlaufzone eines festen Einbaus bleibt frei.
+///
+/// R7 galt bis 2026-08-30 fuer genau ein Moebel, das der Code beim Namen kannte. Sie gilt
+/// jetzt fuer jeden festen Einbau, der eine Anlaufzone deklariert — und die Schwelle schlaegt
+/// er ueber ihren Namen in rules.toml nach, statt sie mitzubringen.
+fn r7_einbau_anlaufzonen(ctx: &Pruefung, out: &mut Befunde) -> Result<(), ModelError> {
+    let room = ctx.room;
+    let rules = ctx.rules;
+    let placed = &ctx.placed;
+
     for f in &room.fix_moebel {
         let Some(zone_decl) = &f.anlaufzone else {
             continue;
@@ -931,7 +1045,7 @@ pub fn check_layout(
         let zone = anlauf_rect(&f.rect(), zone_decl.seite, depth);
         if let Some(naechstes) = placed.iter().min_by_key(|p| rect_gap(&p.rect, &zone)) {
             merken(
-                &mut reserven,
+                &mut out.reserven,
                 "R7",
                 Some(&naechstes.it.reference),
                 Some(&f.id),
@@ -942,7 +1056,7 @@ pub fn check_layout(
                 ist_hart(rules, "R7")?,
             );
         }
-        for p in &placed {
+        for p in placed {
             if p.rect.overlaps(&zone) {
                 einsortieren(
                     haus_regel(
@@ -956,17 +1070,25 @@ pub fn check_layout(
                         None,
                         Some(depth),
                     )?,
-                    &mut hard,
-                    &mut soft,
+                    &mut out.hard,
+                    &mut out.soft,
                 );
             }
         }
     }
 
-    // --- R3: der Lichtkorridor ----------------------------------------------
-    // Anders als in der TypeScript-Vorlage sind diese vier Zahlen KEINE Abschrift aus einem
-    // Prosatext mehr: rules.toml fuehrt `[lichtkorridor]` strukturiert, also kann die Regel
-    // nicht mehr still von ihrer eigenen Beschreibung abweichen.
+    Ok(())
+}
+
+/// R3: der Lichtkorridor bleibt niedrig.
+///
+/// Anders als in der TypeScript-Vorlage sind diese vier Zahlen KEINE Abschrift aus einem
+/// Prosatext mehr: rules.toml fuehrt `[lichtkorridor]` strukturiert, also kann die Regel
+/// nicht mehr still von ihrer eigenen Beschreibung abweichen.
+fn r3_lichtkorridor(ctx: &Pruefung, out: &mut Befunde) -> Result<(), ModelError> {
+    let rules = ctx.rules;
+    let placed = &ctx.placed;
+
     let lc = &rules.lichtkorridor;
     let corridor = Rect {
         x: lc.x[0],
@@ -974,12 +1096,12 @@ pub fn check_layout(
         w: lc.x[1] - lc.x[0],
         d: lc.y[1] - lc.y[0],
     };
-    for p in &placed {
+    for p in placed {
         // Ohne gemessene Hoehe kann R3 hier nichts sagen — und ein Stueck, das gar nicht im
         // Korridor steht, braucht auch keine: gemeldet wird nur, wo die Regel wirklich gegriffen
         // haette.
         if p.h.is_none() && p.rect.overlaps(&corridor) {
-            ausgefallen.push((
+            out.ausgefallen.push((
                 "R3".to_string(),
                 format!(
                     "\"{}\" steht im Lichtkorridor und hat keine gemessene Hoehe",
@@ -992,7 +1114,7 @@ pub fn check_layout(
             // das falsche Vorzeichen, und ein 80 cm hohes Lowboard im Korridor sähe knapper
             // aus als ein 200 cm hoher Schrank.
             merken(
-                &mut reserven,
+                &mut out.reserven,
                 "R3",
                 Some(&p.it.reference),
                 Some("lichtkorridor"),
@@ -1017,14 +1139,22 @@ pub fn check_layout(
                         Some(h),
                         Some(lc.max_hoehe),
                     )?,
-                    &mut hard,
-                    &mut soft,
+                    &mut out.hard,
+                    &mut out.soft,
                 );
             }
         }
     }
 
-    // --- R4: Bettkopf weg von der Verglasung --------------------------------
+    Ok(())
+}
+
+/// R4: Bettkopf weg von der Verglasung
+fn r4_bettkopf(ctx: &Pruefung, out: &mut Befunde) -> Result<(), ModelError> {
+    let room = ctx.room;
+    let rules = ctx.rules;
+    let placed = &ctx.placed;
+
     if let Some(glaz) = room
         .oeffnungen
         .iter()
@@ -1038,7 +1168,7 @@ pub fn check_layout(
                 .min_by_key(|p| rect_gap(&p.rect, &band))
             {
                 merken(
-                    &mut reserven,
+                    &mut out.reserven,
                     "R4",
                     Some(&naechstes.it.reference),
                     Some(&glaz.id),
@@ -1060,23 +1190,31 @@ pub fn check_layout(
                             None,
                             None,
                         )?,
-                        &mut hard,
-                        &mut soft,
+                        &mut out.hard,
+                        &mut out.soft,
                     );
                 }
             }
         }
     }
 
-    // --- R5: Fensterlicht faellt seitlich auf den Schreibtisch ---------------
-    //
-    // "Weder frontal zur Verglasung (Blendung) noch mit dem Ruecken dazu (Reflexionen)."
-    // Beides sind Aussagen ueber die Achse, auf der der Schreibtisch zur Verglasung steht:
-    // sitzt man an einer Tiefenseite, liegt vorne und hinten auf der Tiefenachse. Zeigt die
-    // Verglasung dorthin, ist sie im Gesicht oder im Ruecken; liegt sie auf der Breitenachse,
-    // faellt das Licht seitlich ein — genau das, was die Regel verlangt.
-    //
-    // Ohne Verglasung im Raum ist nichts zu messen, und das wird gemeldet statt uebersprungen.
+    Ok(())
+}
+
+/// R5: Fensterlicht faellt seitlich auf den Schreibtisch
+///
+/// "Weder frontal zur Verglasung (Blendung) noch mit dem Ruecken dazu (Reflexionen)."
+/// Beides sind Aussagen ueber die Achse, auf der der Schreibtisch zur Verglasung steht:
+/// sitzt man an einer Tiefenseite, liegt vorne und hinten auf der Tiefenachse. Zeigt die
+/// Verglasung dorthin, ist sie im Gesicht oder im Ruecken; liegt sie auf der Breitenachse,
+/// faellt das Licht seitlich ein — genau das, was die Regel verlangt.
+///
+/// Ohne Verglasung im Raum ist nichts zu messen, und das wird gemeldet statt uebersprungen.
+fn r5_seitenlicht(ctx: &Pruefung, out: &mut Befunde) -> Result<(), ModelError> {
+    let room = ctx.room;
+    let rules = ctx.rules;
+    let placed = &ctx.placed;
+
     {
         let glas = room
             .oeffnungen
@@ -1084,7 +1222,7 @@ pub fn check_layout(
             .find(|o| o.typ.as_deref().is_some_and(|t| t.starts_with("glastuer")));
         let desks = placed.iter().filter(|p| p.kind == Kind::Desk).count();
         match glas.and_then(|g| opening_segment(room, g)) {
-            None if desks > 0 => ausgefallen.push((
+            None if desks > 0 => out.ausgefallen.push((
                 "R5".to_string(),
                 "der Raum fuehrt keine Verglasung, gegen die ein Schreibtisch stehen koennte"
                     .to_string(),
@@ -1119,8 +1257,8 @@ pub fn check_layout(
                                 None,
                                 None,
                             )?,
-                            &mut hard,
-                            &mut soft,
+                            &mut out.hard,
+                            &mut out.soft,
                         );
                     }
                 }
@@ -1129,20 +1267,28 @@ pub fn check_layout(
         }
     }
 
-    // --- R6: der Blick vom Eingang faellt nicht zuerst aufs Bett -------------
-    //
-    // Ein Strahl von der Eingangsoeffnung nach innen, entlang ihrer Normalen. Was er zuerst
-    // trifft, ist das, was man beim Eintreten sieht. Ist das ein Bett, ist die Regel verletzt.
-    //
-    // **Welche Oeffnung der Eingang ist, sagt die Wohnung** (`eingang = true`), nicht der Code.
-    // `badtuer` und `eingangstuer` sind beide `typ = "tuer"`, und die nach dem Namen zu
-    // unterscheiden waere genau der Fehler, den B26a mit der Kuechen-Anlaufzone geschlossen hat.
-    // Sagt die Wohnung nichts, laeuft R6 nicht und sagt das.
+    Ok(())
+}
+
+/// R6: der Blick vom Eingang faellt nicht zuerst aufs Bett
+///
+/// Ein Strahl von der Eingangsoeffnung nach innen, entlang ihrer Normalen. Was er zuerst
+/// trifft, ist das, was man beim Eintreten sieht. Ist das ein Bett, ist die Regel verletzt.
+///
+/// **Welche Oeffnung der Eingang ist, sagt die Wohnung** (`eingang = true`), nicht der Code.
+/// `badtuer` und `eingangstuer` sind beide `typ = "tuer"`, und die nach dem Namen zu
+/// unterscheiden waere genau der Fehler, den B26a mit der Kuechen-Anlaufzone geschlossen hat.
+/// Sagt die Wohnung nichts, laeuft R6 nicht und sagt das.
+fn r6_blick_vom_eingang(ctx: &Pruefung, out: &mut Befunde) -> Result<(), ModelError> {
+    let room = ctx.room;
+    let rules = ctx.rules;
+    let placed = &ctx.placed;
+
     {
         let betten = placed.iter().filter(|p| p.kind == Kind::Bed).count();
         let eingang = room.oeffnungen.iter().find(|o| o.eingang == Some(true));
         match eingang.and_then(|e| opening_segment(room, e)) {
-            None if betten > 0 => ausgefallen.push((
+            None if betten > 0 => out.ausgefallen.push((
                 "R6".to_string(),
                 "keine Oeffnung ist als Eingang deklariert (`eingang = true` in room.toml)"
                     .to_string(),
@@ -1182,8 +1328,8 @@ pub fn check_layout(
                                 None,
                                 None,
                             )?,
-                            &mut hard,
-                            &mut soft,
+                            &mut out.hard,
+                            &mut out.soft,
                         );
                     }
                 }
@@ -1192,23 +1338,31 @@ pub fn check_layout(
         }
     }
 
-    // --- R9: kein Dauersonnenplatz am Schreibtisch (nur wenn die Wohnung sie fuehrt) ---
-    //
-    // Die erste Regel dieser Maschine, die ein Datum kennt. R5 fragt, auf welcher Achse die
-    // Verglasung liegt — eine Aussage ueber die Aufstellung, die ohne Ort und Jahreszeit
-    // auskommt und deshalb auch nicht beantworten kann, ob im Maerz um neun die Sonne auf dem
-    // Bildschirm steht. R9 rechnet den Sonnenstand und den Lichtfleck auf dem Boden.
+    Ok(())
+}
+
+/// R9: kein Dauersonnenplatz am Schreibtisch (nur wenn die Wohnung sie fuehrt)
+///
+/// Die erste Regel dieser Maschine, die ein Datum kennt. R5 fragt, auf welcher Achse die
+/// Verglasung liegt — eine Aussage ueber die Aufstellung, die ohne Ort und Jahreszeit
+/// auskommt und deshalb auch nicht beantworten kann, ob im Maerz um neun die Sonne auf dem
+/// Bildschirm steht. R9 rechnet den Sonnenstand und den Lichtfleck auf dem Boden.
+fn r9_dauersonne(ctx: &Pruefung, out: &mut Befunde) -> Result<(), ModelError> {
+    let model = ctx.model;
+    let rules = ctx.rules;
+    let placed = &ctx.placed;
+
     if rules.regel("R9").is_ok() {
         let desks: Vec<&Placed> = placed.iter().filter(|p| p.kind == Kind::Desk).collect();
         match (model.room.lage, rules.sonne, desks.is_empty()) {
             (_, _, true) => {}
-            (None, _, _) => ausgefallen.push((
+            (None, _, _) => out.ausgefallen.push((
                 "R9".to_string(),
                 "room.toml fuehrt kein [lage] — ohne Breite, Laenge und Nordrichtung gibt es \
                  keinen Sonnenstand"
                     .to_string(),
             )),
-            (_, None, _) => ausgefallen.push((
+            (_, None, _) => out.ausgefallen.push((
                 "R9".to_string(),
                 "rules.toml fuehrt R9, aber keinen [sonne]-Block mit der Stundenschwelle"
                     .to_string(),
@@ -1218,7 +1372,7 @@ pub fn check_layout(
                 for p in desks {
                     let n = crate::sonne::stunden_in_der_sonne(model, &p.rect)?;
                     merken(
-                        &mut reserven,
+                        &mut out.reserven,
                         "R9",
                         Some(&p.it.reference),
                         Some("sonnenstunden"),
@@ -1241,8 +1395,8 @@ pub fn check_layout(
                                 Some(n as i32),
                                 Some(regel.max_stunden_am_schreibtisch as i32),
                             )?,
-                            &mut hard,
-                            &mut soft,
+                            &mut out.hard,
+                            &mut out.soft,
                         );
                     }
                 }
@@ -1250,294 +1404,365 @@ pub fn check_layout(
         }
     }
 
-    // --- Zugangsabstaende ----------------------------------------------------
-    for p in &placed {
-        // Sagt das Stueck selbst, was es braucht, gilt das und sonst nichts. Beides zu pruefen
-        // hiesse, ein Moebel gegen zwei Regelsaetze zu messen und den strengeren gewinnen zu
-        // lassen — dann waere die Deklaration keine Ersetzung, sondern eine Verschaerfung.
-        if eigene_ansprueche(p, &grid, &mut hard, &mut reserven) {
+    Ok(())
+}
+
+/// Die Abstaende, die ein Stueck zum Benutztwerden braucht, je nach Art des Stuecks.
+///
+/// Sagt das Stueck selbst, was es braucht, gilt das und sonst nichts. Beides zu pruefen hiesse,
+/// ein Moebel gegen zwei Regelsaetze zu messen und den strengeren gewinnen zu lassen — dann
+/// waere die Deklaration keine Ersetzung, sondern eine Verschaerfung.
+fn zugangsabstaende(ctx: &Pruefung, out: &mut Befunde) -> Result<(), ModelError> {
+    for p in &ctx.placed {
+        if eigene_ansprueche(p, &ctx.grid, &mut out.hard, &mut out.reserven) {
             continue;
         }
         match p.kind {
-            Kind::Bed => {
-                let want = rules.abstand("bett_zugang_laengsseite")?;
-                let second = rules.abstand("bett_zugang_zweite_seite")?;
-                let long = if p.w >= p.d {
-                    [Side::North, Side::South]
-                } else {
-                    [Side::West, Side::East]
-                };
-                let deckel = horizont(want.max(second));
-                let mut depths: Vec<i32> = long
-                    .iter()
-                    .map(|s| free_depth_on_side(&grid, &p.rect, *s, deckel))
-                    .collect();
-                depths.sort_unstable_by(|a, b| b.cmp(a));
-                merken_bis(
-                    &mut reserven,
-                    "bett_zugang",
-                    Some(&p.it.reference),
-                    Some("beste laengsseite"),
-                    depths[0],
-                    want,
-                    Grenze::Mindestens,
-                    "cm",
-                    true,
-                    Some(deckel),
-                    true,
-                );
-                merken_bis(
-                    &mut reserven,
-                    "bett_zugang",
-                    Some(&p.it.reference),
-                    Some("zweite laengsseite"),
-                    depths[1],
-                    second,
-                    Grenze::Mindestens,
-                    "cm",
-                    true,
-                    Some(deckel),
-                    true,
-                );
-                if depths[0] < want {
-                    hard.push(Violation {
-                        rule: "bett_zugang".into(),
-                        severity: Severity::Hart,
-                        item: Some(p.it.reference.clone()),
-                        message: format!(
-                            "Bett hat {} cm an seiner besten Laengsseite, braucht {}",
-                            depths[0], want
-                        ),
-                        text: None,
-                        measured: Some(depths[0]),
-                        required: Some(want),
-                    });
-                }
-                if depths[1] < second {
-                    hard.push(Violation {
-                        rule: "bett_zugang".into(),
-                        severity: Severity::Hart,
-                        item: Some(p.it.reference.clone()),
-                        message: format!(
-                            "Bett hat {} cm an seiner zweiten Laengsseite, braucht {}",
-                            depths[1], second
-                        ),
-                        text: None,
-                        measured: Some(depths[1]),
-                        required: Some(second),
-                    });
-                }
-            }
-            Kind::Desk => {
-                let want = rules.abstand("schreibtisch_stuhlzone")?;
-                let deckel = horizont(want);
-                let best = SIDES
-                    .iter()
-                    .map(|s| free_depth_on_side(&grid, &p.rect, *s, deckel))
-                    .max()
-                    .unwrap_or(0);
-                merken_bis(
-                    &mut reserven,
-                    "stuhlzone",
-                    Some(&p.it.reference),
-                    None,
-                    best,
-                    want,
-                    Grenze::Mindestens,
-                    "cm",
-                    true,
-                    Some(deckel),
-                    true,
-                );
-                if best < want {
-                    hard.push(Violation {
-                        rule: "stuhlzone".into(), severity: Severity::Hart,
-                        item: Some(p.it.reference.clone()),
-                        message: format!("Schreibtisch hat {} cm fuer den Stuhl an seiner besten Seite, braucht {}", best, want),
-                        text: None,
-                        measured: Some(best), required: Some(want),
-                    });
-                }
-            }
-            Kind::Wardrobe => {
-                let want = rules.abstand("schrank_tuer_oeffnen")?;
-                let deckel = horizont(want);
-                let best = SIDES
-                    .iter()
-                    .map(|s| free_depth_on_side(&grid, &p.rect, *s, deckel))
-                    .max()
-                    .unwrap_or(0);
-                merken_bis(
-                    &mut reserven,
-                    "schrank_tuer",
-                    Some(&p.it.reference),
-                    None,
-                    best,
-                    want,
-                    Grenze::Mindestens,
-                    "cm",
-                    true,
-                    Some(deckel),
-                    true,
-                );
-                if best < want {
-                    hard.push(Violation {
-                        rule: "schrank_tuer".into(),
-                        severity: Severity::Hart,
-                        item: Some(p.it.reference.clone()),
-                        message: format!(
-                            "Schrank hat {} cm zum Tueroeffnen, braucht {}",
-                            best, want
-                        ),
-                        text: None,
-                        measured: Some(best),
-                        required: Some(want),
-                    });
-                }
-            }
-            // Das Schlafsofa wird zum Ausziehen nicht verschoben (Lars, 2026-08-30). Die
-            // Ausklapptiefe ist damit dauerhaft belegte Flaeche und nichts, das man sich im
-            // Gastfall borgt. Geprueft nur an den Laengsseiten: ausgezogen wird ueber die
-            // lange Kante, und in genau eine Richtung, also reicht die bessere Seite.
-            Kind::Couch => {
-                if let Ok(want) = rules.abstand("couch_ausklapptiefe") {
-                    let long = if p.w >= p.d {
-                        [Side::North, Side::South]
-                    } else {
-                        [Side::West, Side::East]
-                    };
-                    let deckel = horizont(want);
-                    let best = long
-                        .iter()
-                        .map(|s| free_depth_on_side(&grid, &p.rect, *s, deckel))
-                        .max()
-                        .unwrap_or(0);
-                    merken_bis(
-                        &mut reserven,
-                        "R8",
-                        Some(&p.it.reference),
-                        Some("beste laengsseite"),
-                        best,
-                        want,
-                        Grenze::Mindestens,
-                        "cm",
-                        ist_hart(rules, "R8")?,
-                        Some(deckel),
-                        true,
-                    );
-                    if best < want {
-                        // Bis 2026-08-31 hiess dieser Verstoss `couch_ausklappen`, waehrend
-                        // jede rules.toml dieselbe Regel als R8 fuehrte. Zwei Namen fuer eine
-                        // Regel, und der Bericht nannte den, den die Wohnung nicht kannte.
-                        einsortieren(
-                            haus_regel(
-                                rules,
-                                "R8",
-                                Some(p.it.reference.clone()),
-                                format!("Couch hat {} cm zum Ausklappen an ihrer besten Laengsseite, braucht {} — sie soll dafuer nicht verschoben werden", best, want),
-                                Some(best),
-                                Some(want),
-                            )?,
-                            &mut hard,
-                            &mut soft,
-                        );
-                    }
-                }
-            }
-            // Ein Esstisch, an dem niemand einen Stuhl herausziehen kann, ist ein Regal. Hart,
-            // wenn keine Seite den Platz hat; weich, wenn nur eine ihn hat — das ist eine
-            // Sitzplatzzahl und kein Verstoss: ein Wandklapptisch hat legitim eine Seite.
-            Kind::Table => {
-                let want = rules.abstand("esstisch_stuhl_ausziehen")?;
-                let deckel = horizont(want);
-                let sides: Vec<i32> = SIDES
-                    .iter()
-                    .map(|s| free_depth_on_side(&grid, &p.rect, *s, deckel))
-                    .collect();
-                let best = *sides.iter().max().unwrap_or(&0);
-                let seats = sides.iter().filter(|d| **d >= want).count();
-                merken_bis(
-                    &mut reserven,
-                    "stuhl_ausziehen",
-                    Some(&p.it.reference),
-                    Some("beste seite"),
-                    best,
-                    want,
-                    Grenze::Mindestens,
-                    "cm",
-                    true,
-                    Some(deckel),
-                    true,
-                );
-                merken(
-                    &mut reserven,
-                    "stuhl_ausziehen",
-                    Some(&p.it.reference),
-                    Some("sitzplaetze"),
-                    seats as i32,
-                    2,
-                    Grenze::Mindestens,
-                    "plaetze",
-                    false,
-                );
-                if seats == 0 {
-                    hard.push(Violation {
-                        rule: "stuhl_ausziehen".into(), severity: Severity::Hart,
-                        item: Some(p.it.reference.clone()),
-                        message: format!("Tisch hat {} cm zum Stuhlherausziehen an seiner besten Seite, braucht {}", best, want),
-                        text: None,
-                        measured: Some(best), required: Some(want),
-                    });
-                } else if seats < 2 {
-                    soft.push(Violation {
-                        rule: "stuhl_ausziehen".into(), severity: Severity::Weich,
-                        item: Some(p.it.reference.clone()),
-                        message: format!("Tisch bietet {} Sitzplatz — nur eine Seite hat die {} cm, die ein Stuhl braucht", seats, want),
-                        text: None,
-                        measured: Some(seats as i32), required: Some(2),
-                    });
-                }
-            }
-            Kind::CoffeeTable => {
-                let want = rules.abstand("couchtisch_vor_sofa")?;
-                for c in placed.iter().filter(|q| q.kind == Kind::Couch) {
-                    let dx = (c.rect.x - p.rect.right())
-                        .max(p.rect.x - c.rect.right())
-                        .max(0);
-                    let dy = (c.rect.y - p.rect.bottom())
-                        .max(p.rect.y - c.rect.bottom())
-                        .max(0);
-                    let gap = (((dx * dx + dy * dy) as f64).sqrt()).round() as i32;
-                    merken(
-                        &mut reserven,
-                        "couchtisch_abstand",
-                        Some(&p.it.reference),
-                        Some(&c.it.reference),
-                        gap,
-                        want,
-                        Grenze::Mindestens,
-                        "cm",
-                        false,
-                    );
-                    if gap < want {
-                        soft.push(Violation {
-                            rule: "couchtisch_abstand".into(),
-                            severity: Severity::Weich,
-                            item: Some(p.it.reference.clone()),
-                            message: format!("Couchtisch steht {} cm vom Sofa, will {}", gap, want),
-                            text: None,
-                            measured: Some(gap),
-                            required: Some(want),
-                        });
-                    }
-                }
-            }
+            Kind::Bed => bett_zugang(ctx, p, out)?,
+            Kind::Desk => stuhlzone(ctx, p, out)?,
+            Kind::Wardrobe => schrank_tuer(ctx, p, out)?,
+            Kind::Couch => r8_couch_ausklappen(ctx, p, out)?,
+            Kind::Table => tisch_stuhl(ctx, p, out)?,
+            Kind::CoffeeTable => couchtisch_abstand(ctx, p, out)?,
             _ => {}
         }
     }
+    Ok(())
+}
 
-    // --- Laufwege ------------------------------------------------------------
-    let field = clearance_field(&grid);
+/// Zugang zum Bett: die beste Laengsseite und die zweite.
+fn bett_zugang(ctx: &Pruefung, p: &Placed, out: &mut Befunde) -> Result<(), ModelError> {
+    let rules = ctx.rules;
+    let grid = &ctx.grid;
+
+    let want = rules.abstand("bett_zugang_laengsseite")?;
+    let second = rules.abstand("bett_zugang_zweite_seite")?;
+    let long = if p.w >= p.d {
+        [Side::North, Side::South]
+    } else {
+        [Side::West, Side::East]
+    };
+    let deckel = horizont(want.max(second));
+    let mut depths: Vec<i32> = long
+        .iter()
+        .map(|s| free_depth_on_side(grid, &p.rect, *s, deckel))
+        .collect();
+    depths.sort_unstable_by(|a, b| b.cmp(a));
+    merken_bis(
+        &mut out.reserven,
+        "bett_zugang",
+        Some(&p.it.reference),
+        Some("beste laengsseite"),
+        depths[0],
+        want,
+        Grenze::Mindestens,
+        "cm",
+        true,
+        Some(deckel),
+        true,
+    );
+    merken_bis(
+        &mut out.reserven,
+        "bett_zugang",
+        Some(&p.it.reference),
+        Some("zweite laengsseite"),
+        depths[1],
+        second,
+        Grenze::Mindestens,
+        "cm",
+        true,
+        Some(deckel),
+        true,
+    );
+    if depths[0] < want {
+        out.hard.push(Violation {
+            rule: "bett_zugang".into(),
+            severity: Severity::Hart,
+            item: Some(p.it.reference.clone()),
+            message: format!(
+                "Bett hat {} cm an seiner besten Laengsseite, braucht {}",
+                depths[0], want
+            ),
+            text: None,
+            measured: Some(depths[0]),
+            required: Some(want),
+        });
+    }
+    if depths[1] < second {
+        out.hard.push(Violation {
+            rule: "bett_zugang".into(),
+            severity: Severity::Hart,
+            item: Some(p.it.reference.clone()),
+            message: format!(
+                "Bett hat {} cm an seiner zweiten Laengsseite, braucht {}",
+                depths[1], second
+            ),
+            text: None,
+            measured: Some(depths[1]),
+            required: Some(second),
+        });
+    }
+    Ok(())
+}
+
+/// Platz fuer den Stuhl am Schreibtisch, an seiner besten Seite.
+fn stuhlzone(ctx: &Pruefung, p: &Placed, out: &mut Befunde) -> Result<(), ModelError> {
+    let rules = ctx.rules;
+    let grid = &ctx.grid;
+
+    let want = rules.abstand("schreibtisch_stuhlzone")?;
+    let deckel = horizont(want);
+    let best = SIDES
+        .iter()
+        .map(|s| free_depth_on_side(grid, &p.rect, *s, deckel))
+        .max()
+        .unwrap_or(0);
+    merken_bis(
+        &mut out.reserven,
+        "stuhlzone",
+        Some(&p.it.reference),
+        None,
+        best,
+        want,
+        Grenze::Mindestens,
+        "cm",
+        true,
+        Some(deckel),
+        true,
+    );
+    if best < want {
+        out.hard.push(Violation {
+            rule: "stuhlzone".into(),
+            severity: Severity::Hart,
+            item: Some(p.it.reference.clone()),
+            message: format!(
+                "Schreibtisch hat {} cm fuer den Stuhl an seiner besten Seite, braucht {}",
+                best, want
+            ),
+            text: None,
+            measured: Some(best),
+            required: Some(want),
+        });
+    }
+    Ok(())
+}
+
+/// Platz, um die Schranktuer zu oeffnen, an der besten Seite.
+fn schrank_tuer(ctx: &Pruefung, p: &Placed, out: &mut Befunde) -> Result<(), ModelError> {
+    let rules = ctx.rules;
+    let grid = &ctx.grid;
+
+    let want = rules.abstand("schrank_tuer_oeffnen")?;
+    let deckel = horizont(want);
+    let best = SIDES
+        .iter()
+        .map(|s| free_depth_on_side(grid, &p.rect, *s, deckel))
+        .max()
+        .unwrap_or(0);
+    merken_bis(
+        &mut out.reserven,
+        "schrank_tuer",
+        Some(&p.it.reference),
+        None,
+        best,
+        want,
+        Grenze::Mindestens,
+        "cm",
+        true,
+        Some(deckel),
+        true,
+    );
+    if best < want {
+        out.hard.push(Violation {
+            rule: "schrank_tuer".into(),
+            severity: Severity::Hart,
+            item: Some(p.it.reference.clone()),
+            message: format!("Schrank hat {} cm zum Tueroeffnen, braucht {}", best, want),
+            text: None,
+            measured: Some(best),
+            required: Some(want),
+        });
+    }
+    Ok(())
+}
+
+/// R8: das Schlafsofa hat den Platz, um ausgezogen zu werden.
+///
+/// Das Schlafsofa wird zum Ausziehen nicht verschoben (Lars, 2026-08-30). Die
+/// Ausklapptiefe ist damit dauerhaft belegte Flaeche und nichts, das man sich im
+/// Gastfall borgt. Geprueft nur an den Laengsseiten: ausgezogen wird ueber die
+/// lange Kante, und in genau eine Richtung, also reicht die bessere Seite.
+fn r8_couch_ausklappen(ctx: &Pruefung, p: &Placed, out: &mut Befunde) -> Result<(), ModelError> {
+    let rules = ctx.rules;
+    let grid = &ctx.grid;
+
+    if let Ok(want) = rules.abstand("couch_ausklapptiefe") {
+        let long = if p.w >= p.d {
+            [Side::North, Side::South]
+        } else {
+            [Side::West, Side::East]
+        };
+        let deckel = horizont(want);
+        let best = long
+            .iter()
+            .map(|s| free_depth_on_side(grid, &p.rect, *s, deckel))
+            .max()
+            .unwrap_or(0);
+        merken_bis(
+            &mut out.reserven,
+            "R8",
+            Some(&p.it.reference),
+            Some("beste laengsseite"),
+            best,
+            want,
+            Grenze::Mindestens,
+            "cm",
+            ist_hart(rules, "R8")?,
+            Some(deckel),
+            true,
+        );
+        if best < want {
+            // Bis 2026-08-31 hiess dieser Verstoss `couch_ausklappen`, waehrend
+            // jede rules.toml dieselbe Regel als R8 fuehrte. Zwei Namen fuer eine
+            // Regel, und der Bericht nannte den, den die Wohnung nicht kannte.
+            einsortieren(
+                haus_regel(
+                    rules,
+                    "R8",
+                    Some(p.it.reference.clone()),
+                    format!("Couch hat {} cm zum Ausklappen an ihrer besten Laengsseite, braucht {} — sie soll dafuer nicht verschoben werden", best, want),
+                    Some(best),
+                    Some(want),
+                )?,
+                &mut out.hard,
+                &mut out.soft,
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Platz, um am Esstisch einen Stuhl herauszuziehen — und wie viele Seiten ihn haben.
+///
+/// Ein Esstisch, an dem niemand einen Stuhl herausziehen kann, ist ein Regal. Hart,
+/// wenn keine Seite den Platz hat; weich, wenn nur eine ihn hat — das ist eine
+/// Sitzplatzzahl und kein Verstoss: ein Wandklapptisch hat legitim eine Seite.
+fn tisch_stuhl(ctx: &Pruefung, p: &Placed, out: &mut Befunde) -> Result<(), ModelError> {
+    let rules = ctx.rules;
+    let grid = &ctx.grid;
+
+    let want = rules.abstand("esstisch_stuhl_ausziehen")?;
+    let deckel = horizont(want);
+    let sides: Vec<i32> = SIDES
+        .iter()
+        .map(|s| free_depth_on_side(grid, &p.rect, *s, deckel))
+        .collect();
+    let best = *sides.iter().max().unwrap_or(&0);
+    let seats = sides.iter().filter(|d| **d >= want).count();
+    merken_bis(
+        &mut out.reserven,
+        "stuhl_ausziehen",
+        Some(&p.it.reference),
+        Some("beste seite"),
+        best,
+        want,
+        Grenze::Mindestens,
+        "cm",
+        true,
+        Some(deckel),
+        true,
+    );
+    merken(
+        &mut out.reserven,
+        "stuhl_ausziehen",
+        Some(&p.it.reference),
+        Some("sitzplaetze"),
+        seats as i32,
+        2,
+        Grenze::Mindestens,
+        "plaetze",
+        false,
+    );
+    if seats == 0 {
+        out.hard.push(Violation {
+            rule: "stuhl_ausziehen".into(),
+            severity: Severity::Hart,
+            item: Some(p.it.reference.clone()),
+            message: format!(
+                "Tisch hat {} cm zum Stuhlherausziehen an seiner besten Seite, braucht {}",
+                best, want
+            ),
+            text: None,
+            measured: Some(best),
+            required: Some(want),
+        });
+    } else if seats < 2 {
+        out.soft.push(Violation {
+            rule: "stuhl_ausziehen".into(),
+            severity: Severity::Weich,
+            item: Some(p.it.reference.clone()),
+            message: format!(
+                "Tisch bietet {} Sitzplatz — nur eine Seite hat die {} cm, die ein Stuhl braucht",
+                seats, want
+            ),
+            text: None,
+            measured: Some(seats as i32),
+            required: Some(2),
+        });
+    }
+    Ok(())
+}
+
+/// Abstand zwischen Couchtisch und Sofa, je Sofa im Raum.
+fn couchtisch_abstand(ctx: &Pruefung, p: &Placed, out: &mut Befunde) -> Result<(), ModelError> {
+    let rules = ctx.rules;
+    let placed = &ctx.placed;
+
+    let want = rules.abstand("couchtisch_vor_sofa")?;
+    for c in placed.iter().filter(|q| q.kind == Kind::Couch) {
+        let dx = (c.rect.x - p.rect.right())
+            .max(p.rect.x - c.rect.right())
+            .max(0);
+        let dy = (c.rect.y - p.rect.bottom())
+            .max(p.rect.y - c.rect.bottom())
+            .max(0);
+        let gap = (((dx * dx + dy * dy) as f64).sqrt()).round() as i32;
+        merken(
+            &mut out.reserven,
+            "couchtisch_abstand",
+            Some(&p.it.reference),
+            Some(&c.it.reference),
+            gap,
+            want,
+            Grenze::Mindestens,
+            "cm",
+            false,
+        );
+        if gap < want {
+            out.soft.push(Violation {
+                rule: "couchtisch_abstand".into(),
+                severity: Severity::Weich,
+                item: Some(p.it.reference.clone()),
+                message: format!("Couchtisch steht {} cm vom Sofa, will {}", gap, want),
+                text: None,
+                measured: Some(gap),
+                required: Some(want),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Die Routen, die room.toml fuehrt: wie schmal wird jede an ihrer engsten Stelle.
+///
+/// Gibt die gemessenen Korridore zurueck, weil der Bericht sie unter `metrics` fuehrt — als
+/// einzige Regel, die mehr liefert als Verstoesse und Reserven.
+fn laufwege(ctx: &Pruefung, out: &mut Befunde) -> Result<Vec<Corridor>, ModelError> {
+    let room = ctx.room;
+    let rules = ctx.rules;
+    let grid = &ctx.grid;
+
+    let field = clearance_field(grid);
     let mut waypoints: Vec<(String, Pt)> = Vec::new();
     for o in &room.oeffnungen {
         if o.typ.as_deref() == Some("fenster") {
@@ -1580,7 +1805,7 @@ pub fn check_layout(
                 bekannt.join(", ")
             )));
         };
-        let bottleneck = widest_path(&grid, &field, a, b);
+        let bottleneck = widest_path(grid, &field, a, b);
         let width = bottleneck.map(|v| (v * 2.0).round() as i32);
         corridors.push(Corridor {
             from: from.into(),
@@ -1590,7 +1815,7 @@ pub fn check_layout(
         // Kein Weg ist null Breite und nicht „nicht gemessen": die Route wurde gesucht und es
         // gibt sie nicht, was die knappste denkbare Reserve ist und nicht die fehlende.
         merken(
-            &mut reserven,
+            &mut out.reserven,
             "laufweg",
             None,
             Some(&format!("{from} → {to}")),
@@ -1601,7 +1826,7 @@ pub fn check_layout(
             true,
         );
         match width {
-            None => hard.push(Violation {
+            None => out.hard.push(Violation {
                 rule: "laufweg".into(),
                 severity: Severity::Hart,
                 item: None,
@@ -1610,7 +1835,7 @@ pub fn check_layout(
                 measured: None,
                 required: Some(rules.laufwege.haupt_min),
             }),
-            Some(w) if w < rules.laufwege.haupt_min => hard.push(Violation {
+            Some(w) if w < rules.laufwege.haupt_min => out.hard.push(Violation {
                 rule: "laufweg".into(),
                 severity: Severity::Hart,
                 item: None,
@@ -1622,7 +1847,7 @@ pub fn check_layout(
                 measured: Some(w),
                 required: Some(rules.laufwege.haupt_min),
             }),
-            Some(w) if w < rules.laufwege.haupt_soll => soft.push(Violation {
+            Some(w) if w < rules.laufwege.haupt_soll => out.soft.push(Violation {
                 rule: "laufweg".into(),
                 severity: Severity::Weich,
                 item: None,
@@ -1637,6 +1862,26 @@ pub fn check_layout(
             _ => {}
         }
     }
+    Ok(corridors)
+}
+
+/// Der Bericht: was gemessen wurde, was fehlschlug, und was gar nicht geprueft ist.
+///
+/// Die einzige Stelle, die alle Befunde zusammen sieht. Sie rechnet keine Regel nach — sie
+/// zaehlt, sortiert die knappste Reserve heraus und legt die ausgefallenen Regeln mit den nie
+/// implementierten zusammen, weil beides fuer den Leser dasselbe ist: nicht gemessen.
+fn bericht(ctx: &Pruefung, layout: &Layout, out: Befunde, corridors: Vec<Corridor>) -> CheckResult {
+    let Befunde {
+        hard,
+        soft,
+        reserven,
+        ausgefallen,
+    } = out;
+    let model = ctx.model;
+    let room = ctx.room;
+    let rules = ctx.rules;
+    let placed = &ctx.placed;
+    let grid = &ctx.grid;
 
     let occupied: i32 = placed.iter().map(|p| p.w * p.d).sum();
     let refs: Vec<&str> = layout.items.iter().map(|i| i.reference.as_str()).collect();
@@ -1669,7 +1914,7 @@ pub fn check_layout(
         .map(|r| r.slack)
         .min();
 
-    Ok(CheckResult {
+    CheckResult {
         layout: layout.name.clone(),
         pass: hard.is_empty(),
         hard,
@@ -1706,5 +1951,5 @@ pub fn check_layout(
                 grund,
             }))
             .collect(),
-    })
+    }
 }

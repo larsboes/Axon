@@ -346,11 +346,19 @@ const SEEDERS: Record<string, (ctx: Ctx) => Promise<string>> = {
     writeSubscriptionVault();
     const imported = await post<{ created: number }>(`${base}/import/obsidian`);
 
+    // 6. Proposals. No price fetch first, and none is needed: with no market
+    //    observation a position is valued at the reviewed activity price the step
+    //    above just confirmed, which is what makes the recorded demo reproducible
+    //    offline and independent of any provider answering. The run turns the
+    //    generated targets into a non-empty decisions inbox, which is the whole
+    //    point of recording this surface.
+    const proposals = await post<{ proposed: number }>(`${base}/decisions/run`, {});
+
     return (
       `${rows} bank rows → ${preview.candidate_count} candidates ` +
       `(${confirm.length} confirmed, ${pending.length - confirm.length} left for review), ` +
       `${VOCABULARY.instruments.length} holdings, ${VOCABULARY.balances.length} balances, ` +
-      `${imported.created} subscriptions`
+      `${imported.created} subscriptions, ${proposals.proposed} investment proposals`
     );
   },
 };
