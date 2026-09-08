@@ -265,7 +265,9 @@ pub fn decode_basic_entities(s: &str) -> String {
         ("&quot;", "\""),
         ("&apos;", "'"),
         ("&#39;", "'"),
+        ("&#x27;", "'"),
         ("&#x2F;", "/"),
+        ("&#47;", "/"),
         ("&hellip;", "…"),
         ("&mdash;", "—"),
         ("&ndash;", "–"),
@@ -426,6 +428,23 @@ mod tests {
         assert_eq!(decode_basic_entities("path&#x2F;to"), "path/to");
         // Untouched when there is nothing to decode.
         assert_eq!(decode_basic_entities("plain text"), "plain text");
+    }
+
+    /// A numeric entity has a decimal form and a hex form for the same
+    /// character, and a table that carries one is a table that decodes half
+    /// its inputs. mckinsey.org emits `&#x27;` where the decimal `&#39;` was
+    /// already covered, and the undecoded title reached a vault file name as
+    /// `&-x27;` — the projection's sanitizer had turned the `#` into a dash.
+    /// Both spellings of both characters are asserted so the pairing cannot
+    /// drift apart again.
+    #[test]
+    fn decimal_and_hex_spellings_of_one_character_decode_alike() {
+        for s in ["McKinsey.org&#39;s", "McKinsey.org&#x27;s"] {
+            assert_eq!(decode_basic_entities(s), "McKinsey.org's", "input: {s}");
+        }
+        for s in ["path&#47;to", "path&#x2F;to"] {
+            assert_eq!(decode_basic_entities(s), "path/to", "input: {s}");
+        }
     }
 
     #[test]

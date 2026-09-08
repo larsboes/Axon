@@ -15,7 +15,19 @@ path = "src/lib.rs"
 name = "finance-server"
 path = "src/server.rs"
 
+# The commands that are not the server: a price fetch a timer can run, and the
+# human-readable rebuild of the decision ledger for when the server is down.
+[[bin]]
+name = "finance-cli"
+path = "src/bin/finance-cli.rs"
+
 [dependencies]
+# Howard Hinnant's civil-from-days pair, shared rather than copied. No
+# dependencies of its own, which is why the four copies existed.
+civil-date = { path = "../../libs/civil-date" }
+# Outbound HTTP goes through one factory: the user-agent, the timeout and the
+# connection pool are decided there, not at each call site (libs/axon-http).
+axon-http = { path = "../../libs/axon-http" }
 axon-config = { path = "../../libs/axon-config" }
 axon-server = { path = "../../libs/axon-server" }
 axon-store = { path = "../../libs/axon-store" }
@@ -25,14 +37,24 @@ axon-store = { path = "../../libs/axon-store" }
 candidate-fingerprint = { path = "../../libs/candidate-fingerprint" }
 markdown-root = { path = "../../libs/markdown-root" }
 route-manifest = { path = "../../libs/route-manifest" }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 # The database, after PRD Q45 retired Postgres. Bundled so the deployment does not
 # depend on whichever SQLite the host ships; upstreams.toml [rusqlite] has the
 # measurement that settled it.
-rusqlite = { version = "0.40", features = ["bundled"] }
-tokio = { version = "1", features = ["full"] }
-axum = "0.7"
-tower-http = { version = "0.5", features = ["cors"] }
+rusqlite.workspace = true
+# Not `full`: these are the drivers this crate reaches for, verified with a lone
+# `cargo check -p <crate> --all-targets`, which is the only build where a missing
+# tokio feature is visible (a workspace build unifies them away).
+# `#[tokio::main]`, `#[tokio::test]` and 27 `spawn_blocking` store reads, nothing else.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+axum.workspace = true
+tower-http = { workspace = true, features = ["cors"] }
 csv = "1.4"
-sha2 = "0.10"
+sha2.workspace = true
+# The data-class vocabulary, owned by one crate rather than restated per capability.
+# Its own dependencies are serde and serde_json only; calendar and comms already take it.
+content-item = { path = "../../libs/content-item" }
+# The loopback feed lookup and the two networked price providers. The literal is
+# matched to capabilities/trips so the workspace resolves one reqwest.
+reqwest = { workspace = true, features = ["blocking", "json", "cookies"] }

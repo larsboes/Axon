@@ -86,6 +86,29 @@ tools/check-architecture-fresh.sh
 
 Do not describe a skipped or unavailable check as passing.
 
+**`AXON_DB_PATH` isolates the database and nothing else.** It does not isolate a vault
+projection. `capabilities/trips`' `project_after_write` runs as a router layer after any
+successful non-GET request and takes its root from the overlay config, which that variable
+never touches — so a live check on 2026-09-05 that redirected only the database passed every
+assertion while re-exporting thirteen real plan notes into the operator's Obsidian vault and
+creating a fourteenth. `finance` and `comms` project too. Before running a server against a
+copy, export every projection root as well: `AXON_TRIPS_OBSIDIAN_ROOT`,
+`AXON_FINANCE_OBSIDIAN_ROOT`, `AXON_FINANCE_DECISIONS_ROOT`, and a scratch `AXON_COMMS_CONFIG`
+(comms resolves its config file from that variable, so a scratch file is what redirects it).
+Overriding `AXON_PERSONAL_ROOT` instead is not the fix: it redirects the config *read* too, so
+the run tests a configuration nobody is operating.
+
+**Do not `cargo build --release` in a worktree that shares the repository's `target/`.** That
+build writes `target/release/<bin>`, which is the exact artifact the supervisor runs, and on
+Apple Silicon a running process dies when its own binary changes underneath it. On 2026-09-05
+a worktree release build therefore killed a live service, the supervisor restarted it from the
+new artifact, and the branch's migration ran against the real database — leaving eight empty
+tables no merged commit had put there. The build reported success and nothing anywhere
+reported the restart. `tools/service-runner.sh`'s `maybe_build` is the function that makes the
+artifact load-bearing. For a live check from a worktree, build a debug binary, run it on a free
+port and point it at a copy; use a separate `CARGO_TARGET_DIR` if a release build is
+unavoidable.
+
 The same rule applies inside a test. An assertion that needs something only one platform has —
 `/dev/full`, a container runtime, a specific filesystem — may be given up on a developer machine
 and never in an automated run, where "it runs in CI" would otherwise be an assumption nobody can

@@ -192,9 +192,12 @@ pub fn promote_saved_luma(
         ..Default::default()
     };
 
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(concat!("Axon-Scouting/", env!("CARGO_PKG_VERSION")))
-        .build()?;
+    // A local calendar POST, on the 20s calendar itself uses for its own
+    // outbound calls. It had no timeout before.
+    let client = axon_http::client(
+        axon_http::Purpose::new("scouting-calendar"),
+        std::time::Duration::from_secs(20),
+    )?;
     let url = format!(
         "{}/api/entries/external",
         calendar_base_url.trim_end_matches('/')

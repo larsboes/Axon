@@ -241,6 +241,47 @@ struct FileConfig {
     quality_flags: Option<QualityFlagConfig>,
     #[serde(default)]
     ingest_allowed_origins: Vec<String>,
+    /// Absent in the overlay today, and absent means the model rung stays in
+    /// shadow. See [`MailModelConfig`].
+    mail_model: Option<MailModelConfig>,
+}
+
+/// What the local model rung is allowed to do on this machine.
+///
+/// Absent in the overlay means shadow only: the pass writes verdicts and
+/// changes no category. The flip to live is one key a human sets after reading
+/// the report, not a code deploy and not a request flag a script could set by
+/// accident.
+///
+/// Read through `mail_model::apply_allowed`, which takes this section rather
+/// than the whole `Config`, so the refusal is a pure function and its test does
+/// not depend on what this machine's overlay happens to hold.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub struct MailModelConfig {
+    /// Whether a verdict may move a category at all.
+    pub apply: bool,
+    /// The blunt floor below which a disagreement is not written. The model's
+    /// confidence is self-reported and uncalibrated: this is a policy
+    /// threshold, not a probability, and the corpus is what sets it.
+    ///
+    /// Zero is not a floor, so `apply = true` beside a zero here is refused by
+    /// `mail_model::apply_allowed` rather than silently writing everything.
+    pub min_confidence_bp: u32,
+    /// How many threads one pass may act on when the caller names no limit.
+    /// Read through `mail_model::pass_limit`, which both the CLI and
+    /// `POST /triage/classify/refresh` go through.
+    pub limit: usize,
+}
+
+impl Default for MailModelConfig {
+    fn default() -> Self {
+        Self {
+            apply: false,
+            min_confidence_bp: 0,
+            limit: 200,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -332,6 +373,8 @@ pub struct Config {
     /// defaults; an explicit empty array disables them all.
     pub feed_sources: Vec<FeedSourceConfig>,
     pub quality_flags: QualityFlagConfig,
+    /// `None` until the overlay declares it, and `None` refuses every apply.
+    pub mail_model: Option<MailModelConfig>,
 }
 
 // One implementation, in libs/axon-config, re-exported under the name this
@@ -376,28 +419,11 @@ fn default_google_env_path() -> PathBuf {
     axon_config::overlay_config("comms.env").unwrap_or_else(|| PathBuf::from("comms.env"))
 }
 
-/// `http://127.0.0.1:8099/articles/x` -> `http://127.0.0.1:8099`. `None` for
-/// anything that is not an absolute http(s) URL naming a host.
-///
-/// The port is always written out, so `http://example.com` and
-/// `http://example.com:80` normalise to one string and cannot be configured
-/// apart. One normaliser, because the configured entries and the URL being
-/// checked have to be compared as the same shape or the comparison is a
-/// coin toss: `media::check_destination` calls this on the URL, and
-/// [`ingest_allowed_origins`] calls it on every entry.
-pub(crate) fn normalize_origin(raw: &str) -> Option<String> {
-    let url = reqwest::Url::parse(raw.trim()).ok()?;
-    let scheme = url.scheme();
-    if scheme != "http" && scheme != "https" {
-        return None;
-    }
-    // `host_str` keeps the brackets on an IPv6 literal. They stay: both sides
-    // of the comparison come through here, and a bracketed host is what the
-    // operator writes in the config file too.
-    let host = url.host_str()?.to_ascii_lowercase();
-    let port = url.port_or_known_default()?;
-    Some(format!("{scheme}://{host}:{port}"))
-}
+/// The one normaliser, and it is the guard's own: the configured entries and the
+/// URL being checked have to be compared as the same shape or the comparison is a
+/// coin toss. [`ingest_allowed_origins`] calls it on every entry;
+/// `axon_http::guard::origin_is_allowed` calls it on the URL.
+pub(crate) use axon_http::guard::normalize_origin;
 
 /// Origins `POST /ingest` may fetch even though they resolve to an address
 /// inside this machine or this network (Q74).
@@ -525,6 +551,10 @@ impl Config {
         let travel_context = file.travel_context.unwrap_or_default();
         let calendar_context = file.calendar_context.unwrap_or_default();
         let quality_flags = file.quality_flags.unwrap_or_default();
+        // Deliberately not `unwrap_or_default()`: "the operator has not decided"
+        // and "the operator decided no" have to stay distinguishable, because
+        // the first is what the 409 names.
+        let mail_model = file.mail_model;
 
         Self {
             database_path: axon_config::database_path(),
@@ -549,6 +579,7 @@ impl Config {
             vault_link_sources,
             feed_sources,
             quality_flags,
+            mail_model,
         }
     }
 
@@ -696,39 +727,6 @@ mod tests {
                 None => std::env::remove_var(self.0),
             }
         }
-    }
-
-    #[test]
-    fn normalize_origin_writes_the_port_out_and_drops_the_path() {
-        assert_eq!(
-            normalize_origin("http://127.0.0.1:8099/articles/x").as_deref(),
-            Some("http://127.0.0.1:8099")
-        );
-        // The default port is written out, so the two spellings of one origin
-        // are one string on both sides of the comparison.
-        assert_eq!(
-            normalize_origin("http://example.com").as_deref(),
-            Some("http://example.com:80")
-        );
-        assert_eq!(
-            normalize_origin("https://Example.COM/").as_deref(),
-            Some("https://example.com:443")
-        );
-        assert_eq!(
-            normalize_origin("http://[::1]:9000/").as_deref(),
-            Some("http://[::1]:9000")
-        );
-    }
-
-    #[test]
-    fn normalize_origin_refuses_what_is_not_an_http_origin() {
-        // A scheme that is not http(s) must not be configurable as an escape
-        // from a guard whose other half exists to refuse `file://`.
-        assert_eq!(normalize_origin("file:///etc/passwd"), None);
-        assert_eq!(normalize_origin("ftp://example.com/"), None);
-        // Relative, and host-less: neither names an origin.
-        assert_eq!(normalize_origin("127.0.0.1:8099"), None);
-        assert_eq!(normalize_origin(""), None);
     }
 
     #[test]

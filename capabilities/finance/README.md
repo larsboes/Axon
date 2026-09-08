@@ -50,12 +50,14 @@ math remains unbuilt, which is now stated as the absence it is.
   The personal share remains on the expense account; money fronted for others posts
   to `assets:receivable:shared`. A linked repayment settles that receivable and is
   never projected as income or negative spending.
-- `/finance` has Overview, Planning, Transactions and Subscriptions. Personal result,
-  external cash movement, category composition, purpose/trip summaries, the table
-  and the constrained flow explorer all use the same Rust
-  projection. Transactions starts with largest-first categorization review and a
-  trip-first allocation workspace: Trips owns the plan and dates, while Finance loads
-  that window and reviews each transaction's personal share. Internal transfers are
+- `/finance` has Overview, Planning, Transactions, Investments and Subscriptions.
+  Personal result, external cash movement, category composition, purpose/trip
+  summaries, the table and the constrained flow explorer all use the same Rust
+  projection. Investments loads on demand and puts the decision inbox above the
+  position table, so the tab opens on the question rather than on a valuation.
+  Transactions starts with largest-first categorization review and a trip-first
+  allocation workspace: Trips owns the plan and dates, while Finance loads that
+  window and reviews each transaction's personal share. Internal transfers are
   excluded by default.
 - Planning uses medians from complete months, private behavior rules and dated
   commitments to project monthly spending and savings. Exceptional trip spending is
@@ -170,18 +172,152 @@ On the manifest-declared port. `GET /routes` serves the full manifest.
 - `POST /api/import/candidates/:id/reimbursement`
 - `GET /api/ledger/check` · `POST /api/ledger/rebuild`
 - `GET /api/dashboard?start=&end=&account=&category=&currency=`
+- `GET /api/portfolio?currency=EUR` — positions with price freshness, share in basis
+  points and drift against the configured targets
+- `GET /api/prices/status` — per-instrument freshness, the newest fetch attempts and the
+  last status per provider
+- `GET /api/decisions?status=open|accepted|rejected|superseded|all`
+- `POST /api/decisions/run` — recompute proposals and reconcile them against the ledger
+- `POST /api/decisions/:id/verdict` — record a human verdict
+- `GET /api/trips/:id/spending` — one trip's actuals, instead of the whole projection
 
 The dashboard response includes source freshness and the planning report. Neither is
 stored as a second source of truth.
 
+## A price is an observation, never a correction
+
+PRD Q81 (2026-09-05) rules the providers; `capabilities/finance-prices/README.md` is the
+job that runs them. `finance_prices` holds what a source said an instrument was worth on a
+day, and nothing else. Three consequences follow, and each is a rule the code enforces
+rather than a convention:
+
+**A fetched price is never written back into the reviewed holdings snapshot.**
+`validate_source_snapshot` recomputes the file's content hash over `latest_unit_price`,
+so a quote written there would make the snapshot refuse itself on the next read. The
+market price is layered over the reviewed one at read time and every position says which
+of the two valued it, in `value_basis`.
+
+**A return series comes from one source per instrument.** Measured 2026-09-05: one
+`broker` observation in EUR sitting inside 502 `yahoo` closes in USD produced a −87% day,
+a +666% day and an annualised portfolio volatility of 152%. Two sources are two price
+scales — a different currency, a different adjustment basis — so a switch between them is
+a fabricated return. `risk.rs` uses the source with the most observations for each
+instrument, and the consequence is stated rather than hidden: an instrument priced only by
+`broker` grows one point per run and will sit at `insufficient_history` for a long time.
+
+**A market price in another currency does not value the position.** It falls back to the
+reviewed price and names the mismatch. Converting silently would hide two provenance facts
+— the quote's date and the rate's date — behind one number.
+
+`finance_prices` is NOT `finance_price_points`, which is Axon's own subscription pricing
+history. Market data and what Axon pays for a streaming service are two different series
+that happen to share a word.
+
+## What cannot be computed here
+
+There is no lot and no cost basis anywhere in this capability, and adding one is a
+different feature with a different import. So `change_since_review` is the difference
+between a position's market value and its value at the latest reviewed broker activity
+price. **It is not a return and it is not P&L**, and the UI does not call it either.
+
+## Two rungs: the rules propose, the model explains
+
+PRD Q82 (2026-09-05) rules this shape; Principle 1 made structural rather than
+documentary. Rung 1 is three rules in `src/decision.rs`. Drift beyond an allocation's band
+emits `rebalance` — for an instrument target **and** for an asset-class target, which a
+live fixture proved was not the same code path: the first pass walked positions only, and
+a 60/40 policy showing a 3,407 bp drift minted nothing. A median monthly result above the
+configured floor emits `contribute`. A lump-sum renewal dated in the month a contribution
+is proposed for emits `review`, because a yearly charge reaches the median as one twelfth
+of itself while the cash leaves whole. Every proposal carries `rung = "rule"` and
+`every_proposal_names_its_rung_and_none_is_model` is the test that keeps it so.
+
+Rung 2 is `src/risk.rs`: annualised volatility, pairwise correlation, portfolio volatility
+and long-only minimum-variance and max-Sharpe weights over a hand-rolled Cholesky. It is
+attached to a proposal as evidence and **never** as a trigger. Its floors are refusals
+rather than warnings — below 120 daily observations per instrument, or 60 overlapping
+dates per pair, the answer names the actual count and the figure is `null`. Never a zero:
+a zero volatility claims a price never moved and a zero correlation claims an independence
+nobody measured. A singular covariance is reported, never regularised: the Cholesky's
+non-positive pivot *is* the guard, so the solver and the refusal are one code path.
+
+`sell` is accepted by the ledger's CHECK and minted by no rule. A machine proposing the
+sale of a real position is a different order of claim from proposing a rebalance.
+
+## The decision ledger appends; it never updates
+
+PRD Q80 (2026-09-05) rules this table. Its rows are **c1** — the §6.1 definition governs,
+and a proposal about my own allocation names no third party. `data_class` carries **no
+CHECK**, deliberately: the vocabulary belongs to `libs/content-item` and has been renamed
+once already, and a constraint over somebody else's vocabulary is a table rebuild waiting to
+happen. `content_item::valid()` runs at every write site instead. `kind` and `rung` do carry
+CHECKs, because those are closed sets this capability owns — and the rebuild one of them
+cost is recorded two paragraphs below.
+
+`finance_decisions` holds the proposal and `finance_decision_events` holds everything
+afterwards — the verdict, the outcome, the supersession, the reinstatement — as appended
+rows. There is no mutable `verdict` column, deliberately: a column is a thing that can be
+updated, and one UPDATEd verdict loses the date the call was actually made, which is the
+only fact that makes "what did I decide, and did it work" answerable a year later.
+
+**Nothing here is deleted either, including a supersession.** A run that no longer
+produces a proposal appends `superseded`; a later run that produces it again appends
+`reinstated` beside it, and the LATER of that pair is the proposal's state. A `verdict`
+outranks both and closes the row for good, because a human answered those exact numbers
+and re-asking would be the ledger forgetting. The reason this matters in practice: the
+proposal id is a hash over bucketed numbers, so a drift that leaves its band and comes back
+into the same bucket re-mints an id the ledger already carries. Reading the supersession by
+presence rather than by recency left such a proposal unreachable for ever — no later run
+can mint a different id for it — while the run reported success. Keeping both assertions
+means "this left the inbox on the 5th and came back on the 6th" is still readable a year
+later, which is the whole reason this table has no mutable column.
+
+Widening the `event` CHECK to admit `reinstated` costs a table rebuild on a file that
+already carries the three-value shape, and `FinanceStore::run_migration` performs it once,
+behind a probe of the installed DDL and idempotent on re-run. That price is why an earlier
+form of the repair deleted the row instead; it is the honest cost of an append-only ledger
+and the migration pays it.
+
+Accepting a proposal records a decision and moves no money: no journal entry, no holdings
+snapshot, no order.
+
+**A verdict is not accepted on trust.** `POST /api/decisions/:id/verdict` re-runs the rules
+inside its own blocking closure and answers **409 with the current proposal id** unless the
+run still mints the id being answered, so a stale inbox cannot record an answer to numbers
+that have moved. That recompute is handed an empty feed list: the id hashes kind, subject
+and buckets and never the evidence, so comms being unreachable may not refuse a verdict.
+
+Evidence itself fails closed. `item_is_quotable` copies a feed item's title and URL into a
+c1 row only when comms states a class no stricter than the row's own, and drops every item
+whose class is unstated. `GET /comms/feed` did not state one until 2026-09-06, so the
+decision inbox shipped with **no feed evidence at all**; the list now carries `data_class`
+and the block fills as items arrive. That was a stated, accepted state, never an oversight.
+
+The human-readable copy is written on the WRITE path, not by a CLI verb. The verdict
+handler re-renders `<overlay>/data/finance/decisions/YYYY-MM.md` in the same request that
+appends the event, whole-file through a temp-plus-rename at mode 0600. A human verdict and
+its note is the one fact here that no re-import and no re-run reproduces.
+`finance-cli decisions export` is the copy you can take when the server is down — never
+the only writer.
+
+The destination is `AXON_FINANCE_DECISIONS_ROOT` if it is set and the overlay root
+otherwise. The override is not a convenience: `AXON_DB_PATH` isolates the database and
+nothing else, so a verification run that only overrides the database still writes month
+files into the owner's overlay and a subscriptions projection into their vault. Redirect
+those two with `AXON_FINANCE_DECISIONS_ROOT` and `AXON_FINANCE_OBSIDIAN_ROOT`; overriding
+`AXON_PERSONAL_ROOT` instead would redirect the config read as well, so the run would be
+against a configuration that is not the one being tested.
+
 ## Configuration
 
-The eight tables live in the shared SQLite file — `AXON_DB_PATH`, else
+The thirteen tables live in the shared SQLite file — `AXON_DB_PATH`, else
 `$AXON_PERSONAL_ROOT/data/axon/axon.db` — under the table prefix `finance`, so they are
 `finance_subscriptions`, `finance_price_points`, `finance_state_changes`,
 `finance_transaction_candidates`, `finance_transaction_projection`,
-`finance_holding_projection`, `finance_holding_projection_state` and
-`finance_holding_projection_sources` (`libs/axon-store/README.md`). PRD Q45
+`finance_holding_projection`, `finance_holding_projection_state`,
+`finance_holding_projection_sources`, `finance_prices`, `finance_fx_rates`,
+`finance_price_fetches`, `finance_decisions` and `finance_decision_events`
+(`libs/axon-store/README.md`). PRD Q45
 (2026-08-27) moved them there from a Postgres schema, and the path is a deployment
 fact rather than a capability one: `$AXON_FINANCE_DATABASE_URL` is gone, because a
 file per capability would drop the join `capabilities/places` builds its spend layer

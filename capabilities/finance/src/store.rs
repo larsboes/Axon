@@ -21,6 +21,7 @@ use crate::investment::{
     Holding, HoldingsCoverage, Quantity, ReviewedHoldingsSnapshot, ReviewedHoldingsSource,
 };
 use crate::obsidian::ScannedNote;
+use crate::price::{FetchAttempt, FetchStatus, FxObservation, PriceObservation};
 use crate::subscription::{BillingCycle, PricePoint, State, StateChange, Subscription};
 
 type Fallible<T> = Result<T, Box<dyn std::error::Error>>;
@@ -219,8 +220,142 @@ impl FinanceStore {
                 reviewed_at TEXT NOT NULL,
                 coverage TEXT NOT NULL DEFAULT 'complete'
             );
+
+            -- ---------------------------------------------------------------
+            -- Market observations and the decision ledger above them.
+            -- ---------------------------------------------------------------
+
+            -- An observed market price, never a correction of one. Shape copied
+            -- from {prefix}_price_points above: AUTOINCREMENT so (observed_on, id)
+            -- keeps append order, a UNIQUE tuple so a re-fetch is idempotent, and
+            -- (mantissa, scale) rather than REAL because a float is where an exact
+            -- decimal stops being exact.
+            --
+            -- NOT {prefix}_price_points: that series is Axon's own subscription
+            -- pricing history (§9.2 dogfooding) and must not be conflated with
+            -- market data.
+            --
+            -- No CHECK on `source`, deliberately. The provider set grows, SQLite
+            -- cannot alter a CHECK, and this crate has no ALTER path at all (see
+            -- the doc comment above). `price::PROVIDERS` is the enumeration
+            -- instead, and a unit test asserts every registered name round-trips.
+            CREATE TABLE IF NOT EXISTS {prefix}_prices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                instrument TEXT NOT NULL,
+                observed_on TEXT NOT NULL,
+                price_mantissa INTEGER NOT NULL,
+                price_scale INTEGER NOT NULL CHECK (price_scale BETWEEN 0 AND 12),
+                currency TEXT NOT NULL,
+                source TEXT NOT NULL,
+                fetched_at TEXT NOT NULL,
+                UNIQUE (instrument, observed_on, source)
+            );
+            CREATE INDEX IF NOT EXISTS idx_{prefix}_prices_instrument
+                ON {prefix}_prices(instrument, observed_on);
+
+            -- A published FX reference rate, quote units per one base unit,
+            -- stored as published and never inverted at write time -- a division
+            -- is where an exact decimal stops being exact.
+            CREATE TABLE IF NOT EXISTS {prefix}_fx_rates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                base TEXT NOT NULL,
+                quote TEXT NOT NULL,
+                observed_on TEXT NOT NULL,
+                rate_mantissa INTEGER NOT NULL,
+                rate_scale INTEGER NOT NULL CHECK (rate_scale BETWEEN 0 AND 12),
+                source TEXT NOT NULL,
+                fetched_at TEXT NOT NULL,
+                UNIQUE (base, quote, observed_on, source)
+            );
+            CREATE INDEX IF NOT EXISTS idx_{prefix}_fx_rates_pair
+                ON {prefix}_fx_rates(base, quote, observed_on);
+
+            -- Every attempt, successful or not. Modelled on
+            -- capabilities/places/src/store.rs's geocode cache status column: a
+            -- miss or a refusal is a recorded row, so the question of why an
+            -- instrument is stale has an answer that is not somebody's memory.
+            -- `detail` carries a bounded reason -- an HTTP status, a note that
+            -- the body was not CSV -- and never a response body, because a
+            -- provider page can contain anything and this table is backed up.
+            CREATE TABLE IF NOT EXISTS {prefix}_price_fetches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                provider TEXT NOT NULL,
+                target TEXT NOT NULL,
+                requested_on TEXT NOT NULL,
+                status TEXT NOT NULL CHECK (status IN ('ok','empty','refused','error')),
+                detail TEXT NOT NULL DEFAULT '',
+                rows_written INTEGER NOT NULL DEFAULT 0,
+                fetched_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_{prefix}_price_fetches_recent
+                ON {prefix}_price_fetches(provider, fetched_at DESC);
+
+            -- The proposal. Everything that happens to it afterwards is a row in
+            -- {prefix}_decision_events, because a column is a thing that can be
+            -- updated, and a single UPDATEd verdict loses the date the call was
+            -- actually made.
+            --
+            -- `data_class` carries NO CHECK: the vocabulary belongs to
+            -- libs/content-item, it has already been renamed once (comms' own
+            -- predecessor constraint needed a full table rebuild), and this crate
+            -- cannot rebuild a table. `content_item::valid()` is called at every
+            -- write site instead. `kind` and `rung` DO carry CHECKs -- those are
+            -- closed sets this capability owns.
+            CREATE TABLE IF NOT EXISTS {prefix}_decisions (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL
+                    CHECK (kind IN ('rebalance','contribute','sell','hold','review')),
+                subject TEXT NOT NULL,
+                rung TEXT NOT NULL CHECK (rung IN ('rule','model')),
+                data_class TEXT NOT NULL DEFAULT 'c1',
+                data_class_rationale TEXT NOT NULL
+                    DEFAULT 'A proposal about the owner''s own allocation names no third party.',
+                proposal_json TEXT NOT NULL,
+                evidence_json TEXT NOT NULL,
+                model_revision TEXT NOT NULL,
+                proposed_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_{prefix}_decisions_subject
+                ON {prefix}_decisions(kind, subject, proposed_at DESC);
+
+            -- The append-only half. Status is derived, never stored: `open` when
+            -- the proposal has no verdict and no supersession, otherwise the
+            -- latest verdict, or superseded. `recorded_at` is second-granular,
+            -- which is what keeps a same-day corrected verdict from hitting the
+            -- UNIQUE tuple; two verdicts inside one second are answered as a
+            -- named 409 rather than a 500.
+            --
+            -- Nothing here is ever deleted, including a supersession. A run
+            -- asserts `superseded` -- the run that produced this no longer
+            -- produces it -- and a later run that produces it again asserts
+            -- `reinstated` beside it. The LATEST of that pair is the answer, so
+            -- the history of a proposal leaving and re-entering the inbox is
+            -- readable rather than overwritten; a `verdict` closes the row and
+            -- outranks both, because a human answered these exact numbers.
+            --
+            -- The fourth CHECK value costs a table rebuild on a file that already
+            -- carries the three-value shape, which `rebuild_decision_events_check`
+            -- below performs once, behind a probe. That is the whole reason the
+            -- earlier form deleted the row instead; the rebuild is the honest
+            -- price of an append-only ledger and it is paid here.
+            CREATE TABLE IF NOT EXISTS {prefix}_decision_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                decision_id TEXT NOT NULL
+                    REFERENCES {prefix}_decisions(id) ON DELETE CASCADE,
+                event TEXT NOT NULL
+                    CHECK (event IN ('verdict','outcome','superseded','reinstated')),
+                verdict TEXT CHECK (verdict IN ('accepted','rejected')),
+                note TEXT NOT NULL DEFAULT '',
+                outcome_json TEXT,
+                recorded_at TEXT NOT NULL,
+                CHECK ((event = 'verdict') = (verdict IS NOT NULL)),
+                UNIQUE (decision_id, event, recorded_at)
+            );
+            CREATE INDEX IF NOT EXISTS idx_{prefix}_decision_events_decision
+                ON {prefix}_decision_events(decision_id, recorded_at);
             "
         ))?;
+        rebuild_decision_events_check(conn, prefix)?;
         Ok(())
     }
 
@@ -457,11 +592,30 @@ impl FinanceStore {
             .collect())
     }
 
+    /// One indexed read, not a scan.
+    ///
+    /// This loaded and deserialized every candidate row to find one, inside the
+    /// per-item loop of both batch handlers -- so a batch of n cost n full table
+    /// reads. The column list is `list_candidates`'s, so `row_to_candidate` reads
+    /// the same shape from either door.
     pub fn candidate(&self, id: &str) -> Fallible<Option<TransactionCandidate>> {
-        Ok(self
-            .list_candidates()?
-            .into_iter()
-            .find(|candidate| candidate.id == id))
+        let prefix = &self.prefix;
+        let conn = self.conn()?;
+        Ok(conn
+            .query_row(
+                &format!(
+                    "SELECT id, fingerprint, booked_at, description, amount_cents,
+                            currency, source_account, source_reference, proposed_account,
+                            confidence_basis_points, state, location_street,
+                            location_postal_code, location_city, location_country
+                     FROM {prefix}_transaction_candidates
+                     WHERE id = ?1"
+                ),
+                params![&id],
+                row_to_candidate,
+            )
+            .optional()?
+            .flatten())
     }
 
     pub fn review_candidate(
@@ -771,6 +925,711 @@ impl FinanceStore {
             sources,
         }))
     }
+
+    // -----------------------------------------------------------------------
+    // Market observations
+    // -----------------------------------------------------------------------
+
+    /// Append one observed market price. `Ok(false)` means the row was already
+    /// there, which is what makes a re-fetch free.
+    ///
+    /// Named `append_market_price` and not `append_price`: this crate already has
+    /// an `append_price` for a subscription's own price series, and the two must
+    /// never be reachable through one name.
+    pub fn append_market_price(&self, observation: &PriceObservation) -> Fallible<bool> {
+        let prefix = &self.prefix;
+        let conn = self.conn()?;
+        let scale = i32::try_from(observation.price.scale)?;
+        let changed = conn.execute(
+            &format!(
+                "INSERT OR IGNORE INTO {prefix}_prices
+                    (instrument, observed_on, price_mantissa, price_scale, currency,
+                     source, fetched_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7)"
+            ),
+            params![
+                &observation.instrument,
+                &observation.observed_on,
+                observation.price.mantissa,
+                scale,
+                &observation.currency,
+                &observation.source,
+                &observation.fetched_at,
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
+    pub fn append_fx_rate(&self, observation: &FxObservation) -> Fallible<bool> {
+        let prefix = &self.prefix;
+        let conn = self.conn()?;
+        let scale = i32::try_from(observation.rate.scale)?;
+        let changed = conn.execute(
+            &format!(
+                "INSERT OR IGNORE INTO {prefix}_fx_rates
+                    (base, quote, observed_on, rate_mantissa, rate_scale, source, fetched_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7)"
+            ),
+            params![
+                &observation.base,
+                &observation.quote,
+                &observation.observed_on,
+                observation.rate.mantissa,
+                scale,
+                &observation.source,
+                &observation.fetched_at,
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Every attempt, successful or not.
+    pub fn record_fetch(&self, attempt: &FetchAttempt) -> Fallible<()> {
+        let prefix = &self.prefix;
+        let conn = self.conn()?;
+        conn.execute(
+            &format!(
+                "INSERT INTO {prefix}_price_fetches
+                    (provider, target, requested_on, status, detail, rows_written, fetched_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7)"
+            ),
+            params![
+                &attempt.provider,
+                &attempt.target,
+                &attempt.requested_on,
+                attempt.status.as_str(),
+                &attempt.detail,
+                attempt.rows_written,
+                &attempt.fetched_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The newest observation per instrument.
+    ///
+    /// Newest by `(observed_on, fetched_at, id)` rather than by source priority:
+    /// two sources may hold one instrument-day, and which one a reader saw is a
+    /// fact the reader reports rather than a preference this layer bakes in.
+    pub fn latest_prices(&self) -> Fallible<Vec<PriceObservation>> {
+        let prefix = &self.prefix;
+        let conn = self.conn()?;
+        Ok(conn
+            .query_all(
+                &format!(
+                    "SELECT instrument, observed_on, price_mantissa, price_scale,
+                            currency, source, fetched_at
+                     FROM {prefix}_prices AS outer_price
+                     WHERE id = (
+                         SELECT id FROM {prefix}_prices AS inner_price
+                         WHERE inner_price.instrument = outer_price.instrument
+                         ORDER BY observed_on DESC, fetched_at DESC, id DESC
+                         LIMIT 1
+                     )
+                     ORDER BY instrument"
+                ),
+                [],
+                row_to_market_price,
+            )?
+            .into_iter()
+            .flatten()
+            .collect())
+    }
+
+    /// Every observation for one instrument, oldest first.
+    pub fn price_series(&self, instrument: &str) -> Fallible<Vec<PriceObservation>> {
+        let prefix = &self.prefix;
+        let conn = self.conn()?;
+        Ok(conn
+            .query_all(
+                &format!(
+                    "SELECT instrument, observed_on, price_mantissa, price_scale,
+                            currency, source, fetched_at
+                     FROM {prefix}_prices WHERE instrument = ?1
+                     ORDER BY observed_on, fetched_at, id"
+                ),
+                params![&instrument],
+                row_to_market_price,
+            )?
+            .into_iter()
+            .flatten()
+            .collect())
+    }
+
+    /// Every observation, oldest first. The risk model's whole input.
+    pub fn all_prices(&self) -> Fallible<Vec<PriceObservation>> {
+        let prefix = &self.prefix;
+        let conn = self.conn()?;
+        Ok(conn
+            .query_all(
+                &format!(
+                    "SELECT instrument, observed_on, price_mantissa, price_scale,
+                            currency, source, fetched_at
+                     FROM {prefix}_prices ORDER BY instrument, observed_on, fetched_at, id"
+                ),
+                [],
+                row_to_market_price,
+            )?
+            .into_iter()
+            .flatten()
+            .collect())
+    }
+
+    /// How many observations exist per instrument, and the newest date.
+    pub fn price_counts(&self) -> Fallible<Vec<(String, i64)>> {
+        let prefix = &self.prefix;
+        let conn = self.conn()?;
+        conn.query_all(
+            &format!(
+                "SELECT instrument, COUNT(*) FROM {prefix}_prices
+                 GROUP BY instrument ORDER BY instrument"
+            ),
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .map_err(Into::into)
+    }
+
+    /// The newest published rate per (base, quote) pair.
+    pub fn latest_fx_rates(&self) -> Fallible<Vec<FxObservation>> {
+        let prefix = &self.prefix;
+        let conn = self.conn()?;
+        Ok(conn
+            .query_all(
+                &format!(
+                    "SELECT base, quote, observed_on, rate_mantissa, rate_scale,
+                            source, fetched_at
+                     FROM {prefix}_fx_rates AS outer_rate
+                     WHERE id = (
+                         SELECT id FROM {prefix}_fx_rates AS inner_rate
+                         WHERE inner_rate.base = outer_rate.base
+                           AND inner_rate.quote = outer_rate.quote
+                         ORDER BY observed_on DESC, fetched_at DESC, id DESC
+                         LIMIT 1
+                     )
+                     ORDER BY base, quote"
+                ),
+                [],
+                row_to_fx,
+            )?
+            .into_iter()
+            .flatten()
+            .collect())
+    }
+
+    /// The newest fetch attempts, bounded.
+    pub fn recent_fetches(&self, limit: i64) -> Fallible<Vec<FetchAttempt>> {
+        let prefix = &self.prefix;
+        let conn = self.conn()?;
+        Ok(conn
+            .query_all(
+                &format!(
+                    "SELECT provider, target, requested_on, status, detail,
+                            rows_written, fetched_at
+                     FROM {prefix}_price_fetches
+                     ORDER BY fetched_at DESC, id DESC LIMIT ?1"
+                ),
+                params![limit],
+                row_to_fetch,
+            )?
+            .into_iter()
+            .flatten()
+            .collect())
+    }
+
+    // -----------------------------------------------------------------------
+    // The decision ledger
+    // -----------------------------------------------------------------------
+
+    /// Every proposal matching `status`, with its events attached.
+    ///
+    /// Status is derived here and stored nowhere, which is the whole point of the
+    /// two-table shape: `open` when a proposal has no verdict and no supersession,
+    /// otherwise its latest verdict, or `superseded`.
+    pub fn decisions(&self, status: Option<&str>) -> Fallible<Vec<StoredDecision>> {
+        let prefix = &self.prefix;
+        let conn = self.conn()?;
+        let rows: Vec<StoredProposal> = conn
+            .query_all(
+                &format!(
+                    "SELECT id, kind, subject, rung, data_class, data_class_rationale,
+                            proposal_json, evidence_json, model_revision, proposed_at
+                     FROM {prefix}_decisions ORDER BY proposed_at DESC, id"
+                ),
+                [],
+                row_to_proposal,
+            )?
+            .into_iter()
+            .flatten()
+            .collect();
+        let mut events: std::collections::BTreeMap<String, Vec<StoredDecisionEvent>> =
+            std::collections::BTreeMap::new();
+        for (decision_id, event) in conn
+            .query_all(
+                &format!(
+                    "SELECT decision_id, event, verdict, note, outcome_json, recorded_at
+                     FROM {prefix}_decision_events ORDER BY recorded_at, id"
+                ),
+                [],
+                row_to_decision_event,
+            )?
+            .into_iter()
+            .flatten()
+        {
+            events.entry(decision_id).or_default().push(event);
+        }
+        let mut decisions: Vec<StoredDecision> = rows
+            .into_iter()
+            .map(|proposal| {
+                let events = events.remove(&proposal.id).unwrap_or_default();
+                StoredDecision { proposal, events }
+            })
+            .collect();
+        if let Some(status) = status.filter(|status| *status != "all") {
+            decisions.retain(|decision| decision.status() == status);
+        }
+        Ok(decisions)
+    }
+
+    pub fn decision(&self, id: &str) -> Fallible<Option<StoredDecision>> {
+        Ok(self
+            .decisions(None)?
+            .into_iter()
+            .find(|decision| decision.proposal.id == id))
+    }
+
+    /// Append one event. `Ok(false)` is the UNIQUE collision -- two events of one
+    /// kind on one proposal inside one second -- which the handler answers as a
+    /// named 409 rather than a 500.
+    pub fn append_decision_event(
+        &self,
+        decision_id: &str,
+        event: &StoredDecisionEvent,
+    ) -> Fallible<bool> {
+        let prefix = &self.prefix;
+        let conn = self.conn()?;
+        let changed = conn.execute(
+            &format!(
+                "INSERT OR IGNORE INTO {prefix}_decision_events
+                    (decision_id, event, verdict, note, outcome_json, recorded_at)
+                 VALUES (?1,?2,?3,?4,?5,?6)"
+            ),
+            params![
+                &decision_id,
+                &event.event,
+                &event.verdict,
+                &event.note,
+                &event.outcome_json,
+                &event.recorded_at,
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Reconcile one run's proposals against what is open, in one transaction.
+    ///
+    /// `BEGIN IMMEDIATE`, not the default deferred begin, and the reason is not
+    /// style: `finance-cli decisions run` and the server can each call this, an
+    /// in-process mutex cannot see another process, and the primary key does not
+    /// save it -- two supersession events with different `recorded_at` both
+    /// satisfy `UNIQUE (decision_id, event, recorded_at)`, so an open proposal
+    /// could be superseded twice by two runs that each believed they were the
+    /// replacement. Taking the writer lock up front makes the loser wait
+    /// (`busy_timeout` is 5000 ms on every pooled connection) instead of erroring.
+    pub fn reconcile_decisions(
+        &self,
+        minted: &[StoredProposal],
+        recorded_at: &str,
+    ) -> Fallible<DecisionRunOutcome> {
+        let prefix = self.prefix.clone();
+        let mut conn = self.conn()?;
+        let transaction =
+            conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let open_ids: Vec<String> = {
+            // "Currently open", derived exactly as `StoredDecision::status`
+            // derives it, because a presence test would be wrong now that a
+            // supersession can be answered by a later `reinstated`: a proposal
+            // that left the inbox and came back carries BOTH events, and only
+            // the later one is its state. A row with no verdict and no
+            // supersession at all has never left, hence the COALESCE default.
+            let mut statement = transaction.prepare(&format!(
+                "SELECT d.id FROM {prefix}_decisions AS d
+                 WHERE NOT EXISTS (
+                     SELECT 1 FROM {prefix}_decision_events AS answered
+                     WHERE answered.decision_id = d.id AND answered.event = 'verdict'
+                 )
+                 AND COALESCE((
+                     SELECT e.event FROM {prefix}_decision_events AS e
+                     WHERE e.decision_id = d.id
+                       AND e.event IN ('superseded','reinstated')
+                     ORDER BY e.recorded_at DESC, e.id DESC
+                     LIMIT 1
+                 ), 'reinstated') <> 'superseded'"
+            ))?;
+            let ids = statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            ids
+        };
+        let mut outcome = DecisionRunOutcome::default();
+        // Reinstate anything this run produces again, BEFORE the supersede loop,
+        // so a proposal the current run produces is open by definition.
+        //
+        // The proposal id is a hash over BUCKETED numbers (decision.rs), so a
+        // drift that crosses a band edge and comes back into the same 10 bp
+        // bucket re-mints the id the ledger already carries. `INSERT OR IGNORE`
+        // alone then dropped the row, the earlier `superseded` event survived,
+        // and the proposal stayed invisible to the human FOR EVER -- no later run
+        // can mint a different id for it -- while the run reported `unchanged`
+        // and success. Reproduced end to end 2026-09-05: three runs left two live
+        // rebalance proposals unreachable while the engine's own dry run still
+        // produced both.
+        //
+        // The answer is a row, not a deletion. Both assertions stay on the
+        // record and the later one is the state, so "this left the inbox on the
+        // 5th and came back on the 6th" is readable a year later -- which is the
+        // whole reason this ledger has no mutable column. A proposal a human has
+        // answered is not reinstated at all: the verdict was given on these exact
+        // numbers, and re-asking would be the ledger forgetting.
+        let mut reopened: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for proposal in minted {
+            let appended = transaction.execute(
+                &format!(
+                    "INSERT OR IGNORE INTO {prefix}_decision_events
+                        (decision_id, event, verdict, note, outcome_json, recorded_at)
+                     SELECT ?1, 'reinstated', NULL, ?2, NULL, ?3
+                     WHERE NOT EXISTS (
+                         SELECT 1 FROM {prefix}_decision_events AS answered
+                         WHERE answered.decision_id = ?1 AND answered.event = 'verdict')
+                       AND (
+                         SELECT e.event FROM {prefix}_decision_events AS e
+                         WHERE e.decision_id = ?1
+                           AND e.event IN ('superseded','reinstated')
+                         ORDER BY e.recorded_at DESC, e.id DESC
+                         LIMIT 1
+                       ) = 'superseded'"
+                ),
+                params![
+                    &proposal.id,
+                    "a later run produced this proposal again",
+                    recorded_at
+                ],
+            )?;
+            if appended == 1 {
+                reopened.insert(proposal.id.as_str());
+            }
+        }
+        for id in &open_ids {
+            if minted.iter().any(|proposal| &proposal.id == id) {
+                continue;
+            }
+            let changed = transaction.execute(
+                &format!(
+                    "INSERT OR IGNORE INTO {prefix}_decision_events
+                        (decision_id, event, verdict, note, outcome_json, recorded_at)
+                     VALUES (?1, 'superseded', NULL, ?2, NULL, ?3)"
+                ),
+                params![
+                    id,
+                    "the run that produced this no longer produces it",
+                    recorded_at
+                ],
+            )?;
+            outcome.superseded += usize::from(changed == 1);
+        }
+        for proposal in minted {
+            let changed = transaction.execute(
+                &format!(
+                    "INSERT OR IGNORE INTO {prefix}_decisions
+                        (id, kind, subject, rung, data_class, data_class_rationale,
+                         proposal_json, evidence_json, model_revision, proposed_at)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"
+                ),
+                params![
+                    &proposal.id,
+                    &proposal.kind,
+                    &proposal.subject,
+                    &proposal.rung,
+                    &proposal.data_class,
+                    &proposal.data_class_rationale,
+                    &proposal.proposal_json,
+                    &proposal.evidence_json,
+                    &proposal.model_revision,
+                    &proposal.proposed_at,
+                ],
+            )?;
+            if changed == 1 {
+                outcome.proposed += 1;
+            } else if reopened.contains(proposal.id.as_str()) {
+                outcome.reopened += 1;
+            } else {
+                outcome.unchanged += 1;
+            }
+        }
+        transaction.commit()?;
+        Ok(outcome)
+    }
+}
+
+/// What one reconcile run did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub struct DecisionRunOutcome {
+    pub proposed: usize,
+    pub unchanged: usize,
+    /// Already in the ledger, superseded by an earlier run, and produced again by
+    /// this one, so a `reinstated` event was appended. Counted apart from
+    /// `unchanged` because the row moved back into the human's inbox, which is a
+    /// different fact from "nothing happened".
+    pub reopened: usize,
+    pub superseded: usize,
+}
+
+/// The stored proposal, exactly as its row holds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredProposal {
+    pub id: String,
+    pub kind: String,
+    pub subject: String,
+    pub rung: String,
+    pub data_class: String,
+    pub data_class_rationale: String,
+    pub proposal_json: String,
+    pub evidence_json: String,
+    pub model_revision: String,
+    pub proposed_at: String,
+}
+
+/// One appended fact about a proposal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredDecisionEvent {
+    pub event: String,
+    pub verdict: Option<String>,
+    pub note: String,
+    pub outcome_json: Option<String>,
+    pub recorded_at: String,
+}
+
+/// A proposal with everything that happened to it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredDecision {
+    pub proposal: StoredProposal,
+    pub events: Vec<StoredDecisionEvent>,
+}
+
+impl StoredDecision {
+    /// Derived, never stored. A column is a thing that can be updated, and a
+    /// single UPDATEd verdict loses the date the call was actually made.
+    pub fn status(&self) -> &str {
+        if let Some(verdict) = self.latest_verdict() {
+            return verdict.verdict.as_deref().unwrap_or("open");
+        }
+        // The LATEST of the supersede/reinstate pair, not the presence of either.
+        // A proposal can leave the inbox and come back any number of times, and
+        // every one of those assertions stays on the record; a presence test on
+        // `superseded` would read a row that came back as still gone.
+        match self.latest_reachability() {
+            Some("superseded") => "superseded",
+            _ => "open",
+        }
+    }
+
+    pub fn latest_verdict(&self) -> Option<&StoredDecisionEvent> {
+        self.events
+            .iter()
+            .filter(|event| event.event == "verdict")
+            .max_by(|left, right| left.recorded_at.cmp(&right.recorded_at))
+    }
+
+    /// The later of this proposal's newest `superseded` and newest `reinstated`,
+    /// which is what decides whether it is in the inbox.
+    ///
+    /// Ordered on `recorded_at` and then on arrival, because the two can share a
+    /// second: `reconcile_decisions` stamps every event in one run with one
+    /// timestamp, and a run that reinstates a proposal and a later run that
+    /// supersedes it again inside the same second must still resolve.
+    fn latest_reachability(&self) -> Option<&str> {
+        self.events
+            .iter()
+            .enumerate()
+            .filter(|(_, event)| matches!(event.event.as_str(), "superseded" | "reinstated"))
+            .max_by(|left, right| {
+                left.1
+                    .recorded_at
+                    .cmp(&right.1.recorded_at)
+                    .then(left.0.cmp(&right.0))
+            })
+            .map(|(_, event)| event.event.as_str())
+    }
+
+    pub fn latest_outcome(&self) -> Option<&StoredDecisionEvent> {
+        self.events
+            .iter()
+            .filter(|event| event.event == "outcome")
+            .max_by(|left, right| left.recorded_at.cmp(&right.recorded_at))
+    }
+}
+
+fn row_to_market_price(row: &Row) -> rusqlite::Result<Option<PriceObservation>> {
+    let scale: i32 = row.get("price_scale")?;
+    let Ok(scale) = u32::try_from(scale) else {
+        return Ok(None);
+    };
+    Ok(Some(PriceObservation {
+        instrument: row.get("instrument")?,
+        observed_on: row.get("observed_on")?,
+        price: Quantity {
+            mantissa: row.get("price_mantissa")?,
+            scale,
+        },
+        currency: row.get("currency")?,
+        source: row.get("source")?,
+        fetched_at: row.get("fetched_at")?,
+    }))
+}
+
+fn row_to_fx(row: &Row) -> rusqlite::Result<Option<FxObservation>> {
+    let scale: i32 = row.get("rate_scale")?;
+    let Ok(scale) = u32::try_from(scale) else {
+        return Ok(None);
+    };
+    Ok(Some(FxObservation {
+        base: row.get("base")?,
+        quote: row.get("quote")?,
+        observed_on: row.get("observed_on")?,
+        rate: Quantity {
+            mantissa: row.get("rate_mantissa")?,
+            scale,
+        },
+        source: row.get("source")?,
+        fetched_at: row.get("fetched_at")?,
+    }))
+}
+
+/// A status this binary does not know is dropped rather than guessed into the
+/// nearest neighbour, the way `row_to_state` above already does it.
+fn row_to_fetch(row: &Row) -> rusqlite::Result<Option<FetchAttempt>> {
+    let Some(status) = FetchStatus::parse(row.get::<_, String>("status")?.as_str()) else {
+        return Ok(None);
+    };
+    Ok(Some(FetchAttempt {
+        provider: row.get("provider")?,
+        target: row.get("target")?,
+        requested_on: row.get("requested_on")?,
+        status,
+        detail: row.get("detail")?,
+        rows_written: row.get("rows_written")?,
+        fetched_at: row.get("fetched_at")?,
+    }))
+}
+
+fn row_to_proposal(row: &Row) -> rusqlite::Result<Option<StoredProposal>> {
+    Ok(Some(StoredProposal {
+        id: row.get("id")?,
+        kind: row.get("kind")?,
+        subject: row.get("subject")?,
+        rung: row.get("rung")?,
+        data_class: row.get("data_class")?,
+        data_class_rationale: row.get("data_class_rationale")?,
+        proposal_json: row.get("proposal_json")?,
+        evidence_json: row.get("evidence_json")?,
+        model_revision: row.get("model_revision")?,
+        proposed_at: row.get("proposed_at")?,
+    }))
+}
+
+fn row_to_decision_event(row: &Row) -> rusqlite::Result<Option<(String, StoredDecisionEvent)>> {
+    Ok(Some((
+        row.get("decision_id")?,
+        StoredDecisionEvent {
+            event: row.get("event")?,
+            verdict: row.get("verdict")?,
+            note: row.get("note")?,
+            outcome_json: row.get("outcome_json")?,
+            recorded_at: row.get("recorded_at")?,
+        },
+    )))
+}
+
+/// Widen `{prefix}_decision_events`' `event` CHECK to admit `reinstated`, once,
+/// on a file that already carries the three-value shape.
+///
+/// The doctrine above -- one `CREATE TABLE IF NOT EXISTS` batch, no ALTER path --
+/// holds only while no deployed file predates a constraint change. Measured
+/// 2026-09-06: the owner's `axon.db` already holds this table with
+/// `CHECK (event IN ('verdict','outcome','superseded'))`, written by an earlier
+/// run of this same code, and `CREATE TABLE IF NOT EXISTS` never revisits an
+/// installed table. So this is the table-rebuild dance SQLite's own documentation
+/// prescribes, behind a probe of what the file actually holds. The precedent is
+/// `capabilities/comms/src/store/migrations.rs`, which does the same for the
+/// C0-C3 class vocabulary.
+///
+/// Unlike that one, this runs INSIDE the migration transaction and does not turn
+/// `foreign_keys` off, and the difference is a property of this table rather than
+/// a shortcut. comms had to disable enforcement because `DROP TABLE` performs an
+/// implicit DELETE that fires `ON DELETE CASCADE` on the dropped table's
+/// children, and its tables have children. `{prefix}_decision_events` has none:
+/// it is the child, `{prefix}_decisions` is the parent, and `sqlite_master`
+/// carries no other `REFERENCES {prefix}_decision_events`. Dropping it therefore
+/// cascades nothing, and every copied row keeps its `decision_id` verbatim, so no
+/// reference changes.
+///
+/// Idempotent: the probe reads the installed DDL text, so a second pass finds the
+/// widened CHECK and does nothing.
+fn rebuild_decision_events_check(conn: &Connection, prefix: &str) -> Fallible<()> {
+    let table = format!("{prefix}_decision_events");
+    let installed: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
+            params![&table],
+            |row| row.get(0),
+        )
+        .optional()?;
+    // No table at all means the batch above just created it with the four-value
+    // CHECK. A table whose DDL already names the value has been rebuilt.
+    let Some(installed) = installed else {
+        return Ok(());
+    };
+    if installed.contains("'reinstated'") {
+        return Ok(());
+    }
+    // Read the indexes back and replay them rather than trusting the batch above
+    // to have declared every one: a DROP takes every index the deployed file
+    // actually carries, including one this repository no longer ships.
+    let attached: Vec<String> = conn.query_all(
+        "SELECT sql FROM sqlite_master
+         WHERE tbl_name = ?1 AND type IN ('index','trigger') AND sql IS NOT NULL",
+        params![&table],
+        |row| row.get(0),
+    )?;
+    let scratch = format!("{table}_reinstated");
+    conn.execute_batch(&format!(
+        "DROP TABLE IF EXISTS {scratch};
+         CREATE TABLE {scratch} (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             decision_id TEXT NOT NULL
+                 REFERENCES {prefix}_decisions(id) ON DELETE CASCADE,
+             event TEXT NOT NULL
+                 CHECK (event IN ('verdict','outcome','superseded','reinstated')),
+             verdict TEXT CHECK (verdict IN ('accepted','rejected')),
+             note TEXT NOT NULL DEFAULT '',
+             outcome_json TEXT,
+             recorded_at TEXT NOT NULL,
+             CHECK ((event = 'verdict') = (verdict IS NOT NULL)),
+             UNIQUE (decision_id, event, recorded_at)
+         );
+         INSERT INTO {scratch}
+             (id, decision_id, event, verdict, note, outcome_json, recorded_at)
+         SELECT id, decision_id, event, verdict, note, outcome_json, recorded_at
+         FROM {table};
+         DROP TABLE {table};
+         ALTER TABLE {scratch} RENAME TO {table};"
+    ))?;
+    for statement in attached {
+        // The batch's own index is `IF NOT EXISTS`; a replayed one from the file
+        // may not be, and the DROP already took it.
+        conn.execute_batch(&statement)?;
+    }
+    Ok(())
 }
 
 fn insert_price(

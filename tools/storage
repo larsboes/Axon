@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-# Thin launcher: storage's logic lives in storage.ts. TypeScript runs through
-# bun (Axon rule 8) — the overlay's storage-policy.toml is array-of-tables
-# ([[class]], [[protected]]), which tools/lib/toml.sh's grep/sed contract can't
-# parse, so it's TS rather than bash. Same reasoning as tools/doctor.
-_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec bun run "$_here/storage.ts" "$@"

@@ -31,7 +31,7 @@ function expandHome(path: string): string {
   return path === "~" ? home : path.startsWith("~/") ? join(home, path.slice(2)) : path;
 }
 
-function config(): DeployConfig {
+export function defaultPiDeployConfig(): DeployConfig {
   const roots = [join(AXON_ROOT, "Packs")];
   const overlay = overlayRoot();
   if (overlay && existsSync(join(overlay, "Packs"))) roots.push(join(overlay, "Packs"));
@@ -84,7 +84,7 @@ function writeState(state: State): void {
 }
 
 function pathsForPack(pack: string): string[] {
-  const cfg = config();
+  const cfg = defaultPiDeployConfig();
   return readPackSkills(cfg, pack).map((skill) => {
     const matches = (cfg.packRoots ?? []).map((root) => join(root, pack, "skills", skill)).filter(existsSync);
     if (matches.length !== 1) throw new Error(`${pack}/${skill}: source is missing or ambiguous`);
@@ -93,7 +93,7 @@ function pathsForPack(pack: string): string[] {
 }
 
 function extensionsForPack(pack: string): string[] {
-  const cfg = config();
+  const cfg = defaultPiDeployConfig();
   const names = new Set<string>();
   for (const root of cfg.packRoots ?? []) {
     const dir = join(root, pack, "extensions");
@@ -108,7 +108,7 @@ function extensionsForPack(pack: string): string[] {
 }
 
 function status(packs: string[]): void {
-  const selected = packs.length ? packs : availablePacks(config(), true);
+  const selected = packs.length ? packs : availablePacks(defaultPiDeployConfig(), true);
   const settings = readSettings();
   const skills = settingSkills(settings);
   const extensions = settingExtensions(settings);
@@ -193,15 +193,21 @@ function usage(): never {
   throw new Error("usage: tools/packs-pi list | status [pack ...] | deploy <pack ...> | sync <pack ...> | remove <pack ...>");
 }
 
-try {
-  const [command = "list", ...args] = process.argv.slice(2);
-  if (command === "list") {
-    for (const pack of availablePacks(config(), true)) console.log(pack);
-  } else if (command === "status") status(args);
-  else if (command === "deploy" || command === "sync") deploy(args);
-  else if (command === "remove") remove(args);
-  else usage();
-} catch (error) {
-  console.error(`packs-pi: ${(error as Error).message}`);
-  process.exit(1);
+// Guarded so this module can be imported for its exported DeployConfig without
+// running the CLI — tools/lib/harness-registry.ts does exactly that, and an
+// unguarded top-level block printed a full status listing on import.
+if (import.meta.main) {
+
+  try {
+    const [command = "list", ...args] = process.argv.slice(2);
+    if (command === "list") {
+      for (const pack of availablePacks(defaultPiDeployConfig(), true)) console.log(pack);
+    } else if (command === "status") status(args);
+    else if (command === "deploy" || command === "sync") deploy(args);
+    else if (command === "remove") remove(args);
+    else usage();
+  } catch (error) {
+    console.error(`packs-pi: ${(error as Error).message}`);
+    process.exit(1);
+  }
 }

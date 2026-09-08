@@ -261,7 +261,7 @@
   }
 
   .failed {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .actions {
@@ -286,11 +286,11 @@
 
   .backup.overdue,
   .backup.never {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .btn.danger {
-    color: var(--warning);
+    color: var(--warning-ink);
     border-color: var(--warning);
   }
 
@@ -302,7 +302,7 @@
     padding: 0.75rem;
     border-radius: var(--radius-md);
     background-color: var(--warning-soft);
-    color: var(--warning);
+    color: var(--warning-ink);
     font-size: 0.8125rem;
   }
 

@@ -1,0 +1,30 @@
+# packs — the deployment ledgers: which agent harness holds which Pack, and at what digest.
+#
+# kind = "data" because nothing here starts. The domain is real and bounded — what Axon
+# has put into each agent harness on this machine — but its whole implementation is
+# operator machinery that already exists under tools/, exactly as capabilities/backup
+# wraps tools/backup-all.sh without carrying a line of its own. What was missing was an
+# owner for the state, and that is the one question a data manifest answers.
+#
+# The state is four ledgers under ~/.local/state/axon/pack-deployments/ (claude.json,
+# codex.json, pi.json, opencode-packs.json). Each records, per deployed unit, the source
+# path inside Axon and the digest that was installed. Nothing backed them up. Losing one
+# does not lose a skill — the copies stay on disk — it loses the PROOF that Axon put them
+# there, so every deployed skill reads as an unowned collision and each Pack has to be
+# re-adopted by hand, one at a time, and only while every copy is still byte-identical to
+# its source. A drifted copy cannot be adopted at all.
+#
+# backup_paths are relative to a machine-local root, declared in the overlay's
+# machine.toml as [capability.packs] backup_source_root. XDG state is where the deployers
+# already write; the vault is the precedent for a contract whose source root is a fact
+# about the machine rather than about the capability (tools/backup.sh, SRC_ROOT_DECL).
+kind = "data"
+name = "packs"
+backup_paths = ["pack-deployments"]
+backup_target = "backup-target"
+backup_retain = "14"
+# Daily, and overdue after two: the ledgers change whenever a Pack is deployed or synced,
+# which is a human action that happens in bursts. A week of tolerance would mean a restore
+# that predates a whole session's deployments.
+backup_advise_days = "1"
+backup_stale_days  = "2"

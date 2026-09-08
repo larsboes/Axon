@@ -15,7 +15,7 @@ path = "src/lib.rs"
 # `bundled` compiles SQLite into the binary. See upstreams.toml [rusqlite] for
 # why that rather than the system library: the deployment must not depend on
 # whichever SQLite macOS or an Alpine image happens to ship.
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite.workspace = true
 # The generic pool. See upstreams.toml [r2d2] -- kept across the Postgres
 # retirement (PRD Q45) because the pool shape and the calling convention are
 # what 134 call sites were written against; only the manager changed.
@@ -24,5 +24,5 @@ r2d2_sqlite = "0.35"
 # For `json_column` only. SQLite has no JSON type, so the columns Postgres held
 # as jsonb or integer[] are TEXT here, and reading one back is a store concern
 # rather than a per-capability one.
-serde = "1.0"
-serde_json = "1.0"
+serde.workspace = true
+serde_json.workspace = true

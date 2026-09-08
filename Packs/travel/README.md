@@ -12,6 +12,17 @@ and a copy here would be a copy that goes stale.
   `references/traps.md`, holds the failures that return an empty or plausible answer instead of
   an error.
 
+Since 2026-09-05 `trips` composes that same order server-side for one shape of question:
+`POST /api/plan-search` answers 202 with a job number, ranks candidates on visible factors and
+writes nothing until `POST /api/plan-search/:id/adopt` (PRD Q91,
+`capabilities/trips/README.md`). The skill's hand-run order stays the path for everything the
+job does not cover, and it stays the explanation of why the order is what it is. Two facts a
+caller of this Pack needs: `trips` now answers 403 to a browser `Origin` it does not serve the
+dashboard from, which `axon capability call` never trips because it sends no `Origin`; and the
+job reads `places` for climate normals and companion presence, which `pack.toml`'s
+`capabilities` list does not yet name — `axon capability list` is the current answer, this
+manifest is not.
+
 ## Activate
 
 ```sh

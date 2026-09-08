@@ -20,13 +20,18 @@ axon-config = { path = "../../libs/axon-config" }
 axon-store = { path = "../../libs/axon-store" }
 axon-server = { path = "../../libs/axon-server" }
 route-manifest = { path = "../../libs/route-manifest" }
-axum = "0.7"
-tokio = { version = "1", features = ["full"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-reqwest = { version = "0.12", features = ["json", "stream"] }
+axum.workspace = true
+# Not `full`: these are the drivers this crate reaches for, verified with a lone
+# `cargo check -p <crate> --all-targets`, which is the only build where a missing
+# tokio feature is visible (a workspace build unifies them away).
+# `process` for the systemd/launchd probes in registry.rs and backup.rs, `time` for the
+# poll interval. Rest: `#[tokio::main]` plus `spawn`/`spawn_blocking`.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "time"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+reqwest = { workspace = true, features = ["json", "stream", "query", "form"] }
 # The shell's front door (src/proxy.rs): ServeDir/ServeFile for the built bundle, and
 # ServiceExt::oneshot to hand a request to them from inside a fallback handler rather than
 # mounting them as the fallback outright -- the proxy has to get first refusal on the path.
 tower = { version = "0.4", features = ["util"] }   # ServiceExt::oneshot
-tower-http = { version = "0.5", features = ["fs"] }
+tower-http = { workspace = true, features = ["fs"] }
