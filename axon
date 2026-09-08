@@ -26,6 +26,11 @@ Discover Axon:
   storage <report|apply|target|prune>
                                  What is filling this disk, and what is safe to reclaim
 
+Check a change before pushing it:
+  gates                          Run CI's repo gates here, from CI's own definition
+  test                           Run CI's bun test and every tools/*.test.sh
+  cargo <args...>                Run cargo against a scratch target dir and a scratch overlay
+
 Operate capabilities:
   capability list                List registered HTTP capability surfaces and health
   capability health              Probe registered capability health endpoints
@@ -73,6 +78,39 @@ Usage: axon storage <command>
   prune [--incremental] [--target] [--node-modules] [--dry-run]
 
 Policy: <overlay>/config/storage-policy.toml. See tools/storage/README.md.
+EOF
+      ;;
+    gates|test) cat <<'EOF'
+Usage: axon gates | axon test
+
+Both replay one job of .github/workflows/ci.yml here, reading the step list out of that
+file. No gate is named here on purpose: a second copy of the list is a copy that goes
+stale, so `tools/ci-local list` prints what each job will actually run.
+
+  gates   the repo-gates job — the file-based checks, in CI's order
+  test    the bun-tests job — `bun test` from the root, then every tools/*.test.sh
+
+Every step runs even after one fails. Exit 1 means a step failed.
+Rust is deliberately not here: run `axon cargo test --workspace --locked`.
+`tools/ci-local list` also says why CI's remaining jobs are refused on this machine.
+EOF
+      ;;
+    cargo) cat <<'EOF'
+Usage: axon cargo <args...>
+
+cargo, with the four things a run on this machine has to be protected from:
+
+  a scratch CARGO_TARGET_DIR   the repository's target/release/<bin> IS the binary a
+                               live service is running, and replacing it kills it
+  --release refused            for the same reason
+  a scratch overlay            AXON_* is cleared, then pointed at a throwaway root
+  scratch projection roots     trips, finance, interior and comms export notes into
+                               the Obsidian vault from roots AXON_DB_PATH never touches
+
+  --print-env    show the environment it would use, and run nothing
+
+Set CARGO_TARGET_DIR yourself to reuse a warm one; anything inside the repository
+is refused.
 EOF
       ;;
     doctor|search) echo "Usage: axon $1 ${1#doctor}" | sed 's/ $//' ;;
@@ -229,6 +267,12 @@ case "${1:-help}" in
   # Same delegation as doctor: the launcher owns the overlay resolution and the lazy
   # release build, so there is one implementation of both.
   storage) shift; exec "$AXON_ROOT/tools/storage/storage" "$@" ;;
+  # Same delegation again, and the job names are CI's own. `gates` and `test` are two
+  # jobs of one workflow, not two tools: tools/ci-local reads the step list out of
+  # .github/workflows/ci.yml so neither verb can drift from what the push will run.
+  gates) shift; exec "$AXON_ROOT/tools/ci-local" run repo-gates "$@" ;;
+  test) shift; exec "$AXON_ROOT/tools/ci-local" run bun-tests "$@" ;;
+  cargo) shift; exec "$AXON_ROOT/tools/cargo-hermetic" "$@" ;;
   capability) shift; capability_command "$@" ;;
   pack) shift; pack_command "$@" ;;
   *) echo "axon: unknown command '$1'" >&2; echo "Run 'axon help'." >&2; exit 1 ;;

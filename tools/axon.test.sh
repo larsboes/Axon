@@ -26,6 +26,33 @@ contains "$out" "capability list"
 contains "$out" "pack deploy"
 contains "$out" "search <words...>"
 contains "$out" "storage <report|apply|target|prune>"
+contains "$out" "gates"
+contains "$out" "test"
+contains "$out" "cargo <args...>"
+
+# The three pre-push verbs. Each dispatches to a tool that owns the work, so what is
+# asserted here is the contract of the CLI: the verb exists, its help says what it runs,
+# and the tool it delegates to is on disk. Whether the gates pass is ci-local.test.sh's
+# question, and whether cargo is fenced is cargo-hermetic.test.sh's.
+out="$("$AXON" help gates)"
+contains "$out" "repo-gates job"
+contains "$out" "bun-tests job"
+contains "$out" "axon cargo test"
+[ -x "$ROOT/tools/ci-local" ] || fail "tools/ci-local is not executable"
+
+out="$("$AXON" help cargo)"
+contains "$out" "--release refused"
+contains "$out" "--print-env"
+[ -x "$ROOT/tools/cargo-hermetic" ] || fail "tools/cargo-hermetic is not executable"
+
+# `axon test` and `axon gates` must name jobs that exist in the workflow they claim to
+# replay. A verb pointing at a job CI does not have would fail only when somebody ran it.
+for job in repo-gates bun-tests; do
+  grep -q "^  $job:" "$ROOT/.github/workflows/ci.yml" ||
+    fail "axon dispatches to CI job '$job', which .github/workflows/ci.yml does not declare"
+  grep -q "run $job" "$AXON" ||
+    fail "axon no longer dispatches to CI job '$job'"
+done
 
 out="$("$AXON" help capability)"
 contains "$out" "ingest <url>"
