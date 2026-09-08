@@ -84,9 +84,30 @@ is "a capability with neither has no base URL" \
 is "a 200 is up whatever the manifest declares" up "$(capability_state 200 false)"
 is "a capability that declares autostart and is silent is down" down "$(capability_state 000 true)"
 is "a capability that declares autostart=false and is silent is off" off "$(capability_state 000 false)"
-is "an absent autostart is not a claim that it should be running" off "$(capability_state 000 "")"
 is "a 500 from something that should be running is down" down "$(capability_state 500 true)"
 is "a 404 is not up" off "$(capability_state 404 false)"
+
+# A local capability with no `autostart` line is off, which is what the rest of the
+# repository already means by an absent field: tools/capability.sh's `_is_autostart` and
+# `_emit_line` both read absent as "false", so the supervisor does not keep it running
+# either. It is a real reduction in what this verb can catch — five capabilities answering
+# 200 today declare no autostart — and it is written down in the library rather than
+# discovered later.
+is "an absent autostart is not a claim that it should be running" off "$(capability_state 000 "")"
+
+# The external row, which the rule above must NOT swallow. tools/capability.sh blanks
+# `autostart` for `scope = external` because a manifest describes how its OWNER runs the
+# capability and this machine has no authority over another host — so vaultwarden arrives
+# here as "" while its own service.toml declares `autostart = "true"`. Read as a
+# declaration, an unreachable peer came back `off ... not autostarted; start it with
+# tools/service-runner.sh start vaultwarden` and exit 0: the wrong state, the wrong exit,
+# and an instruction to start another host's service with this machine's supervisor.
+is "an external capability that does not answer is down, whatever the blanked field says" \
+  down "$(capability_state 000 "" external)"
+is "an external capability that answers is up" up "$(capability_state 200 "" external)"
+# And the blanking is not something this test invented: it is the registry's own rule.
+is "an external row is down even if an autostart value did leak through" \
+  down "$(capability_state 000 false external)"
 
 # --- the row separator -----------------------------------------------------
 #

@@ -5,9 +5,11 @@
 # were wrong for two years in ways nobody could see, and none of them can be tested through
 # the CLI on a machine that has no services running. CI has none.
 #
-# Every rule is copied from capabilities/axon-status/src/status/registry.rs, which already
-# owns this question for the dashboard. Where the two disagreed, the CLI was the one that
-# was wrong.
+# Where to poll is copied from capabilities/axon-status/src/status/registry.rs, which
+# already owns that question for the dashboard, and where the two disagreed the CLI was the
+# one that was wrong. What the answer MEANS is not copied and cannot be: that surface has
+# `up: Option<bool>` and no `off` at all, so the third state below is this CLI's own and is
+# argued for where it is defined rather than cited to a file that does not hold it.
 #
 # bash 3.2-safe (README.md#portable-shell).
 
@@ -78,9 +80,30 @@ capability_base_url() {  # <scope> <port> <endpoint>
 # `axon capability health` printed `down dashboard http://127.0.0.1:47117/` while the
 # dashboard answered 200, and exited non-zero for it. That line sent at least two sessions to
 # a dead URL.
-capability_state() {  # <http-code> <autostart> -> up|off|down
+#
+# An EXTERNAL capability is never off. Its `autostart` is empty here whatever its manifest
+# says, because `tools/capability.sh` blanks every field that would be a claim of authority
+# over another host — "a manifest says how its OWNER runs the capability". Reading that blank
+# as a declaration inverted the answer: vaultwarden's own service.toml declares
+# `autostart = "true"`, and against a planted registry row that does not answer, this printed
+# `off vaultwarden ... not autostarted; start it with tools/service-runner.sh start
+# vaultwarden` and exited 0 (measured 2026-09-08). Wrong three times over — the state, the
+# exit status, and an instruction to start another host's service with this machine's
+# supervisor. A withheld authority is not a declaration that the capability is optional, and
+# axon-status agrees: `CapabilityView.up` is an Option<bool> with no `off` to land in.
+#
+# A LOCAL capability with no `autostart` line stays off, and that is deliberate rather than
+# an oversight: `tools/capability.sh`'s own `_is_autostart` and `_emit_line` both read an
+# absent field as "false", so the supervisor does not keep such a capability running either.
+# The cost is real and is written down rather than hidden — scouting, transit, trips, places
+# and vault declare no autostart, all five answer 200 today, and none of them can make this
+# verb non-zero. Closing that means declaring `autostart` in five manifests; it is not a
+# thing to guess at here.
+capability_state() {  # <http-code> <autostart> [scope] -> up|off|down
   if [ "$1" = "200" ]; then
     echo up
+  elif [ "${3:-}" = external ]; then
+    echo down
   elif [ "$2" = "true" ]; then
     echo down
   else

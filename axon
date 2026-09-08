@@ -75,12 +75,14 @@ health polls each capability's ready_path where it declares one and its health_p
 otherwise, which is what axon-status judges availability on. Four states:
 
   up       answered 200
-  down     declares autostart and did not answer. The only state that exits non-zero
-  off      declares autostart = "false", so not running is its own declaration
+  down     should be answering and did not. The only state that exits non-zero
+  off      this machine does not autostart it, so not running is not a fault
   unknown  declares neither a health nor a ready path; nothing can answer for it
 
 An external capability is polled at its resolved endpoint, not on loopback: it has no
-port here because a port is a fact about the host that binds it.
+port here because a port is a fact about the host that binds it. It is never `off`
+either — the registry blanks its autostart, because how another host runs a capability
+is that host's declaration to make, not a claim this machine may read as permission.
 EOF
       ;;
     pack) cat <<'EOF'
@@ -174,7 +176,7 @@ capability_list() {
     if [ -z "$probe" ]; then
       state="unknown"
     else
-      state="$(capability_state "$(capability_probe_code "$probe")" "$autostart")"
+      state="$(capability_state "$(capability_probe_code "$probe")" "$autostart" "$scope")"
     fi
     printf '%-18s %-38s %s\n' "$name" "$url" "$state"
   done < <(capability_rows)
@@ -193,7 +195,7 @@ capability_health() {
     fi
     any=1
     code="$(capability_probe_code "$probe")"
-    state="$(capability_state "$code" "$autostart")"
+    state="$(capability_state "$code" "$autostart" "$scope")"
     case "$state" in
       up)   printf 'up      %-18s %s\n' "$name" "$probe" ;;
       down) printf 'down    %-18s %s  HTTP %s\n' "$name" "$probe" "${code:-unreachable}"; failed=1 ;;
@@ -208,8 +210,9 @@ capability_health() {
     return 1
   fi
   echo
-  echo "down = declares autostart and is not answering. off = declares autostart=false, so"
-  echo "not running is its own declaration, not a fault. Only 'down' sets a non-zero exit."
+  echo "down = should be answering and is not, which includes every capability another host"
+  echo "runs. off = this machine does not autostart it, so not running is not a fault."
+  echo "Only 'down' sets a non-zero exit."
   return "$failed"
 }
 
