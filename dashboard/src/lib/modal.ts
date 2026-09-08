@@ -10,8 +10,9 @@
  *                walks out behind the backdrop into a page the reader cannot see, and
  *                Escape is the only way back — modal to a mouse, not to a keyboard;
  *   focus out    on close, focus returns to whatever opened the dialog. Without this it
- *                falls to `<body>` and the reader restarts at the top of the document,
- *                which on /calendar is about forty tab stops from the button they pressed.
+ *                falls to `<body>`, and the reader restarts at the top of the document —
+ *                every tab stop between the page header and the control they pressed has
+ *                to be walked again, on a page they have already read.
  *
  * Measured on 2026-09-08, before this file existed: four `role="dialog" aria-modal="true"`
  * sheets in `dashboard/src/`; one (`$lib/Overlay.svelte`) trapped Tab, three did not, and

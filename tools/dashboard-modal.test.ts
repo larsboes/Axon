@@ -12,8 +12,8 @@
 // sheet for a page hidden behind the backdrop, and Escape is the only way back — and two of
 // the three had no Escape handler either. No mount focus: the reader is still on the page
 // behind, so the dialog is never announced and the keys they press go somewhere else. No
-// restore: closing drops focus to `<body>`, and on /calendar that is about forty tab stops
-// from the button that opened it.
+// restore: closing drops focus to `<body>`, so the reader restarts at the top of a page
+// they have already read and walks every stop back to the control they pressed.
 //
 // The trap's arithmetic is what this file mostly tests, because it is the half that is
 // wrong quietly — a trap that skips the last control, or that pins focus on the sheet, is

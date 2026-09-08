@@ -119,10 +119,10 @@ function reducedMotion(): boolean {
  *
  * Exported rather than kept inside `createListCursor` because a page whose rows are not
  * uniformly selectable cannot use the factory — /feed interleaves collector-run headers
- * with items and drives `nextSelectable`/`prevSelectable` itself — and it spent three
- * months scrolling a row into view without focusing it. That is a paint: `aria-current`
- * moved and no assistive technology was told, so the whole j/k lane was silent to a
- * screen reader and left a keyboard reader's Tab position wherever it had been.
+ * with items and drives `nextSelectable`/`prevSelectable` itself — and from 57a47d5
+ * (2026-09-05) to 2026-09-08 it scrolled a row into view without focusing it. That is a
+ * paint: `aria-current` moved and no assistive technology was told, so the whole j/k lane
+ * was silent to a screen reader and left a keyboard reader's Tab position where it was.
  *
  * The order is load-bearing. `focus()` on its own scrolls the row to the top of the
  * viewport, which throws away the rows above it that give a selection its context, so the
