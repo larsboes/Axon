@@ -1,10 +1,13 @@
 pub mod config;
 pub mod cost;
 pub mod finance_client;
+pub mod gear;
 pub mod intent;
+pub mod interior_client;
 pub mod jobs;
 pub mod kiwi;
 pub mod obsidian;
+pub mod pack;
 pub mod plan_search;
 pub mod projection;
 pub mod retrospective;

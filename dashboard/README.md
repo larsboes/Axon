@@ -103,11 +103,49 @@ detail contract carries no class, so `toListEntry` in `routes/feed/+page.svelte`
 row out of an ingest response that has none. A reader must treat `undefined` as *not stated*
 and fail closed. The field stops being optional the day the detail contract states one too.
 
-The travel workspace keeps MapLibre and its stylesheet in a separate async bundle. A map
-loads only when it approaches the viewport or the reader explicitly selects **Karte
-laden**; the trip list remains the complete fallback when map loading fails. OpenFreeMap
-supplies the basemap. Destination images come from Wikimedia's free-license page-image
-surface and stay validated inert data.
+### One map surface, and a basemap that is half local
+
+Every map in this shell is `src/lib/map/MapSurface.svelte` over `src/lib/map/surface.ts`.
+The component owns the frame and the deferred / loading / failed states; the module owns the
+MapLibre instance, keeps it in a small pool, and hands it out on lease. A view brings its own
+sources and layer specs and nothing else — `/map`'s spend, travel and people layers are
+written in `routes/map/+page.svelte`, `/travel`'s three trip layers in
+`src/lib/travel/trip-layers.ts`. What a view stops owning is WebGL.
+
+The pool is what makes a route change cheap. Leaving `/map` for `/travel` detaches the map's
+container and parks the instance rather than calling `remove()`, so the next view re-parents
+it and swaps data: the parsed library, the parsed style, the decoded sprite and the uploaded
+tiles all survive. It is a pool and not a singleton because `/travel` can legitimately show
+two maps at once.
+
+MapLibre and its stylesheet stay in a separate async bundle — `vite.config.ts`'s `bundleGuard`
+fails the build if either reaches the eager import graph, **and if MapLibre's worker asset is
+not emitted**. That second assertion exists because its absence is silent: MapLibre asks for its
+worker through a template literal Rollup cannot follow, so no asset was built, the request fell
+through axon-status' SPA fallback as `200 text/html`, `new Worker` was handed the app shell and
+died — and every map on the served bundle rendered a blank canvas and sat on "Loading map…"
+forever, with no error and no failed request. `surface.ts` hands MapLibre a Vite-built worker
+through `setWorkerUrl` instead. A map loads when it approaches the
+viewport, or immediately where the map *is* the page (`eager`), or on the reader's explicit
+**Load map**; the list beside it is the complete fallback when loading fails.
+
+OpenFreeMap supplies the basemap, and its fixed half is vendored under `static/basemap` by
+`tools/fetch-basemap` — the style, the sprite and the Latin glyph ranges, with provenance and
+the licence obligations in that directory's `LICENSE.md`. That removes four serialized
+transatlantic round trips from the critical path (measured 2026-09-06: 0.23 s style, 0.19 s
+TileJSON, 0.31 s sprite, ~0.2 s per glyph range) and replaces them with ~1 ms loopback reads.
+The **vector tiles and the Natural Earth raster stay remote**; they are the large half, and
+self-hosting them is an open decision in `capabilities/places/ISA.md`.
+
+Labels are Latin-script only. Liberty renders `name:latin` concatenated with `name:nonlatin`, so
+a European overview asked for Greek, Cyrillic, Arabic, Devanagari and more — measured at **29
+glyph requests across 19 ranges** on the default view. `name:latin` already carries the romanised
+form of every place, so dropping the second line closes the question instead of vendoring 4.5 MB:
+four Latin ranges are vendored and **no glyph request leaves the machine**. A range outside the
+set still falls back upstream, so getting it wrong costs a slow label, not a missing one.
+
+Destination images come from Wikimedia's free-license page-image surface and stay validated
+inert data.
 
 `adapter-static` with an SPA fallback. Nothing here is true at build time, so nothing is
 prerendered; the build is a static bundle any server can hand out, which is what makes

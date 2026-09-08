@@ -573,7 +573,7 @@
 
   .notice {
     background-color: var(--warning-soft);
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .calendar-message {
@@ -710,7 +710,7 @@
 
   .route.travel_candidate {
     background-color: var(--warning-soft);
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .route.unresolved {
@@ -770,7 +770,7 @@
   }
 
   .availability.free { color: var(--success); background-color: var(--success-soft); }
-  .availability.needs-travel-day { color: var(--warning); background-color: var(--warning-soft); }
+  .availability.needs-travel-day { color: var(--warning-ink); background-color: var(--warning-soft); }
   .availability.conflicts { color: var(--danger); background-color: var(--danger-soft); }
   .availability.adopted { color: var(--primary); background-color: var(--primary-soft); }
 

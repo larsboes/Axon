@@ -14,7 +14,13 @@
   import PlanEditor from "$lib/travel/PlanEditor.svelte";
   import PlanSearchPanel from "$lib/travel/PlanSearchPanel.svelte";
   import PlaceField from "$lib/travel/PlaceField.svelte";
-  import TripMap, { type MapPoint } from "$lib/travel/TripMap.svelte";
+  import MapSurface from "$lib/map/MapSurface.svelte";
+  import {
+    TRIP_LAYERS,
+    tripFitKey,
+    tripSources,
+    type MapPoint,
+  } from "$lib/travel/trip-layers";
   import ClimateStrip from "$lib/travel/ClimateStrip.svelte";
   import CostCard from "$lib/travel/CostCard.svelte";
   import RetrospectiveForm from "$lib/travel/RetrospectiveForm.svelte";
@@ -301,6 +307,14 @@
         selected: place.id === selectedId,
       }));
   });
+
+  // Derived rather than called in the template: both point arrays are rebuilt whenever a row
+  // is hovered, and a fresh object literal per render would hand MapSurface a new `sources`
+  // identity every frame. The fit key is what stops a hover from re-framing the camera.
+  const overviewMapSources = $derived(tripSources(overviewMapPoints));
+  const overviewMapFitKey = $derived(tripFitKey(overviewMapPoints));
+  const tripMapSources = $derived(tripSources(mapPoints));
+  const tripMapFitKey = $derived(tripFitKey(mapPoints));
 
   function planPhase(plan: TripPlan): "In progress" | "Planned" | "Past" {
     if (plan.date_end < todayKey) return "Past";
@@ -1249,9 +1263,17 @@
 
           <div class="board-layout">
             <div class="overview-map">
-              <TripMap
-                points={overviewMapPoints}
-                onSelect={(planId) => (highlightedPlanId = planId)}
+              <MapSurface
+                sources={overviewMapSources}
+                layers={TRIP_LAYERS}
+                fitKey={overviewMapFitKey}
+                interactive={["trip-points"]}
+                onFeatureClick={(_, feature) => {
+                  const groupId = feature.properties?.groupId;
+                  if (typeof groupId === "string") highlightedPlanId = groupId;
+                }}
+                deferredLabel="Trips"
+                eager
               />
               <div class="map-legend" aria-label="Map legend">
                 <span><i class="upcoming"></i> upcoming</span>
@@ -1738,7 +1760,12 @@
 
   {#if viewingPast}
     <section class="past-view">
-      <TripMap points={mapPoints} />
+      <MapSurface
+        sources={tripMapSources}
+        layers={TRIP_LAYERS}
+        fitKey={tripMapFitKey}
+        deferredLabel="Trip map"
+      />
       <div class="past-summary card">
         <span class="eyebrow">Trip history</span>
         <h3>{placeName(activePlan.origin)} → {activePlan.destinations.map(placeName).join(" → ")}</h3>
@@ -1890,7 +1917,12 @@
 
         {#if mapOpen}
           <div class="detail-map">
-            <TripMap points={mapPoints} />
+            <MapSurface
+        sources={tripMapSources}
+        layers={TRIP_LAYERS}
+        fitKey={tripMapFitKey}
+        deferredLabel="Trip map"
+      />
           </div>
         {/if}
 
@@ -2255,7 +2287,7 @@
 
   .candidate-state.needs_travel_day {
     background: var(--warning-soft);
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .candidate-state.conflicts {
@@ -2763,7 +2795,7 @@
   }
 
   .import-origin.missing p {
-    color: var(--warning);
+    color: var(--warning-ink);
     font-weight: 600;
   }
 
@@ -2805,7 +2837,7 @@
   }
 
   .import-list small {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .import-list button,
@@ -3310,7 +3342,7 @@
   }
 
   .calendar-anchors em.possible {
-    color: var(--warning);
+    color: var(--warning-ink);
   }
 
   .calendar-anchors li > button {
@@ -3348,7 +3380,7 @@
 
   .source-notice {
     margin: 0 0 0.75rem;
-    color: var(--warning);
+    color: var(--warning-ink);
     font-size: 0.6875rem;
   }
 

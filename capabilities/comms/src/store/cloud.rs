@@ -193,6 +193,54 @@ impl Store {
         })
     }
 
+    /// Every digest that actually produced text, oldest producer grouping first.
+    ///
+    /// For the quality corpus (PRD D16) and for nothing else so far. `state = 'generated'`
+    /// only: a skipped, refused or errored row has no text to judge, and counting it as a bad
+    /// digest would measure the ladder's routing rather than its output.
+    ///
+    /// Ordered by producer then item, so a corpus exported twice from an unchanged database
+    /// is byte-identical and a re-export is a readable diff.
+    pub fn generated_digests(&self) -> Result<Vec<StoredDigest>, Box<dyn std::error::Error>> {
+        let conn = self.conn()?;
+        Ok(conn.query_all(
+            &format!(
+                "SELECT source, item_id, text, state, shape, depth, focus, producer,
+                        source_chars, redactions, attempts, last_error,
+                        diagram, diagram_state, diagram_error,
+                        chart, chart_state, chart_error, generated_at
+                 FROM {}_content_digests
+                 WHERE state = 'generated' AND text IS NOT NULL AND TRIM(text) <> ''
+                 ORDER BY producer, source, item_id",
+                self.prefix
+            ),
+            [],
+            |row| {
+                Ok(StoredDigest {
+                    source: row.get(0)?,
+                    item_id: row.get(1)?,
+                    text: row.get(2)?,
+                    state: row.get(3)?,
+                    shape: row.get(4)?,
+                    depth: row.get(5)?,
+                    focus: row.get(6)?,
+                    producer: row.get(7)?,
+                    source_chars: row.get(8)?,
+                    redactions: row.get(9)?,
+                    attempts: row.get(10)?,
+                    last_error: row.get(11)?,
+                    diagram: row.get(12)?,
+                    diagram_state: row.get(13)?,
+                    diagram_error: row.get(14)?,
+                    chart: row.get(15)?,
+                    chart_state: row.get(16)?,
+                    chart_error: row.get(17)?,
+                    generated_at: row.get(18)?,
+                })
+            },
+        )?)
+    }
+
     /// The stored digest for one item, if it has one.
     pub fn content_digest(
         &self,

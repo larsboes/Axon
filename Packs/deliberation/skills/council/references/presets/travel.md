@@ -35,6 +35,23 @@ Pushes on how many days are unbooked, on what a change would cost, and on which 
 made now rather than later. Demands the refund and change terms of every booking under
 discussion.
 
+## Types
+
+Launch each member with its `subagent_type`:
+
+| Member | `subagent_type` |
+|---|---|
+| Jonas | `council-cost` |
+| Petra | `council-owner` |
+| Ines | `general-purpose` |
+| Rafa | `council-evidence` |
+| Nel | `council-skeptic` |
+
+Two members may share a type. The type carries the contract — read-only tools, the evidence
+rule, the return shape — and the brief above carries everything that makes them argue
+differently. `general-purpose` marks a member no type fits: paste the contract into its
+prompt (read only, never edit, cite or mark, return the round text alone).
+
 ## Evidence bar
 
 Fares, rates, schedules and opening dates are cited with their source and the date they were

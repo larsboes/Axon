@@ -11,7 +11,7 @@ Print this before round 1:
 
 **Options:** [option A] · [option B] · …
 **Mode:** DEBATE (3 rounds) | QUICK (1 round)
-**Members:** [name — role], [name — role], …
+**Members:** [name — role, type], [name — role, type], …
 **Evidence supplied:** [what was gathered in step 4, listed]
 ```
 
@@ -24,10 +24,17 @@ Print each round under its own heading, in the order the members were launched:
 
 **[Name] — [role]:**
 [the member's text, unedited]
+
+**Clerk — round 1:** checked [N] claims, [M] resolve.
+[one line per claim that did not resolve: member — claim — verdict — what the source says]
 ```
 
 Print the member text as returned. Do not shorten it, do not fix its grammar, and do not remove
-an `[unverified]` mark.
+an `[unverified]` mark. The clerk line goes under the round, never inside a member's text: an
+annotation the member did not write must never look like something it did.
+
+A round where every citation resolves still prints the clerk line. "Checked 14 claims, 14 resolve"
+is the receipt that the check ran, and a missing line reads as a skipped step.
 
 ## Synthesis
 
@@ -42,6 +49,10 @@ Print this last:
 
 **Unverified and load-bearing:** [each [unverified] claim that an argument rests on, with the
 member who made it and what would settle it]
+
+**Corrected by the clerk:** [each claim the clerk returned as narrower, contradicted or missing,
+with the member, the pointer, and what the source actually says. Write "none" when every citation
+resolved.]
 
 **Recommendation:** [one option, and the reason it wins over the runner-up]
 

@@ -39,6 +39,23 @@ after cost and tax. Pushes on what the passive alternative would have returned o
 horizon and on what specific edge justifies the deviation. Demands the cost and return of the
 default alternative.
 
+## Types
+
+Launch each member with its `subagent_type`:
+
+| Member | `subagent_type` |
+|---|---|
+| Ada | `council-skeptic` |
+| Beno | `council-cost` |
+| Mira | `council-evidence` |
+| Toma | `council-skeptic` |
+| Lene | `council-evidence` |
+
+Two members may share a type. The type carries the contract — read-only tools, the evidence
+rule, the return shape — and the brief above carries everything that makes them argue
+differently. `general-purpose` marks a member no type fits: paste the contract into its
+prompt (read only, never edit, cite or mark, return the round text alone).
+
 ## Evidence bar
 
 Costs, tax rules and past returns are cited from a document that was read in this session. A

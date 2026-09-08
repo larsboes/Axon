@@ -771,6 +771,7 @@ mod repair_tests {
                 api: Api::OpenAi,
                 base_url: base_url.into(),
                 api_key_file: None,
+                provided_by: None,
             },
             model: "stub-embed".into(),
             provider_name: None,
@@ -784,6 +785,7 @@ mod repair_tests {
             document_prefix: String::new(),
             chat_template_kwargs: None,
             request_overrides: None,
+            trusted_peer: false,
         }
     }
 

@@ -107,17 +107,17 @@ jobs:
       # (service-runner, doctor-driving) that need it. Ran as Bazel sh_test targets until
       # PRD Q44 (2026-08-25) retired Bazel; this loop is their one home since.
       #
-      # toolchain-scope.test.sh is excluded with a date: measured 2026-08-26, it fails
-      # identically at main outside the Bazel sandbox it was written under (4 scope checks;
-      # 'fixturedb' reads n/a-here), so it was only ever green inside the sandbox — the
-      # false-green shape this repo documents. Tracked as a carried defect in the PRD; the
-      # exclusion dies when the suite is fixed.
+      # No exclusions. toolchain-scope.test.sh was excluded here from 2026-08-26 to 2026-09-07
+      # as "only ever green inside the Bazel sandbox". It was not: the sandbox scrubbed the
+      # AXON_* environment, and the measurement that justified the exclusion was taken on a
+      # machine whose shell exports it, so the suite read the operator's overlay instead of its
+      # own fixtures. It now calls isolate_axon_env like the other scratch-root suites and
+      # passes in both places (PRD defect D7).
       - name: shell tests
         run: |
           set -uo pipefail
           failed=""
           for t in tools/*.test.sh; do
-            [ "$t" = "tools/toolchain-scope.test.sh" ] && continue
             echo "::group::$t"
             bash "$t" || failed="$failed $t"
             echo "::endgroup::"

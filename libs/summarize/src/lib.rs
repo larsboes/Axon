@@ -363,8 +363,16 @@ pub trait LocalGate: Send + Sync {
 /// tier. It is not a general permission and does not travel with the text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reach {
-    /// Loopback endpoints only. A non-loopback target is refused outright —
+    /// Hardware the operator controls, and nothing else. A target that is
+    /// neither loopback nor a declared trusted peer is refused outright —
     /// [`Outcome::RemoteRefused`], never a quiet downgrade to a local model.
+    ///
+    /// The name says `Loopback` because until PRD Q39 (2026-08-25) those were
+    /// the same set. They are not any more: a trusted peer is the operator's own
+    /// machine reached over the tailnet, and this verdict admits it. The variant
+    /// is not renamed because 27 call sites spell it and the name is not the
+    /// defect — [`Target::operator_owned`] is where the question is actually
+    /// asked, and it is named for the question.
     LoopbackOnly,
     /// The caller's cloud gate admitted this payload for this endpoint.
     CloudCleared,
@@ -372,7 +380,7 @@ pub enum Reach {
 
 impl Reach {
     fn admits(self, target: &Target) -> bool {
-        target.loopback || self == Self::CloudCleared
+        target.operator_owned || self == Self::CloudCleared
     }
 }
 
@@ -384,15 +392,26 @@ pub struct Target {
     pub endpoint: String,
     pub model: String,
     pub api_key: Option<String>,
-    /// Whether the endpoint is loopback. Mail digests must refuse anything else
-    /// — see [`digest`].
+    /// Whether the endpoint shares THIS machine's GPU. Only the admission gate
+    /// below asks this; it is not a permission.
+    ///
+    /// Split from [`Self::operator_owned`] by PRD Q39 (2026-08-25). One `bool`
+    /// answered both questions while loopback and trusted-hardware were the same
+    /// set, and a trusted peer is the first target for which they differ: it may
+    /// see any class, and it must NOT queue behind this host's gate, because it
+    /// has its own GPU.
     pub loopback: bool,
-    /// Admission control for loopback targets. `None` means unbounded, which is
-    /// what every caller did before this existed.
+    /// Whether the endpoint runs on hardware the operator controls — loopback,
+    /// or a peer they declared as their own (PRD Q39). This is the permission
+    /// question [`Reach::LoopbackOnly`] asks.
+    pub operator_owned: bool,
+    /// Admission control for targets on this machine. `None` means unbounded,
+    /// which is what every caller did before this existed.
     ///
     /// Only consulted when `loopback` is true. A hosted provider does its own
     /// queueing and has no shared GPU to protect, so serialising against it
-    /// would buy nothing and cost latency.
+    /// would buy nothing and cost latency — and a trusted peer is a hosted
+    /// provider in exactly that respect, whatever it is allowed to see.
     pub gate: Option<std::sync::Arc<dyn LocalGate>>,
 }
 
@@ -405,6 +424,7 @@ impl std::fmt::Debug for Target {
             .field("model", &self.model)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("loopback", &self.loopback)
+            .field("operator_owned", &self.operator_owned)
             .field("gate", &self.gate.as_ref().map(|_| "<gate>"))
             .finish()
     }
@@ -969,6 +989,7 @@ mod tests {
             model: "m".into(),
             api_key: None,
             loopback: false,
+            operator_owned: false,
             gate: None,
         };
         let text = "x".repeat(1_000);
@@ -1011,6 +1032,7 @@ mod tests {
             model: "m".into(),
             api_key: None,
             loopback: true,
+            operator_owned: true,
             gate: None,
         };
         for empty in ["", "   ", "\n\t "] {
@@ -1033,6 +1055,7 @@ mod tests {
             model: "m".into(),
             api_key: None,
             loopback: true,
+            operator_owned: true,
             gate: None,
         };
         assert!(Reach::LoopbackOnly.admits(&local));
@@ -1153,6 +1176,7 @@ mod tests {
             model: "m".into(),
             api_key: None,
             loopback: true,
+            operator_owned: true,
             gate: Some(std::sync::Arc::new(AlwaysBusy)),
         };
         assert_eq!(
@@ -1182,6 +1206,7 @@ mod tests {
             model: "m".into(),
             api_key: None,
             loopback: false,
+            operator_owned: false,
             gate: Some(std::sync::Arc::new(NeverCalled)),
         };
         // Refused for its data class before any gate question arises, which is
@@ -1236,6 +1261,7 @@ mod tests {
             model: "m".into(),
             api_key: None,
             loopback: true,
+            operator_owned: true,
             gate: Some(std::sync::Arc::new(Arc::clone(&counting))),
         };
         // Fails at the socket, which is the point: the release must happen on

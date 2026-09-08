@@ -153,7 +153,11 @@ pub fn summarize(text: &str, cfg: &Config, data_class: &str) -> SummarizeOutcome
         crate::quiet::Rung::OverWindow => return SummarizeOutcome::OverWindow,
         crate::quiet::Rung::Unconfigured => return SummarizeOutcome::Unconfigured,
     };
-    if !role.is_loopback()
+    // The class gate asks whether this endpoint may see the content at all, so
+    // it asks about hardware the operator controls (Q39), not about loopback.
+    // The admission gate below still asks `is_loopback`: a trusted peer does not
+    // share this machine's GPU.
+    if !role.trusted_for_every_class()
         && !crate::cloud_derivative::verbatim_send_allowed(
             role.cloud_data_tier.map(|tier| tier.as_str()),
             data_class,

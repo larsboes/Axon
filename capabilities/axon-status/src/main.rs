@@ -40,6 +40,7 @@ const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/api/axon-status/links", "Operator-pinned links from the overlay's links.toml."),
     r("GET", "/api/axon-status/backups", "Every capability with a backup contract: last success, age, and whether it is overdue."),
     r("GET", "/api/axon-status/host-watch", "Open findings from the hourly host watch: a runaway process or a filling disk."),
+    r("GET", "/api/axon-status/packs", "Every Pack skill against every agent harness: deployed, drifted, or unowned at the destination."),
     r("POST", "/api/axon-status/capabilities/:name/backup", "Request a backup of one capability. Accepts the run and returns; poll /backups for the outcome."),
     // Undeclared until 2026-08-31, and served the whole time. The dashboard's panel page
     // calls both; `/routes` denied they existed. The coverage test below did not catch it:
@@ -122,6 +123,7 @@ async fn main() {
         )
         .route("/api/axon-status/backups", get(backups_handler))
         .route("/api/axon-status/host-watch", get(host_watch_handler))
+        .route("/api/axon-status/packs", get(packs_handler))
         .route(
             "/api/axon-status/capabilities/:name/backup",
             post(backup_handler),

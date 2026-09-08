@@ -4,15 +4,30 @@
 // light page and 3.67:1 on a dark card, while carrying the meta line on every row of the
 // Home ladder. Nothing in the repository stated the requirement, so nothing could catch it.
 //
-// --warning is deliberately NOT asserted. It is a fill and icon token, held to the 3:1
-// non-text bar, and it is used as a text colour in 14 files this pass may not touch. That
-// is a real AA failure, recorded here rather than hidden by loosening the rule.
+// --warning is deliberately NOT asserted against the 4.5:1 text bar. It is a fill, stroke
+// and border token, held to the 3:1 non-text bar. The text half is --warning-ink, and the
+// split used to be a comment: 48 `color: var(--warning)` declarations across 19 files
+// carried words at 3.19:1 on white. They were swapped on 2026-09-07 and the last test in
+// this file is what keeps them swapped, because a rule nothing checks is how the first
+// batch got there.
 
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const APP_CSS = join(import.meta.dir, "../dashboard/src/app.css");
+const SRC = join(import.meta.dir, "../dashboard/src");
+
+/** Every .svelte and .css file under dashboard/src, path-relative to it. */
+function styleSources(dir: string = SRC, prefix = ""): string[] {
+  const found: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) found.push(...styleSources(join(dir, entry.name), rel));
+    else if (/\.(svelte|css)$/.test(entry.name)) found.push(rel);
+  }
+  return found;
+}
 
 const channel = (value: number): number => {
   const s = value / 255;
@@ -98,6 +113,31 @@ describe.each([
     // band renders its name in words.
     for (const key of ["--band-alarm", "--band-now"]) {
       expect([key, contrast(tokens["--card-bg"], tokens[key]) >= 3]).toEqual([key, true]);
+    }
+  });
+});
+
+describe("the warning token split is enforced, not described", () => {
+  // The negative lookbehind is what separates `color:` from `background-color:` and
+  // `border-color:`, which are the non-text uses --warning is correct for.
+  const asText = /(?<!-)color:\s*var\(--warning\)/;
+
+  test("nothing paints text with --warning; --warning-ink is the text half", () => {
+    const offenders = styleSources()
+      .filter((rel) => asText.test(readFileSync(join(SRC, rel), "utf8")))
+      .sort();
+    expect(offenders).toEqual([]);
+  });
+
+  test("--warning itself still fails the text bar, which is why the rule exists", () => {
+    // If this ever passes, --warning was changed and the rule above can be reconsidered
+    // rather than silently kept. Recorded as a fact about the token, not a wish.
+    expect(contrast(LIGHT["--card-bg"], LIGHT["--warning"])).toBeLessThan(4.5);
+  });
+
+  test("--warning clears the 3:1 non-text bar it is actually held to", () => {
+    for (const [name, tokens] of [["light", LIGHT], ["dark", DARK]] as const) {
+      expect([name, contrast(tokens["--card-bg"], tokens["--warning"]) >= 3]).toEqual([name, true]);
     }
   });
 });
