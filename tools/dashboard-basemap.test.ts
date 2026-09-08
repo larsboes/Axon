@@ -137,7 +137,7 @@ describe("vendoredTarget", () => {
     expect(vendoredTarget("style.json")).toBe(join(BASEMAP, "style.json"));
   });
 
-  // What a hostile or broken `text-font` entry would produce at tools/fetch-basemap.ts:179.
+  // What a hostile or broken `text-font` entry would produce at tools/fetch-basemap.ts:200.
   test("refuses a fontstack that climbs out of the directory", () => {
     for (const escape of [
       "fonts/../../../src/routes/+page.svelte",

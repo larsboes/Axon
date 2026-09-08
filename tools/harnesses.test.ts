@@ -34,6 +34,14 @@ describe("skillsLineWith", () => {
     expect(skillsLineWith('skills = ["trim"]', "a$'b")).toBe(`skills = ["trim", "a$'b"]`);
   });
 
+  // A Pack with no skills yet is the state `promote` exists to end, and the comma
+  // splice wrote `skills = [, "trim"]` into the manifest for it — measured against
+  // this function before this case was added, and against the code it replaced.
+  test("fills an empty array without leaving a leading comma", () => {
+    expect(skillsLineWith("skills = []", "trim")).toBe('skills = ["trim"]');
+    expect(skillsLineWith("skills = [ ]", "trim")).toBe('skills = ["trim"]');
+  });
+
   // Was a silent no-op: the body came back unchanged and promote still reported
   // success, so the skill was copied into the Pack and never declared by it.
   test("refuses a skills array that does not close on this line", () => {

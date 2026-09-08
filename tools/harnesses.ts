@@ -370,7 +370,12 @@ export function skillsLineWith(line: string, skill: string): string {
   if (!/\]\s*$/.test(line)) {
     throw new Error("the skills line does not end in `]`; tools/lib/toml.sh cannot read a multi-line array");
   }
-  return `${line.replace(/\]\s*$/, "")}, "${skill}"]`;
+  // An empty array has nothing to separate the new name from. `skills = []` spliced
+  // with a comma gives `skills = [, "x"]`, which no TOML parser reads — and an empty
+  // array is exactly the state a Pack is in when `promote` puts the first skill in it.
+  const head = line.replace(/\]\s*$/, "").replace(/\s+$/, "");
+  const separator = head.endsWith("[") ? "" : ", ";
+  return `${head}${separator}"${skill}"]`;
 }
 
 /** The one harness -> Axon move. Manual by design; see the header. */
