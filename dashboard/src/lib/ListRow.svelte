@@ -16,6 +16,7 @@
     id,
     role = "listitem",
     current = false,
+    dimmed = false,
     tone = "none",
     href,
     mark,
@@ -28,6 +29,10 @@
     role?: "listitem" | "article";
     /** The keyboard cursor is on this row. Announced as `aria-current`, not selected. */
     current?: boolean;
+    /** The row is spent — decided, expired, superseded — and stays in place greyed.
+     *  Visual only: the content is still read, because a reader who cannot see the
+     *  opacity must still be told what the row says. */
+    dimmed?: boolean;
     /** The band's spine segment. `none` draws no spine at all. */
     tone?: "alarm" | "now" | "owed" | "offer" | "none";
     /** The row's primary destination. Renders a stretched hit area behind the content,
@@ -46,6 +51,7 @@
   {role}
   class="row tone-{tone}"
   class:current
+  class:dimmed
   class:linked={href !== undefined}
   tabindex="-1"
   aria-current={current ? "true" : undefined}
@@ -67,6 +73,10 @@
 </svelte:element>
 
 <style>
+  .row.dimmed {
+    opacity: 0.55;
+  }
+
   .row {
     position: relative;
     display: grid;
@@ -151,6 +161,43 @@
 
   .meta {
     margin-top: var(--space-1);
+  }
+
+  /* Q96 one level down: the ladder discloses by band, and the row discloses too. A row
+   * says what it is and what it is called; the reason it is here waits to be asked.
+   *
+   * The ask needs no control, so the row grows none: the keyboard cursor, hover and
+   * focus each open it. The line stays in the DOM and in the accessibility tree —
+   * only its height collapses — because a reason a screen reader cannot reach is not
+   * disclosed, it is deleted.
+   *
+   * Guarded on `pointer: fine`, so where there is no hover there is no reveal and the
+   * line simply stays open. A touch reader must not have to guess. */
+  @media (pointer: fine) {
+    .meta {
+      display: grid;
+      grid-template-rows: 0fr;
+      margin-top: 0;
+      transition: grid-template-rows var(--motion-fast) ease, margin-top var(--motion-fast) ease;
+    }
+
+    .meta > :global(*) {
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .row:hover .meta,
+    .row:focus-within .meta,
+    .row.current .meta {
+      grid-template-rows: 1fr;
+      margin-top: var(--space-1);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .meta {
+      transition: none;
+    }
   }
 
   .actions {

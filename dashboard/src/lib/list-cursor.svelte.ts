@@ -52,6 +52,60 @@ export function clampIndex(value: number, count: number): number {
   return Math.min(Math.max(0, value), count - 1);
 }
 
+/**
+ * One rendered line in a list that is not uniformly selectable.
+ *
+ * The Feed interleaves collector-run headers with items; only an item takes the cursor.
+ * `clampIndex` above is the uniform case and cannot express this, so the two lists kept
+ * two cursors until 2026-09-07. The arithmetic lives here, beside the guard both already
+ * shared, because a page that disagrees with another page about what `j` does is the
+ * defect this module exists to prevent.
+ */
+export interface CursorRow {
+  kind: "header" | "item";
+  id: string;
+}
+
+/** The first selectable row at or after `from`, walking by `step`, or -1 when there is none. */
+function seek(rows: readonly CursorRow[], from: number, step: number): number {
+  for (let index = from; index >= 0 && index < rows.length; index += step) {
+    if (rows[index].kind === "item") return index;
+  }
+  return -1;
+}
+
+/**
+ * Move down over selectable rows.
+ *
+ * Stops on the last item rather than wrapping: a wrap on a long list moves the reader
+ * somewhere they did not ask to go.
+ */
+export function nextSelectable(rows: readonly CursorRow[], index: number): number {
+  const found = seek(rows, index + 1, 1);
+  return found === -1 ? (rows[index]?.kind === "item" ? index : seek(rows, 0, 1)) : found;
+}
+
+/** Move up, stopping on the first item. */
+export function prevSelectable(rows: readonly CursorRow[], index: number): number {
+  const found = seek(rows, index - 1, -1);
+  return found === -1 ? (rows[index]?.kind === "item" ? index : seek(rows, 0, 1)) : found;
+}
+
+/**
+ * Where the cursor sits after the list changed under it.
+ *
+ * A decided row is greyed in place rather than removed, so most of the time this returns
+ * the same index. It earns its place on the reload that does remove the row: without it
+ * the cursor lands on a header, or past the end, and the next keystroke does nothing.
+ */
+export function clampToSelectable(rows: readonly CursorRow[], index: number): number {
+  if (rows.length === 0) return -1;
+  const bounded = Math.min(Math.max(index, 0), rows.length - 1);
+  if (rows[bounded].kind === "item") return bounded;
+  const forward = seek(rows, bounded, 1);
+  return forward === -1 ? seek(rows, bounded, -1) : forward;
+}
+
 export function createListCursor(options: ListCursorOptions): ListCursor {
   let index = $state(0);
 

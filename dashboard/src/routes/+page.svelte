@@ -20,6 +20,7 @@
   } from "$lib/api";
   import { capabilities } from "$lib/capabilities.svelte";
   import { createListCursor } from "$lib/list-cursor.svelte";
+  import RailSection from "$lib/rail/RailSection.svelte";
   import PinnedLinks from "$lib/PinnedLinks.svelte";
   import RepoStatusCard from "$lib/RepoStatusCard.svelte";
   import HomeHorizon from "$lib/home/HomeHorizon.svelte";
@@ -563,12 +564,7 @@
     </section>
 
     <aside>
-      <section class="side-section">
-        <div class="section-head compact">
-          <div>
-            <h2>Quick actions</h2>
-          </div>
-        </div>
+      <RailSection label="Quick actions" open>
         <nav class="quick-list" aria-label="Quick actions">
           <a href={link("/feed")}>
             <Icon name="plus" size={15} />
@@ -586,17 +582,20 @@
             <Icon name="arrow-right" size={13} />
           </a>
         </nav>
-      </section>
+      </RailSection>
 
       {#if capabilities.panels.length > 0}
-        <section class="side-section continue">
-          <div class="section-head compact">
-            <div>
-              <h2>Continue working</h2>
-            </div>
-            <a class="small-link" href={link("/projects")}>All</a>
-          </div>
-          <ul>
+        <RailSection label="Continue working" count={capabilities.panels.length} open>
+          {#snippet action()}
+            <!-- Navigates rather than toggles: without this the press does both, and the
+                 section the reader left open is closed behind them. -->
+            <a
+              class="small-link"
+              href={link("/projects")}
+              onclick={(event) => event.stopPropagation()}>All</a
+            >
+          {/snippet}
+          <ul class="continue">
             {#each capabilities.panels as project (project.name)}
               <li>
                 <span class="project-mark">
@@ -634,7 +633,7 @@
               </li>
             {/each}
           </ul>
-        </section>
+        </RailSection>
       {/if}
 
       <PinnedLinks />
@@ -818,10 +817,6 @@
     justify-content: space-between;
     gap: 1rem;
     margin-bottom: 0.8rem;
-  }
-
-  .section-head.compact {
-    align-items: center;
   }
 
 
@@ -1106,10 +1101,6 @@
     }
   }
 
-  .side-section {
-    min-width: 0;
-  }
-
   .quick-list {
     border-top: 1px solid var(--card-border);
   }
@@ -1161,14 +1152,14 @@
     white-space: nowrap;
   }
 
-  .continue ul {
+  ul.continue {
     margin: 0;
     padding: 0;
     border-top: 1px solid var(--card-border);
     list-style: none;
   }
 
-  .continue li {
+  ul.continue li {
     display: grid;
     grid-template-columns: auto minmax(0, 1fr) auto;
     align-items: center;
