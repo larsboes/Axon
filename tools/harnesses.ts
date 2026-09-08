@@ -347,6 +347,32 @@ function sync(): void {
 
 // ---------------------------------------------------------------- promote
 
+/**
+ * A pack.toml `skills = [...]` line with one more skill in it.
+ *
+ * Its own function so it can be tested: `promote` around it copies a directory tree
+ * and adopts a Pack, and the string edit is the part that a skill name can steer.
+ * A skill name is a directory name off `config.destination`, so every character a
+ * macOS filename allows can reach here — and three of them used to matter:
+ *
+ * - `.` or `|` made `new RegExp(`"${skill}"`)` match a name that is not there, so
+ *   `a.b` reported `axb` as already present and refused a legal promote. CodeQL
+ *   js/regex-injection, alert 71. A substring test asks the question that was meant.
+ * - `$&` or `$'` in a `String.replace` REPLACEMENT expands to the match and the
+ *   text after it, so the name went into the manifest rewritten. The splice below
+ *   never builds a replacement pattern.
+ * - a `skills` array written across lines matched no `]` at the end, so the old
+ *   `replace` returned the body unchanged and `promote` still printed "✓ added to".
+ *   It now refuses, which is what "single-line TOML only" was always worth.
+ */
+export function skillsLineWith(line: string, skill: string): string {
+  if (line.includes(`"${skill}"`)) throw new Error(`${skill} is already in the skills line`);
+  if (!/\]\s*$/.test(line)) {
+    throw new Error("the skills line does not end in `]`; tools/lib/toml.sh cannot read a multi-line array");
+  }
+  return `${line.replace(/\]\s*$/, "")}, "${skill}"]`;
+}
+
 /** The one harness -> Axon move. Manual by design; see the header. */
 function promote(): void {
   const skill = positional[1];
@@ -366,7 +392,27 @@ function promote(): void {
 
   const packDir = join(AXON_ROOT, "Packs", pack);
   const manifest = join(packDir, "pack.toml");
-  if (!existsSync(manifest)) throw new Error(`no Pack at ${relative(AXON_ROOT, packDir)}`);
+  // Read the manifest here rather than asking `existsSync` here and reading it after
+  // the copy. Two answers to the same question, taken from two instants, and the
+  // second one is what gets written back: CodeQL js/file-system-race, alert 72. The
+  // read is the existence check, and every refusal below now happens before a single
+  // file is copied.
+  let body: string;
+  try {
+    body = readFileSync(manifest, "utf8");
+  } catch {
+    throw new Error(`no Pack at ${relative(AXON_ROOT, packDir)}`);
+  }
+  // Single-line TOML only: tools/lib/toml.sh cannot read an array across lines.
+  const line = body.split("\n").find((l) => /^\s*skills\s*=/.test(l));
+  if (!line) throw new Error(`${relative(AXON_ROOT, manifest)} has no skills = [...] line`);
+  let updated: string;
+  try {
+    updated = skillsLineWith(line, skill);
+  } catch (error) {
+    throw new Error(`${relative(AXON_ROOT, manifest)}: ${(error as Error).message}`);
+  }
+
   const target = join(packDir, "skills", skill);
   if (existsSync(target)) throw new Error(`${relative(AXON_ROOT, target)} already exists`);
 
@@ -376,12 +422,9 @@ function promote(): void {
     copyFileSync(join(source, rel), to);
   }
 
-  // Single-line TOML only: tools/lib/toml.sh cannot read an array across lines.
-  const body = readFileSync(manifest, "utf8");
-  const line = body.split("\n").find((l) => /^\s*skills\s*=/.test(l));
-  if (!line) throw new Error(`${relative(AXON_ROOT, manifest)} has no skills = [...] line`);
-  if (new RegExp(`"${skill}"`).test(line)) throw new Error(`${skill} is already in ${relative(AXON_ROOT, manifest)}`);
-  writeFileSync(manifest, body.replace(line, line.replace(/\]\s*$/, `, "${skill}"]`)));
+  // A function replacement, not a string one: a `$&` in the skill name would expand
+  // inside a replacement pattern and rewrite the line it was inserted into.
+  writeFileSync(manifest, body.replace(line, () => updated));
 
   console.log(`✓ copied ${skill} → ${relative(AXON_ROOT, target)}`);
   console.log(`✓ added to ${relative(AXON_ROOT, manifest)}`);
@@ -452,18 +495,23 @@ const HELP = `tools/harnesses — Packs across every agent harness at once.
   --all-harnesses    include harnesses that are not installed
 `;
 
-try {
-  switch (positional[0] ?? "list") {
-    case "list": list(); break;
-    case "status": status(); break;
-    case "drift": drift(); break;
-    case "sync": sync(); break;
-    case "promote": promote(); break;
-    case "accept": accept(); break;
-    case "help": case "-h": case "--help": console.log(HELP); break;
-    default: console.error(HELP); process.exit(1);
+// Guarded, so tools/harnesses.test.ts can import `skillsLineWith` without running a
+// verb — console output and process.exit — as a side effect of the import. The
+// precedent is tools/doctor.ts, whose own test does the same thing.
+if (import.meta.main) {
+  try {
+    switch (positional[0] ?? "list") {
+      case "list": list(); break;
+      case "status": status(); break;
+      case "drift": drift(); break;
+      case "sync": sync(); break;
+      case "promote": promote(); break;
+      case "accept": accept(); break;
+      case "help": case "-h": case "--help": console.log(HELP); break;
+      default: console.error(HELP); process.exit(1);
+    }
+  } catch (error) {
+    console.error(`harnesses: ${(error as Error).message}`);
+    process.exit(1);
   }
-} catch (error) {
-  console.error(`harnesses: ${(error as Error).message}`);
-  process.exit(1);
 }
