@@ -174,4 +174,14 @@ describe("the feed row renders the class the feed list publishes", () => {
     // no evaluation and no profile match, which is most of a fresh inbox.
     expect(feedItemRow).toContain("whyHere || dataClass");
   });
+
+  test("the class the row derived reaches the chip", () => {
+    // Added by the verifier, 2026-09-08. The derived gate above lets `FeedRow` pass by
+    // DELEGATING, and it never looks at what the delegate does with the class — so the
+    // FinanceRow defect this whole file is shaped against survived one file over: deleting
+    // `{dataClass}` from the call below leaves `entry.data_class` derived, leaves
+    // `whyHere || dataClass` gating the line, and leaves all 519 assertions in `bun test`
+    // green while the feed chip renders nothing. Measured, not assumed.
+    expect(/<RowMeta[^>]*\{dataClass\}/s.test(feedItemRow)).toBe(true);
+  });
 });

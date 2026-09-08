@@ -29,8 +29,17 @@
    * This component printed Public/Money/Private/Sensitive until 2026-09-08: "Private" is
    * the pre-Q27 name of the retired `vault` class, and "Money" was wrong on its face —
    * every calendar entry, every vault note and every unclassified feed item is c1, and
-   * none of them is about money. Nothing rendered it on a c1 row before B50, which is how
-   * it survived; B50 lights the chip on five more surfaces, so it had to go first.
+   * none of them is about money. B50 lights the chip on five more surfaces, so it had to
+   * go first.
+   *
+   * Corrected by the verifier, 2026-09-08. This paragraph also said "nothing rendered it
+   * on a c1 row before B50, which is how it survived". That is not true and the reason
+   * matters: `content_item::DataClass::classify_mail` ends "Mail metadata is Mine by
+   * default", so c1 is the ORDINARY class of a triage row, and `kinds/mail.ts` has fed it
+   * to `MailRow`, which has handed it here, for as long as the chip has existed. Home has
+   * been printing "Money" on ordinary mail. How many live rows is not measurable from the
+   * repo — it needs the store — so the honest statement is that the code path was always
+   * there, not that nothing walked it.
    */
   let {
     whyHere,
