@@ -273,6 +273,15 @@ pub const MAX_REDIRECTS: usize = 10;
 /// reqwest's own runtime thread, so a slow resolver on a hop can push a request past
 /// its timeout. Neither is made worse by running the check; both are the price of
 /// checking a name rather than pinning an address.
+///
+/// The second one reaches further here than it did at comms' one-client-per-fetch call
+/// site, and the difference is worth writing down rather than inheriting. [`super::client`]
+/// pools a client per `(purpose, timeout)`, and `reqwest::blocking::Client` drives every
+/// request over one background current-thread runtime (reqwest-0.13.4
+/// `src/blocking/client.rs`, `new_current_thread` plus `tokio::spawn` per request). So a
+/// slow resolve in this callback holds up any other request in flight on the same pooled
+/// client, not only the one being redirected. It is still the right trade against
+/// following an unchecked hop, and it is the reason not to add a second resolve here.
 pub fn redirect_policy() -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(|attempt| {
         match check_redirect(attempt.previous(), attempt.url()) {
