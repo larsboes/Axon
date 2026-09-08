@@ -266,6 +266,12 @@ export interface ScoutingOpportunity {
   latitude: number | null;
   longitude: number | null;
   event_route: EventRoute | null;
+  /** What this row is worth protecting, from the source that fetched it.
+   *
+   *  Declared per source in `scouting.json` and resolved by the server, never by a row:
+   *  an opportunity whose source declares nothing is `c1`, the fail-closed default, which
+   *  is what every hardcoded adapter answers. `c0` means somebody said so. */
+  data_class: DataClass;
 }
 
 export interface ScoutingSource {
@@ -276,6 +282,10 @@ export interface ScoutingSource {
   root_path: string | null;
   url: string | null;
   opportunity_type: string;
+  /** The declaration behind every row this source fetched. `c1` here is either what the
+   *  source declared or what its silence means — `GET /opportunities` cannot tell those
+   *  apart and neither can this. */
+  data_class: DataClass;
 }
 
 export interface AxonStatusHealth {

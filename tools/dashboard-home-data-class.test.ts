@@ -75,6 +75,7 @@ describe("a kind reports the class its capability published, and never one of it
       ["finance", { data_class: "c1" }, "c1"],
       ["calendar", { data_class: "c1" }, "c1"],
       ["task", { data_class: "c2" }, "c2"],
+      ["opportunity", { data_class: "c0" }, "c0"],
     ];
     for (const [key, row, expected] of cases) {
       const kind = byKey.get(key);
@@ -90,14 +91,14 @@ describe("a kind reports the class its capability published, and never one of it
     // says in as many words that inventing that answer is the failure mode, so they stay
     // null until the operator rules.
     //
-    // `opportunity` comes off this list when scouting starts publishing a class.
+    // Every other kind's capability publishes a class as of 2026-09-08, so this list is
+    // now complete rather than provisional: a kind joining it is a regression.
     const silent = kinds
       .filter(({ kind }) => kind.dataClass({ data_class: "c2" } as never) === null)
       .map(({ kind }) => kind.key)
       .sort();
     expect(silent).toEqual([
       "host",
-      "opportunity",
       "system",
       "trip",
       "trip-retrospective",

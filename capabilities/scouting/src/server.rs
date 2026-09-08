@@ -20,7 +20,7 @@ use scouting::event_route::{classify_opportunity, classify_ranked, EventRoute};
 use scouting::pipeline::run;
 use scouting::score::{load_opp_embeddings, load_telos_profiles};
 use scouting::source::{SearchQuery, SourceAdapter};
-use scouting::sources::create_adapter;
+use scouting::sources::{self, create_adapter};
 use scouting::store::Store;
 
 /// What this capability answers, served as data beside `/health`.
@@ -119,6 +119,15 @@ struct ClassifiedOpportunity {
     #[serde(flatten)]
     opportunity: scouting::store::RankedRow,
     event_route: Option<EventRoute>,
+    /// What this row is worth protecting, from the source that fetched it.
+    ///
+    /// `GET /opportunities` published no class at all until 2026-09-08 (B50),
+    /// so 310 stored rows from four adapters reached the dashboard with nothing
+    /// said about them -- and a consumer that fails closed, the way finance's
+    /// `item_is_quotable` does, has to drop a row it cannot classify. The value
+    /// comes from `sources[].data_class` in `scouting.json` and from nowhere
+    /// else; a row whose source declares nothing is `c1`, never `c0`.
+    data_class: String,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -343,6 +352,10 @@ fn sources_listing() -> Json<Value> {
                 // compatible form and most entries.
                 "profile_root": s.profile_root.as_ref().map(|p| p.to_string_lossy()),
                 "doc_path": s.doc_path.as_ref().map(|p| p.to_string_lossy()),
+                // What this source declares its opportunities are worth. The
+                // audit surface for the class every row it fetched now carries:
+                // a source reading c1 here either said so or said nothing.
+                "data_class": s.data_class,
             })
         })
         .collect();
@@ -366,6 +379,9 @@ fn sources_listing() -> Json<Value> {
             "profiles_glob": null,
             "profile_root": null,
             "doc_path": null,
+            // Not in `sources[]`, so nobody has declared anything about it, so
+            // c1 -- the same answer `class_for_source` gives its rows.
+            "data_class": content_item::DataClass::undeclared().value,
         }));
     }
     // The inbox, beside what is declared rather than mixed into it. A proposal
@@ -427,9 +443,11 @@ async fn opportunities_handler(
             .into_iter()
             .map(|opportunity| {
                 let event_route = classify_ranked(&opportunity, cfg.geo.as_ref());
+                let data_class = sources::class_for_source(&cfg.sources, &opportunity.source);
                 ClassifiedOpportunity {
                     opportunity,
                     event_route,
+                    data_class,
                 }
             })
             .collect::<Vec<_>>();
