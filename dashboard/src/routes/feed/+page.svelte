@@ -15,6 +15,7 @@
   import FeedItemRow from "$lib/feed/FeedItemRow.svelte";
   import {
     clampToSelectable,
+    focusRow,
     shouldIgnoreKey,
     nextSelectable as nextRow,
     prevSelectable as prevRow,
@@ -311,9 +312,14 @@
     const row = flatRows[to];
     if (!row) return;
     // After the frame that paints the selection, so the element exists.
-    queueMicrotask(() => {
-      document.getElementById(rowDomId(row.id))?.scrollIntoView({ block: "nearest" });
-    });
+    //
+    // `focusRow`, not `scrollIntoView`. This scrolled without focusing, which meant the
+    // cursor was a class and a scroll offset and nothing else: a screen reader was never
+    // told the selection had moved, and a keyboard reader's Tab position stayed wherever
+    // it was before the first `j`. The row is already `tabindex="-1"` and carries
+    // `aria-current` (`$lib/ListRow.svelte`), so focusing it is what turns both into an
+    // announcement.
+    queueMicrotask(() => focusRow(document.getElementById(rowDomId(row.id))));
   }
 
   function toggleEvaluation(id: string): void {

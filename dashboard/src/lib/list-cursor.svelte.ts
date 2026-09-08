@@ -106,23 +106,42 @@ export function clampToSelectable(rows: readonly CursorRow[], index: number): nu
   return forward === -1 ? seek(rows, bounded, -1) : forward;
 }
 
+/** The reader asked the operating system for less motion. */
+function reducedMotion(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true
+  );
+}
+
+/**
+ * Put the cursor on a row, for real.
+ *
+ * Exported rather than kept inside `createListCursor` because a page whose rows are not
+ * uniformly selectable cannot use the factory — /feed interleaves collector-run headers
+ * with items and drives `nextSelectable`/`prevSelectable` itself — and it spent three
+ * months scrolling a row into view without focusing it. That is a paint: `aria-current`
+ * moved and no assistive technology was told, so the whole j/k lane was silent to a
+ * screen reader and left a keyboard reader's Tab position wherever it had been.
+ *
+ * The order is load-bearing. `focus()` on its own scrolls the row to the top of the
+ * viewport, which throws away the rows above it that give a selection its context, so the
+ * scroll is suppressed and then asked for again as `block: "nearest"`.
+ */
+export function focusRow(element: HTMLElement | null | undefined): void {
+  if (!element) return;
+  element.focus({ preventScroll: true });
+  element.scrollIntoView({ block: "nearest", behavior: reducedMotion() ? "auto" : "smooth" });
+}
+
 export function createListCursor(options: ListCursorOptions): ListCursor {
   let index = $state(0);
 
   const clamp = (value: number): number => clampIndex(value, options.count());
 
-  const reduced = (): boolean =>
-    typeof window !== "undefined" &&
-    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
-
   function moveTo(next: number): void {
     index = clamp(next);
-    const element = options.elFor(index);
-    if (!element) return;
-    // preventScroll, then scrollIntoView: focus() alone jumps the row to the top of the
-    // viewport, which loses the rows above it that give the selection its context.
-    element.focus({ preventScroll: true });
-    element.scrollIntoView({ block: "nearest", behavior: reduced() ? "auto" : "smooth" });
+    focusRow(options.elFor(index));
   }
 
   function handleKeydown(event: KeyboardEvent): void {
