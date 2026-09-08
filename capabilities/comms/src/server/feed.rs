@@ -619,6 +619,77 @@ impl PassCursor {
             self.progress_end
         )
     }
+
+    /// Which page this pass reads.
+    ///
+    /// An offset the caller NAMED is the page it gets: `comms relevance
+    /// backfill` walks the corpus itself and means every number it sends. An
+    /// ABSENT offset resumes the chain instead of restarting it, and that is
+    /// the whole of the nightly sweep's paging — `tools/feed-sweep.ts` posts
+    /// `{days: 3650, limit: 100}` with no offset, so before this it re-read the
+    /// newest hundred rows every night for as long as the schedule has existed.
+    /// The cursor already recorded how far the sweep had come; nothing read it
+    /// back.
+    ///
+    /// A chain is only resumed at its own window. A page at 90 days cannot
+    /// continue a 3650-day chain, because `progress_end` is an offset into a
+    /// list and the two lists are not the same list.
+    fn page_offset(&self, requested: Option<usize>, relevance_revision: &str, days: i32) -> usize {
+        match requested {
+            Some(offset) => offset,
+            None if self.progress_revision == relevance_revision && self.progress_days == days => {
+                self.progress_end
+            }
+            None => 0,
+        }
+    }
+
+    /// Record how far the chain has now come.
+    ///
+    /// A page continues the chain when it starts exactly where the chain
+    /// stopped, at the same window and the same vector space. A page at offset
+    /// 0 otherwise STARTS one — but a narrower window may not take a wider
+    /// chain over. The Feed panel's button asks for 90 days and
+    /// `dashboard/src/routes/travel` asks for 365; without that rule either one
+    /// would send the nightly 3650-day sweep back to the newest page every time
+    /// the operator pressed it, which is the same stall by another door. The
+    /// widest window is also the only one that can mark the corpus complete, so
+    /// it is the chain worth protecting.
+    ///
+    /// Reaching the end of the list always resets the progress, whatever the
+    /// window. It used to reset only for the widest one, which left a narrower
+    /// chain parked one page past its last row: every later page of that chain
+    /// selected nothing, forever.
+    fn advance(
+        &mut self,
+        relevance_revision: &str,
+        days: i32,
+        offset: usize,
+        considered: usize,
+        has_more: bool,
+    ) {
+        let continues = self.progress_revision == relevance_revision
+            && self.progress_days == days
+            && self.progress_end == offset;
+        let starts = offset == 0
+            && (self.progress_revision.is_empty()
+                || self.progress_revision != relevance_revision
+                || days >= self.progress_days);
+        if !continues && !starts {
+            return;
+        }
+        self.progress_revision = relevance_revision.to_string();
+        self.progress_days = days;
+        self.progress_end = offset + considered;
+        if !has_more {
+            if days >= FULL_WINDOW_DAYS {
+                self.completed = relevance_revision.to_string();
+            }
+            self.progress_revision = String::new();
+            self.progress_days = 0;
+            self.progress_end = 0;
+        }
+    }
 }
 
 /// The widest window the route admits, and the only one that can mark the
@@ -659,7 +730,7 @@ pub(super) async fn relevance_refresh_handler(Json(body): Json<RefreshBody>) -> 
             Json(json!({ "error": "limit must be between 1 and 500" })),
         );
     }
-    let offset = body.offset.unwrap_or(0);
+    let requested_offset = body.offset;
     let result = tokio::task::spawn_blocking(move || -> Result<Value, String> {
         let cfg = Config::load();
         let store = Store::open(&cfg.database_path).map_err(|error| error.to_string())?;
@@ -668,27 +739,6 @@ pub(super) async fn relevance_refresh_handler(Json(body): Json<RefreshBody>) -> 
         // evaluations over good rows.
         let profiles = relevance::load_profiles(&cfg.relevance)?;
         let requested = body.ids.unwrap_or_default();
-        // The ids filter is applied by the SELECT, not after the LIMIT. The old
-        // order silently dropped any named item outside the newest page.
-        let items = if requested.is_empty() {
-            store
-                .feed_for_relevance(days, limit, offset)
-                .map_err(|error| error.to_string())?
-        } else {
-            store
-                .feed_items_by_ids(&requested)
-                .map_err(|error| error.to_string())?
-        };
-        let found = items
-            .iter()
-            .map(|item| item.id.clone())
-            .collect::<HashSet<_>>();
-        let missing_ids = requested
-            .iter()
-            .filter(|id| !found.contains(*id))
-            .cloned()
-            .collect::<Vec<_>>();
-        let has_more = requested.is_empty() && items.len() == limit;
 
         // Loopback only, the same filter `triage_relevance_handler` applies to
         // the same two roles. The class gate here is
@@ -729,6 +779,31 @@ pub(super) async fn relevance_refresh_handler(Json(body): Json<RefreshBody>) -> 
         let mut cursor =
             PassCursor::parse(receipt.as_ref().and_then(|state| state.cursor.as_deref()));
         let vector_space_moved = cursor.completed != relevance_revision;
+        // The cursor is read BEFORE the page is selected, because it decides
+        // which page that is when the caller named no offset.
+        let offset = cursor.page_offset(requested_offset, &relevance_revision, days);
+
+        // The ids filter is applied by the SELECT, not after the LIMIT. The old
+        // order silently dropped any named item outside the newest page.
+        let items = if requested.is_empty() {
+            store
+                .feed_for_relevance(days, limit, offset)
+                .map_err(|error| error.to_string())?
+        } else {
+            store
+                .feed_items_by_ids(&requested)
+                .map_err(|error| error.to_string())?
+        };
+        let found = items
+            .iter()
+            .map(|item| item.id.clone())
+            .collect::<HashSet<_>>();
+        let missing_ids = requested
+            .iter()
+            .filter(|id| !found.contains(*id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let has_more = requested.is_empty() && items.len() == limit;
 
         let considered = items.len();
         let ids = items.iter().map(|item| item.id.clone()).collect::<Vec<_>>();
@@ -895,21 +970,7 @@ pub(super) async fn relevance_refresh_handler(Json(body): Json<RefreshBody>) -> 
             // current forever. Reproduced, and reachable: `comms relevance
             // backfill` and `tools/feed-sweep.ts` both send a window, and a
             // window that holds fewer rows than `limit` finishes immediately.
-            let extends = offset == 0
-                || (cursor.progress_revision == relevance_revision
-                    && cursor.progress_days == days
-                    && cursor.progress_end == offset);
-            if extends {
-                cursor.progress_revision = relevance_revision.clone();
-                cursor.progress_days = days;
-                cursor.progress_end = offset + considered;
-                if !has_more && days >= FULL_WINDOW_DAYS {
-                    cursor.completed = relevance_revision.clone();
-                    cursor.progress_revision = String::new();
-                    cursor.progress_days = 0;
-                    cursor.progress_end = 0;
-                }
-            }
+            cursor.advance(&relevance_revision, days, offset, considered, has_more);
         }
         cursor.mode = mode.clone();
         store
@@ -1205,5 +1266,173 @@ pub(super) async fn evaluation_status_handler() -> HttpResponse {
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": "task failed" })),
         ),
+    }
+}
+
+/// Database-backed; `db_tests` is the one module name CI's test selector splits
+/// on (CONTRIBUTING.md, "Validate the changed boundary"). Each test opens a
+/// temp SQLite file of its own — never the deployment's.
+#[cfg(test)]
+mod db_tests {
+    use super::*;
+
+    /// Stands in for `evaluation::relevance_revision`, which is a hash of the
+    /// profiles and the two model producers. The paging rules read it for
+    /// equality only, so a literal is the honest fixture.
+    const REVISION: &str = "relevance-revision-under-test";
+
+    fn open_store(name: &str) -> (Store, std::path::PathBuf) {
+        let directory =
+            std::env::temp_dir().join(format!("comms-server-test-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("a writable temp directory");
+        let path = directory.join(format!("{name}.db"));
+        // A recycled pid must not inherit a previous run's rows.
+        for tail in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{tail}", path.display()));
+        }
+        let store = Store::open(&path)
+            .unwrap_or_else(|error| panic!("could not open {}: {error}", path.display()));
+        (store, path)
+    }
+
+    /// `count` feed items, newest last, with distinct `created_at` stamps.
+    ///
+    /// The stamps are set explicitly because `upsert_feed` writes
+    /// `strftime(...,'now')` and a seeding loop this tight lands several rows in
+    /// one millisecond. The pass pages with OFFSET over `ORDER BY created_at
+    /// DESC`, so ties would leave the page boundaries this file asserts on
+    /// decided by a sort's tie-breaking rather than by the cursor.
+    fn seed(store: &Store, path: &std::path::Path, count: usize) {
+        let conn = rusqlite::Connection::open(path).expect("a second handle on the test file");
+        for n in 0..count {
+            let mut item = FeedItem::new(
+                &format!("https://example.com/relevance-paging/{n:04}"),
+                "news",
+                "article",
+            );
+            item.title = Some(format!("Item {n}"));
+            store.upsert_feed(&item).expect("the item is stored");
+            conn.execute(
+                "UPDATE comms_feed_items SET created_at = ?2 WHERE id = ?1",
+                rusqlite::params![&item.id, &format!("2026-01-01 00:00:00.{n:03}+00:00")],
+            )
+            .expect("the stamp is rewritten");
+        }
+    }
+
+    /// One page of `POST /feed/relevance/refresh` with the scoring left out:
+    /// read the receipt, resolve the offset, select the page, advance the
+    /// cursor, write the receipt back. Every step calls the handler's own code.
+    ///
+    /// Scoring is what needs a model, and it moves no offset — the handler
+    /// derives `has_more` from the row count, and the cursor from `has_more`.
+    fn run_page(
+        store: &Store,
+        requested_offset: Option<usize>,
+        days: i32,
+        limit: usize,
+    ) -> (usize, Vec<String>) {
+        let receipt = store.relevance_pass().expect("the receipt reads back");
+        let mut cursor =
+            PassCursor::parse(receipt.as_ref().and_then(|state| state.cursor.as_deref()));
+        let offset = cursor.page_offset(requested_offset, REVISION, days);
+        let items = store
+            .feed_for_relevance(days, limit, offset)
+            .expect("the page selects");
+        let has_more = items.len() == limit;
+        cursor.advance(REVISION, days, offset, items.len(), has_more);
+        store
+            .record_relevance_pass(&cursor.render(), items.len() as i64, 0, None)
+            .expect("the receipt is written");
+        (offset, items.into_iter().map(|item| item.id).collect())
+    }
+
+    /// The bug this module was opened for. `tools/feed-sweep.ts` posts
+    /// `{days: 3650, limit: 100}` every night and names no offset, so every
+    /// night re-read the same newest hundred rows and nothing else was ever
+    /// re-scored: on 2026-09-08 the deployment's cursor read
+    /// `semantic||<revision>@3650:100` with 175 of its 374 scored items still
+    /// `lexical`, and every one of those 175 sat at offset 100 or beyond.
+    #[test]
+    fn the_nightly_page_advances_between_runs() {
+        let (store, path) = open_store("relevance_page_advances");
+        seed(&store, &path, 250);
+
+        let (first_offset, first) = run_page(&store, None, FULL_WINDOW_DAYS, 100);
+        let (second_offset, second) = run_page(&store, None, FULL_WINDOW_DAYS, 100);
+
+        assert_eq!(first_offset, 0, "the first page of a fresh chain");
+        assert_eq!(
+            second_offset, 100,
+            "the second nightly page starts where the first one ended"
+        );
+        assert_eq!(first.len(), 100);
+        assert_eq!(second.len(), 100);
+        let overlap = first.iter().filter(|id| second.contains(id)).count();
+        assert_eq!(
+            overlap, 0,
+            "the second run re-read {overlap} of the rows the first had already covered"
+        );
+    }
+
+    /// A chain that ran off the end of its list starts over rather than asking
+    /// for a page past the last row forever.
+    ///
+    /// The old cursor reset its progress only when the WIDEST window finished,
+    /// so a chain at 90 days stopped at the end of the 90-day list and every
+    /// later page of that chain selected nothing.
+    #[test]
+    fn a_chain_that_reached_the_end_of_its_list_starts_over() {
+        let (store, path) = open_store("relevance_chain_wraps");
+        seed(&store, &path, 250);
+
+        let offsets = (0..4)
+            .map(|_| run_page(&store, None, 90, 100).0)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            offsets,
+            vec![0, 100, 200, 0],
+            "three pages cover 250 rows, and the fourth begins the next sweep"
+        );
+    }
+
+    /// The Feed panel's button asks for 90 days and `dashboard/src/routes/travel`
+    /// asks for 365. Both name no offset, and both would otherwise take the
+    /// nightly 3650-day chain over and send it back to the newest page — the
+    /// stall this module fixes, arriving through another door.
+    #[test]
+    fn a_page_at_another_window_leaves_the_chain_where_it_is() {
+        let (store, path) = open_store("relevance_window_ownership");
+        seed(&store, &path, 250);
+
+        let (nightly, _) = run_page(&store, None, FULL_WINDOW_DAYS, 100);
+        let (button, _) = run_page(&store, None, 90, 100);
+        let (next_nightly, _) = run_page(&store, None, FULL_WINDOW_DAYS, 100);
+
+        assert_eq!(nightly, 0);
+        assert_eq!(
+            button, 0,
+            "a window with no chain of its own starts at zero"
+        );
+        assert_eq!(
+            next_nightly, 100,
+            "the nightly chain resumes where it was, not where the button left off"
+        );
+    }
+
+    /// `comms relevance backfill` pages explicitly, and an offset a caller
+    /// named must still name the page it reads. Only an absent offset resumes.
+    #[test]
+    fn an_offset_the_caller_named_is_the_page_it_reads() {
+        let (store, path) = open_store("relevance_explicit_offset");
+        seed(&store, &path, 250);
+
+        let (first, _) = run_page(&store, Some(0), FULL_WINDOW_DAYS, 100);
+        let (second, _) = run_page(&store, Some(100), FULL_WINDOW_DAYS, 100);
+        let (third, rows) = run_page(&store, Some(200), FULL_WINDOW_DAYS, 100);
+
+        assert_eq!((first, second, third), (0, 100, 200));
+        assert_eq!(rows.len(), 50, "the last page of 250 rows is short");
     }
 }
