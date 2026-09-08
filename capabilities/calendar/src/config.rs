@@ -173,10 +173,15 @@ impl Config {
     /// and Rust runs a crate's tests as threads of one process, so two tests
     /// that both resolved through that variable read each other's writes: one
     /// removed it while the other held it set, and whichever was inside
-    /// `config_path()` at that moment got the wrong file. That is PRD silent
-    /// failure #3, and it made `cargo test (hermetic)` red at random.
-    /// Reproduced on 2026-09-08 by widening the window — a 200 ms sleep in the
-    /// file read was enough for `the_home_timezone_has_no_default` to resolve
+    /// `config_path()` at that moment got the wrong file. That is the second
+    /// half of PRD silent failure #3 — "a test run is not isolated either".
+    ///
+    /// The window is microseconds wide and has not been observed to open on its
+    /// own: 400 consecutive runs of these tests before the fix failed 0 times,
+    /// and no CI run, register row or commit records it firing. What is
+    /// measured here is the mechanism, not a symptom. With a 200 ms sleep in
+    /// front of `config_path()` and nothing else changed,
+    /// `the_home_timezone_has_no_default` failed on every run, resolving
     /// `Europe/Berlin` out of the other test's file.
     ///
     /// `--test-threads=1` would have hidden it instead: the tests would then
