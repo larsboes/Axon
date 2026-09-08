@@ -56,6 +56,13 @@ done
 
 out="$("$AXON" help capability)"
 contains "$out" "ingest <url>"
+# The four states are the contract `axon capability health` publishes: a reader has to be
+# able to learn that `off` is not a fault without running it on a machine where something
+# is off. tools/capability-probe.test.sh asserts the rules themselves.
+contains "$out" "down     declares autostart and did not answer"
+contains "$out" "off      declares autostart"
+contains "$out" "unknown  declares neither"
+[ -r "$ROOT/tools/lib/capability-probe.sh" ] || fail "tools/lib/capability-probe.sh is missing"
 
 out="$("$AXON" help pack)"
 contains "$out" "opencode"

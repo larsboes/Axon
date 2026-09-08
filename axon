@@ -13,6 +13,12 @@ while [ -L "$SOURCE" ]; do
 done
 AXON_ROOT="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 
+# Where to poll a capability and what the answer means. In a library because none of it can
+# be tested through this CLI on a machine with no services running, and CI has none —
+# tools/capability-probe.test.sh drives the rules directly.
+# shellcheck source=tools/lib/capability-probe.sh
+. "$AXON_ROOT/tools/lib/capability-probe.sh"
+
 usage() {
   cat <<'EOF'
 Usage: axon <command> [arguments]
@@ -59,6 +65,17 @@ Usage: axon capability <command>
   list | health | url <capability>
   call <name> <get|post|put|patch|delete> <path> [body] [curl-args...]
   ingest <url> | feed [days]
+
+health polls each capability's ready_path where it declares one and its health_path
+otherwise, which is what axon-status judges availability on. Four states:
+
+  up       answered 200
+  down     declares autostart and did not answer. The only state that exits non-zero
+  off      declares autostart = "false", so not running is its own declaration
+  unknown  declares neither a health nor a ready path; nothing can answer for it
+
+An external capability is polled at its resolved endpoint, not on loopback: it has no
+port here because a port is a fact about the host that binds it.
 EOF
       ;;
     pack) cat <<'EOF'
@@ -120,45 +137,74 @@ EOF
 
 capability_rows() {
   "$AXON_ROOT/tools/capability.sh" registry |
-    jq -r '.[] | select(.port != "") | [.name, .port, (.health_path // ""), (.health_url // "")] | @tsv'
+    jq -r --arg fs "$CAPABILITY_FS" \
+      '.[] | select(.port != "" or .endpoint != "")
+           | [.name, .scope, .port, .endpoint, (.health_path // ""), (.ready_path // ""), (.autostart // "")]
+           | join($fs)'
 }
 
+# An external capability answers here too. Its port is blank by construction — a port is a
+# fact about the host that binds it, and this machine does not — so a lookup keyed on `.port`
+# reported "no registered HTTP surface" for a capability that has one, on another host, and
+# whose base URL the registry had already resolved.
 capability_url() {
-  local name="$1" port
-  port="$("$AXON_ROOT/tools/capability.sh" registry | jq -r --arg name "$name" '.[] | select(.name == $name and .port != "") | .port' | head -n 1)"
-  [ -n "$port" ] || { echo "axon: capability '$name' has no registered HTTP surface" >&2; exit 1; }
-  echo "http://127.0.0.1:$port"
+  local name="$1" row scope port endpoint url
+  row="$("$AXON_ROOT/tools/capability.sh" registry |
+    jq -r --arg name "$name" --arg fs "$CAPABILITY_FS" \
+      '.[] | select(.name == $name) | [.scope, .port, .endpoint] | join($fs)' | head -n 1)"
+  IFS="$CAPABILITY_FS" read -r scope port endpoint <<EOF
+$row
+EOF
+  url="$(capability_base_url "${scope:-}" "${port:-}" "${endpoint:-}")"
+  [ -n "$url" ] && [ "$url" != "http://127.0.0.1:" ] ||
+    { echo "axon: capability '$name' has no registered HTTP surface" >&2; exit 1; }
+  echo "$url"
 }
 
 capability_list() {
-  capability_rows | while IFS="$(printf '\t')" read -r name port health_path health_url; do
-    local url="http://127.0.0.1:$port" probe="$health_url" state
-    [ -n "$probe" ] || probe="$url$health_path"
-    if [ -z "$health_path$health_url" ]; then
+  while IFS="$CAPABILITY_FS" read -r name scope port endpoint health_path ready_path autostart; do
+    local url probe state
+    url="$(capability_base_url "$scope" "$port" "$endpoint")"
+    probe="$(capability_probe_url "$scope" "$port" "$endpoint" "$health_path" "$ready_path")"
+    if [ -z "$probe" ]; then
       state="unknown"
-    elif [ "$(curl -sf -o /dev/null -w '%{http_code}' "$probe" 2>/dev/null || true)" = "200" ]; then
-      state="up"
     else
-      state="down"
+      state="$(capability_state "$(capability_probe_code "$probe")" "$autostart")"
     fi
-    printf '%-18s %-30s %s\n' "$name" "$url" "$state"
-  done
+    printf '%-18s %-38s %s\n' "$name" "$url" "$state"
+  done < <(capability_rows)
 }
 
 capability_health() {
-  local failed=0
-  while IFS="$(printf '\t')" read -r name port health_path health_url; do
-    [ -n "$health_path$health_url" ] || continue
-    local url="$health_url" code
-    [ -n "$url" ] || url="http://127.0.0.1:$port$health_path"
-    code="$(curl -sf -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || true)"
-    if [ "$code" = "200" ]; then
-      echo "up    $name  $url"
-    else
-      echo "down  $name  $url  HTTP ${code:-unreachable}"
-      failed=1
+  local failed=0 any=0
+  while IFS="$CAPABILITY_FS" read -r name scope port endpoint health_path ready_path autostart; do
+    local probe code state
+    probe="$(capability_probe_url "$scope" "$port" "$endpoint" "$health_path" "$ready_path")"
+    # Reported, not skipped. A capability with no probe path is a capability nothing can
+    # answer for, and dropping the row said the same thing as a clean bill of health.
+    if [ -z "$probe" ]; then
+      printf 'unknown %-18s %s\n' "$name" "— no health or ready path to poll"
+      continue
     fi
+    any=1
+    code="$(capability_probe_code "$probe")"
+    state="$(capability_state "$code" "$autostart")"
+    case "$state" in
+      up)   printf 'up      %-18s %s\n' "$name" "$probe" ;;
+      down) printf 'down    %-18s %s  HTTP %s\n' "$name" "$probe" "${code:-unreachable}"; failed=1 ;;
+      off)  printf 'off     %-18s %s  not autostarted; start it with tools/service-runner.sh start %s\n' \
+              "$name" "$probe" "$name" ;;
+    esac
   done < <(capability_rows)
+  # An empty sweep is a broken registry, not a healthy machine — the same guard
+  # tools/check-store-transactions.sh keeps on its own input.
+  if [ "$any" -eq 0 ]; then
+    echo "axon: no capability had anything to probe — the registry is empty or unreadable" >&2
+    return 1
+  fi
+  echo
+  echo "down = declares autostart and is not answering. off = declares autostart=false, so"
+  echo "not running is its own declaration, not a fault. Only 'down' sets a non-zero exit."
   return "$failed"
 }
 
