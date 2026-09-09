@@ -55,6 +55,17 @@ fn allowed_hosts_var(capability: &str) -> String {
 /// process env (the explicit-parameter pattern places' geocode db_tests use).
 pub fn origin_allowed_by(origin: Option<&str>, allowed_hosts: Option<&str>) -> bool {
     let Some(origin) = origin else { return true };
+    // Obsidian's renderer, and only that exact string. Admitted 2026-09-09 (Q107)
+    // because it grants nothing: Obsidian already holds the whole vault open on
+    // disk, so refusing it an HTTP route it could answer from a file protects no
+    // fact. What the guard exists to stop is a PAGE the operator visited, and a
+    // browser sets `Origin` itself — a page cannot claim this one.
+    //
+    // The literal, not the `app://` scheme: every other Electron app on this Mac
+    // also sends an `app://` origin, and none of them has the vault.
+    if origin == "app://obsidian.md" {
+        return true;
+    }
     let Some(rest) = origin
         .strip_prefix("http://")
         .or_else(|| origin.strip_prefix("https://"))
@@ -142,6 +153,24 @@ mod tests {
         assert!(!origin_allowed_by(
             Some("http://localhost.evil.example"),
             None
+        ));
+        // Obsidian's renderer, admitted 2026-09-09 so axon-lens can read at all.
+        // Measured before the change: every capability answered 403 to this
+        // exact header, which is what a plugin sends on every request.
+        assert!(origin_allowed_by(Some("app://obsidian.md"), None));
+        // The literal and not the scheme. Another Electron app on this Mac sends
+        // an app:// origin too, and none of them already holds the vault.
+        assert!(!origin_allowed_by(Some("app://other.app"), None));
+        assert!(!origin_allowed_by(
+            Some("app://obsidian.md.evil.example"),
+            None
+        ));
+        assert!(!origin_allowed_by(Some("app://"), None));
+        // An explicit host list must not silently drop it: the plugin has to keep
+        // working on a deployment that has closed the .ts.net suffix gap.
+        assert!(origin_allowed_by(
+            Some("app://obsidian.md"),
+            Some("mac.tailnet.ts.net")
         ));
         assert!(!origin_allowed_by(Some("null"), None));
         assert!(!origin_allowed_by(Some("file:///tmp/page.html"), None));
