@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@sveltejs/kit": "^2.0.0",
-    "maplibre-gl": "6.7.0",
+    "maplibre-gl": "6.9.0",
     "mermaid": "11.17.2",
     "svelte": "^5.57.0",
     "vega": "6.4.0",
