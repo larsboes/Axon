@@ -13,6 +13,14 @@ Neither replaces the other. `check` cannot see a shadow, a centred bullet, an
 imbalance, or a dead bottom third. Rendering cannot tell you *why* something looks
 wrong, and does not scale to 60 slides in one pass.
 
+## Contents
+
+- [The loop](#the-loop)
+- [What `check` covers](#what-check-covers)
+- [Overlap detection, and why decoration is marked](#overlap-detection-and-why-decoration-is-marked)
+- [Recovering from a failed check](#recovering-from-a-failed-check)
+- [Proportionate verification](#proportionate-verification)
+
 ## The loop
 
 ```

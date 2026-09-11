@@ -3,6 +3,16 @@
 A theme is one JSON file: a role-based palette, a type scale and the grid. Swapping
 it re-themes every slide without touching content.
 
+## Contents
+
+- [Derive it from an artifact, not from taste](#derive-it-from-an-artifact-not-from-taste)
+- [The file](#the-file)
+- [Choosing the colours](#choosing-the-colours)
+- [Contrast, and the projector tax](#contrast-and-the-projector-tax)
+- [Type](#type)
+- [Grid](#grid)
+- [Verify a theme by rendering, not by reading](#verify-a-theme-by-rendering-not-by-reading)
+
 ## Derive it from an artifact, not from taste
 
 The best theme for a deck is usually already sitting in the source material. A
