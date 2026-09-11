@@ -1,0 +1,31 @@
+{
+  "name": "warm-scientific-teal",
+  "provenance": "Warm scientific teal — the thesis figure palette, for a technical or academic deck",
+  "palette": {
+    "ink": "1F2727",
+    "white": "FFFFFF",
+    "paper": "FBFAF7",
+    "accent": "4A6A69",
+    "accent_mid": "85A09F",
+    "accent_light": "E6EFED",
+    "secondary": "527B8B",
+    "secondary_light": "E7EFF1",
+    "caution": "8A6653",
+    "caution_light": "F3E9E4",
+    "emphasis_on_dark": "DBAF26",
+    "muted_neutral": "F3F5F3",
+    "hairline": "DDD6CF"
+  },
+  "type": {
+    "font": "Arial",
+    "section": 38.0,
+    "title": 24.0,
+    "kpi": 31.0,
+    "subtitle": 16.5,
+    "statement": 15.5,
+    "body": 13.0,
+    "small": 11.0,
+    "tiny": 9.5,
+    "footer": 10.5
+  }
+}

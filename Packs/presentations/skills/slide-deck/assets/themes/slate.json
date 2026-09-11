@@ -1,0 +1,31 @@
+{
+  "name": "slate",
+  "provenance": "Slate — a neutral default for a deck with no source artifact to match",
+  "palette": {
+    "ink": "1C1F23",
+    "white": "FFFFFF",
+    "paper": "FAFAF9",
+    "accent": "3F4A5A",
+    "accent_mid": "8A93A1",
+    "accent_light": "EDEFF2",
+    "secondary": "4A6E7E",
+    "secondary_light": "EAF0F3",
+    "caution": "8C5A3C",
+    "caution_light": "F5ECE5",
+    "emphasis_on_dark": "E8C05A",
+    "muted_neutral": "F4F4F3",
+    "hairline": "DCDCDA"
+  },
+  "type": {
+    "font": "Helvetica Neue",
+    "section": 38.0,
+    "title": 24.0,
+    "kpi": 31.0,
+    "subtitle": 16.5,
+    "statement": 15.5,
+    "body": 13.0,
+    "small": 11.0,
+    "tiny": 9.5,
+    "footer": 10.5
+  }
+}

@@ -1,0 +1,60 @@
+{
+  "skill": "slide-deck",
+  "note": "Two cases plus one ambiguity case, per references/evaluation.md. Run each in a fresh context, with and without the skill, and record the delta. Assertions are checked against the artifacts on disk, not against the transcript.",
+  "baseline": {
+    "captured": "2026-09-11",
+    "method": "The colloquium deck was first built without this skill, as a 1,349-line build_deck.py that mixed content with ~350 lines of layout helpers.",
+    "failure": "The unaided build produced a deck that was structurally valid and visually wrong in five ways, each found only by rendering: theme drop shadows on every shape (shadow.inherit=False does not remove them; the <p:style> element must go), every panel's text silently centred by the autoshape default, a two-line title overlapping its subtitle, a literal newline inside a run that LibreOffice renders as a break and PowerPoint does not, and a caption drawn on top of a panel. None of these are visible in source. Three further defects survived into the port and were found by `check`, not by eye: a duplicated footer from calling footer() twice, vertical padding scaled from horizontal padding, and a figure caption 0.03in past the body floor."
+  },
+  "cases": [
+    {
+      "id": "c1-build-from-a-brief",
+      "prompt": "I need a 10-minute conference talk deck about our migration from Logstash to Fluent Bit. The talk is in English. I have the plots in ./figures/ and the paper is in ./paper.md.",
+      "assertions": [
+        "A deck directory exists with a deck.py module that imports deckkit.",
+        "The theme is derived from the palette used by the figures in ./figures, not a built-in default chosen arbitrarily, and the derivation is recorded in the theme's provenance field.",
+        "Every slide in the built .pptx has non-empty speaker notes containing a time budget.",
+        "The notes' time budgets sum to 10 minutes, plus or minus 30 seconds.",
+        "`deck check` exits 0.",
+        "A contact sheet exists under out/render/ and is newer than the .pptx.",
+        "The deck's slide titles are assertions, not topics: at most two of them are a bare noun phrase such as 'Methodik' or 'Ergebnisse'.",
+        "Both colons and quotes in the deck's non-Latin-1 characters (umlauts, en dashes) render in the extracted PDF text, not as replacement characters."
+      ]
+    },
+    {
+      "id": "c2-retheme-an-existing-deck",
+      "prompt": "This deck is for our brand now, not the university. Brand primary is #B03A2E, secondary #2E5F8A. Re-theme it and show me what changed.",
+      "assertions": [
+        "Only the theme JSON changed, or the change to deck.py is limited to the Theme.load() path; slide content is untouched.",
+        "The new theme defines every REQUIRED_ROLES entry and the emphasis_on_dark colour is legible against the new filled accent.",
+        "The deck is rebuilt and re-rendered, and a fresh contact sheet exists.",
+        "`deck check` still exits 0 after the re-theme.",
+        "The reply names at least one layout consequence rather than only reporting that the colours changed (for example a tint that no longer separates from white, or a panel that now needs a different voice)."
+      ]
+    },
+    {
+      "id": "c3-ambiguity-language-and-duration",
+      "prompt": "can you make me a deck for my colloquium",
+      "assertions": [
+        "The reply asks about language, duration, audience or what the deck must achieve before or while building, in one batched round rather than a sequence of single questions.",
+        "If the user does not answer, the reply proceeds and prints every assumption it made as a named default.",
+        "No deck is built with an invented duration or an inferred language that the request did not support."
+      ],
+      "edge": true
+    }
+  ],
+  "trigger_tests": {
+    "should_trigger": [
+      "build me a slide deck for my defence",
+      "I need slides for a 20 minute talk",
+      "make the colloquium presentation",
+      "re-theme this pptx deck to our brand colours"
+    ],
+    "should_not_trigger": [
+      "write the discussion chapter of my thesis (near-miss: academic-writing)",
+      "this README reads like AI wrote it, fix it (near-miss: human-writing)",
+      "review my slides and tell me if the argument holds (near-miss: judgement, not construction — no rebuild requested)",
+      "add a fade transition to my PowerPoint (out of scope: slide-editor work, not a deck build)"
+    ]
+  }
+}

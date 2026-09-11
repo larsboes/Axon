@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# deck — build, check and render a slide deck from a Python module.
+#
+# Thin launcher. The mechanism lives in ../lib/deckkit (single source of truth);
+# this file only resolves paths and dependencies.
+#
+# Why bash and not a `pyproject.toml` project: Axon has no Python project
+# anywhere (README.md#cargo-and-bun-are-the-build-path), and the sibling skills
+# that need Python deps all use exactly this shape. `uv run --with` also keeps
+# dependencies pinned per invocation without a lockfile to maintain.
+#
+# Dependencies are selected per verb, so `build` does not resolve the rasteriser.
+#
+# `cd -P` resolves the symlink the Pack deployer plants in ~/.claude/skills, and
+# the walk goes up from this file rather than naming a checkout location —
+# Axon sits at ~/Developer/Axon on one machine and ~/Axon on another.
+set -euo pipefail
+
+_here="$(cd -P "$(dirname "$0")" && pwd)"
+_lib="$_here"   # scripts/ is the executable layer: the launcher and the deckkit package
+
+if ! command -v uv >/dev/null 2>&1; then
+  echo "deck: uv is not on PATH." >&2
+  echo "  macOS: brew install uv     Linux: curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
+  exit 2
+fi
+
+# Pinned, never a floating release: Axon's dependency doctrine.
+_core=(--with "python-pptx==1.0.2" --with "pillow==12.3.0")
+
+case "${1:-}" in
+  render) _deps=("${_core[@]}" --with "pymupdf==1.28.2") ;;
+  *)      _deps=("${_core[@]}") ;;
+esac
+
+PYTHONPATH="$_lib${PYTHONPATH:+:$PYTHONPATH}" \
+  exec uv run --python 3 "${_deps[@]}" python -m deckkit "$@"
