@@ -190,17 +190,25 @@ class Deck:
         top = self._header(shape_slide, title, subtitle)
         slide = self._slide(shape_slide, top)
         rail_x, rail_w = 1.95, 9.1
-        y = 2.28
+        first_y = 2.10
+        # The step adapts to the number of items. A fixed 0.52 fits six entries and
+        # runs an eight-entry agenda into the footer, which is exactly the kind of
+        # arithmetic that should live here rather than in every deck that grows a
+        # section. Seven items or fewer keep the original rhythm; more tighten, and
+        # the claim line stays just under the list either way.
+        claim_top = 6.00
+        step = min(0.52, (claim_top - first_y - 0.16) / max(len(items), 1))
+        y = first_y
         for index, item in enumerate(items):
             on = active is not None and index == active
             if on:
-                L.rect(shape_slide, theme, rail_x - 0.16, y - 0.03, 0.07, 0.34,
-                       fill=theme.hex("accent"))
-            L.write(shape_slide, theme, rail_x, y, rail_w, 0.42, item,
-                    size=theme.size("subtitle") + 2,
+                L.rect(shape_slide, theme, rail_x - 0.16, y - 0.03, 0.07,
+                       min(0.34, step - 0.16), fill=theme.hex("accent"))
+            L.write(shape_slide, theme, rail_x, y, rail_w, min(0.42, step),
+                    item, size=theme.size("subtitle") + 2,
                     colour=theme.hex("ink") if on else theme.hex("accent_mid"),
                     bold=on)
-            y += 0.52
+            y += step
         if claim:
             L.write(shape_slide, theme, rail_x, y + 0.16, rail_w - 0.6, 0.6, claim,
                     size=theme.size("subtitle") - 1,
