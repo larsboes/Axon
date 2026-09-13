@@ -215,6 +215,28 @@ s.panel_grid([
 ], columns=3, height=2.6, size=11.5, voice="accent")
 ```
 
+**The 1–3–3: question, objectives, metrics.** The same slide with the derivation made
+visible: the research question in a full-width tinted band, one panel per objective
+below it, and one panel per metric below that, column-aligned. It answers "are the
+constructs derived, or set?" by construction, because every objective carries the
+locator of its source. Use `~Source:~` for the citation line so it reads as
+provenance rather than as body text.
+```python
+s.panel(s.x, s.top, s.w, 0.92, question, fill=s.theme.hex("accent_light"),
+        size=12.5, anchor="middle")
+s.panel_grid([
+    ["**Objective 1 · Behavior preservation**", definition, "~Source:~ ISO/IEC 25010:2023, §3.1.2."],
+    # … one per objective
+], columns=3, top_pad=1.08, height=1.72, voice="accent", size=11.5, para_gap=7)
+s.panel_grid([
+    ["**Metric 1 · Automated output comparison**", measure, "**Met:** all pairs agree."],
+    # … one per objective, in the same column order
+], columns=3, top_pad=2.98, height=1.72, voice="secondary", size=11, para_gap=7)
+```
+The two grids must use the same `columns` and `gap`, or the tiers stop lining up, and
+`top_pad` is measured from `s.top`, so the second grid's value is the band height plus
+the gap plus the first grid's height.
+
 **Threats to validity.** One cell per Wohlin type, conclusion, internal, construct,
 external, each with its named threat. Evidence of rigour, not a confession.
 ```python
