@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# diagrams — render Mermaid sources to themed PNGs from an artifact's palette.
+#
+# Thin launcher. The mechanism lives in the diagramkit package beside this file
+# (single source of truth); this file only resolves paths and the interpreter.
+#
+# Why uv and not plain python3: the same reason scripts/deck gives. Axon has no
+# Python project anywhere, and `uv run --python 3` pins an interpreter without a
+# lockfile to maintain. There are no third-party Python dependencies here — the
+# renderer is Node, invoked through bunx — so this launcher passes no --with.
+set -euo pipefail
+
+_here="$(cd -P "$(dirname "$0")" && pwd)"
+
+if ! command -v uv >/dev/null 2>&1; then
+  echo "diagrams: uv is not on PATH." >&2
+  echo "  macOS: brew install uv     Linux: curl -LsSf https://astral.sh/uv/install.sh | sh" >&2
+  exit 2
+fi
+
+PYTHONPATH="$_here${PYTHONPATH:+:$PYTHONPATH}" \
+  exec uv run --python 3 python -m diagramkit "$@"

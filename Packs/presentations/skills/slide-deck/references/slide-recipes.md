@@ -237,6 +237,13 @@ The two grids must use the same `columns` and `gap`, or the tiers stop lining up
 `top_pad` is measured from `s.top`, so the second grid's value is the band height plus
 the gap plus the first grid's height.
 
+**A tree is often the better 1–3–3.** Panels are the right answer when the tiers carry
+prose. When the point *is* the derivation — one question, three objectives, three
+metrics, each with its source — a Mermaid tree shows it in one glance and cannot drift
+from the deck's colours, because the `diagrams` skill derives the renderer theme from
+the same `theme.json`. See `diagrams/references/mermaid.md` for the source shape and its
+measured aspect (a three-column tree lands near 2.3, which fills a slide body).
+
 **Threats to validity.** One cell per Wohlin type, conclusion, internal, construct,
 external, each with its named threat. Evidence of rigour, not a confession.
 ```python

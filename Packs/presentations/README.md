@@ -1,9 +1,11 @@
 # presentations pack
 
 Turns an argument into a deck, and an academic argument into a deck that survives a
-defence. One skill, **`slide-deck`**, owning the mechanism (a role-based theme, layout
+defence. Two skills. **`slide-deck`** owns the deck mechanism (a role-based theme, layout
 archetypes, a deterministic build, a render loop, and an argument extractor) and the
 judgment about what a slide owes the one after it and what an academic talk is judged on.
+**`diagrams`** renders Mermaid sources to figures with the colours of the deck that will
+embed them, so a diagram and the slides around it cannot drift apart.
 
 ## Why it exists
 
@@ -50,6 +52,12 @@ skills/slide-deck/
   assets/deck.template.py         what `deck init` scaffolds
   assets/themes/                  warm-scientific-teal, slate
   evals/evals.json                behaviour evals with and without the skill
+
+skills/diagrams/
+  SKILL.md              router: source → derived theme → render → measure the aspect → place it
+  scripts/diagrams      bash + uv launcher, delegates to scripts/diagramkit
+  scripts/diagramkit/   theme (palette → Mermaid config), render (mermaid-cli, pinned), cli
+  references/mermaid.md the variable mapping, the layout defaults, how to write a source
 ```
 
 A deck is a Python module that builds one `Deck`. A module rather than a data format

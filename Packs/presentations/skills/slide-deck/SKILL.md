@@ -27,6 +27,7 @@ worth stating.
 | `human-writing` | The prose a person reads. Notes, README text and any explanatory writing in the deck should pass its scanner. |
 | `asd-ste100` | Text that a machine parses without a person to resolve ambiguity. Error messages, tool descriptions, and the instruction files of this skill. |
 | `unslop` | Source code and web interfaces. |
+| `diagrams` | A Mermaid source and the figure it renders to. It derives the renderer theme from this skill's `theme.json`, so a diagram cannot land in a deck in different colours. |
 | **this skill** | The deck module, the theme, the layout, the speaker notes and the rehearsal passes. |
 
 Two consequences follow.
