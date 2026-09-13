@@ -1,7 +1,7 @@
 # Gotchas
 
 Traps that cost a render cycle each. All of them are handled inside `deckkit`, so
-the reason to read this is to know *why* the library has the shape it has — and to
+the reason to read this is to know *why* the library has the shape it has, and to
 recognise the failure if you bypass it.
 
 The theme of the list: **python-pptx's defaults are PowerPoint's defaults, and
@@ -13,7 +13,7 @@ be actively undone.
 **There is no PowerPoint or Keynote on the build machine.** LibreOffice is the only
 renderer, invoked as `soffice --headless --convert-to pdf`, and it is the reference
 for what "looks right" means here. If LibreOffice is missing, `render` fails with the
-install hint rather than a traceback — but it cannot fall back, because a deck that
+install hint rather than a traceback, but it cannot fall back, because a deck that
 is never rendered is never verified.
 
 **Two renderers disagree about relative-path figures and about newlines.** See the
@@ -33,7 +33,7 @@ Symptom in the wild: a two-line title that looks fine locally and runs off the e
 on the presentation laptop.
 
 **`run.text` does not inherit the paragraph's font.** A run with no explicit
-`font.name` falls back to the renderer's default, which is Calibri in PowerPoint — so
+`font.name` falls back to the renderer's default, which is Calibri in PowerPoint, so
 one word in a heading silently changes typeface. Every run this library creates sets
 name, size and colour.
 
@@ -43,7 +43,7 @@ slide 24.
 
 ## Shapes
 
-**Every autoshape carries a `<p:style>` with `effectRef idx="2"` — a theme drop
+**Every autoshape carries a `<p:style>` with `effectRef idx="2"`, a theme drop
 shadow.** `shape.shadow.inherit = False` inserts an empty `<a:effectLst/>` in `spPr`,
 and LibreOffice draws the shadow anyway. The fix is to remove the entire `<p:style>`
 element, which is what `layout._flat()` does. Symptom: a deck that looks like a 2010
@@ -70,7 +70,7 @@ type and rules.
 ## Geometry
 
 **The body floor and the footer are different numbers.** 6.68 and 6.83. The 0.15in
-between them is not slack — it is what stops a block from touching the badge.
+between them is not slack, it is what stops a block from touching the badge.
 Lowering the floor to fit something is always the wrong fix.
 
 **Never hard-code `y = 1.7` for content start.** A two-line title pushes the rule down

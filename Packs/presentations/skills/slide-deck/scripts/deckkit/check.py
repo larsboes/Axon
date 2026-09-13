@@ -91,6 +91,8 @@ def _check_slide(slide, number, findings, width, height, body_bottom, footer_y,
     blocks: list[tuple[str, float, float, float, float]] = []
     for shape in slide.shapes:
         _check_style(shape, number, findings)
+        if shape.shape_type == 13:  # MSO_SHAPE_TYPE.PICTURE
+            _check_figure(shape, number, findings)
         box = _block_box(shape)
         if box is not None:
             blocks.append(box)
@@ -113,6 +115,28 @@ def _check_style(shape, number, findings):
             f"'{shape.name}' kept its theme preset style (drop shadow); build via deckkit.layout"))
         return True
     return False
+
+
+def _check_figure(shape, number, findings):
+    """Warn on a picture with no alt text and no credit.
+
+    The one forward-looking check rather than the retrospective kind, and the reason it
+    is mechanical: an academic deck that reproduces a figure owes the source a line and
+    owes a reader a description, and both live in the same `descr` attribute. `layout.
+    picture` always writes it, empty when nothing was given, so silence here means
+    genuinely undescribed.
+    """
+    nv = shape._element.find(qn("p:nvPicPr"))
+    descr = ""
+    if nv is not None:
+        c_nv = nv.find(qn("p:cNvPr"))
+        if c_nv is not None:
+            descr = c_nv.get("descr", "") or ""
+    if not descr.strip():
+        findings.append(Finding(
+            "warn", number, "figure",
+            f"'{shape.name}' carries no alt text or provenance; pass alt= (and "
+            f"credit=) to s.picture, or note= to s.figure_beside"))
 
 
 def _is_filled(shape) -> bool:
@@ -213,6 +237,11 @@ def _check_geometry(shape, number, findings, width, height, body_bottom, footer_
         return
 
     textbox = shape.has_text_frame and not _is_filled(shape)
+    # Decoration is exempt from the footer rules below. A background motif is meant
+    # to sit behind the statement bar and the footer; reporting it as a collision
+    # would train the reader to ignore the finding. The canvas-bounds check above
+    # still applies, because the motif's unrotated box must stay on the slide.
+    deco = shape.name.startswith("deco ")
     if not textbox and (left < -0.01 or top < -0.01
                         or left + w > width + 0.01 or top + h > height + 0.01):
         findings.append(Finding(
@@ -220,7 +249,7 @@ def _check_geometry(shape, number, findings, width, height, body_bottom, footer_
             f"'{shape.name}' leaves the canvas "
             f"(x {left:.2f}..{left + w:.2f}, y {top:.2f}..{top + h:.2f})"))
 
-    if _is_footer(shape, top, footer_y):
+    if _is_footer(shape, top, footer_y) or deco:
         return
 
     if textbox:

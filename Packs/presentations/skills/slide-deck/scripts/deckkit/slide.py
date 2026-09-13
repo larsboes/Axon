@@ -1,7 +1,7 @@
 """A slide bound to its theme, its header and its footer.
 
-`Deck.open()` returns one of these already carrying the header, the accent rule and
-the footer. `.top` is where content may start, derived from how many lines the
+`Deck.open()` returns one of these already carrying the header (when a title was
+given), the accent rule (when the theme asks for one) and the footer. `.top` is where content may start, derived from how many lines the
 title took — a two-line title pushes the rule down, which is what the reference
 deck does and what makes a two-line title look deliberate instead of cramped.
 
@@ -17,12 +17,19 @@ from __future__ import annotations
 from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
 
 from . import layout as L
+from . import markup
 from .theme import Theme
+
 
 #: Height of a statement bar, and the gap the layout leaves above it. Exported so a
 #: content file can pass `reserve=s.statement_reserve` instead of guessing.
 STATEMENT_H = 0.88
 STATEMENT_GAP = 0.16
+
+
+def plain_text(text: str) -> str:
+    """Markup stripped, whitespace collapsed — the form `deck readiness` prints."""
+    return " ".join("".join(c for _, c in markup.segments(text)).split())
 
 
 class Slide:
@@ -36,6 +43,13 @@ class Slide:
         self.author = author
         self._notes = notes
         self._footer_shapes: list = []
+        # The argument skeleton `deck readiness` prints: the slide's assertion and the
+        # sentences it exists to deliver. Recorded as the slide is built, because the
+        # .pptx loses the distinction between a title, a panel and a claim — and that
+        # distinction is the whole of a defence review.
+        self.title = ""
+        self.kind = "content"
+        self.claims: list[str] = []
 
     # ── geometry shortcuts ──────────────────────────────────────────────
     @property
@@ -52,7 +66,7 @@ class Slide:
 
     @property
     def height(self) -> float:
-        """Usable vertical space between the header rule and the footer."""
+        """Usable vertical space between the content top and the footer."""
         return self.bottom - self.top
 
     def columns(self, n: int, gap: float = 0.32) -> list[float]:
@@ -135,6 +149,59 @@ class Slide:
                                  width, height, title, items, voice=voice, size=size))
         return out
 
+    def panel_grid(self, cards, *, columns=3, gap=0.32, row_gap=0.30, height=None,
+                   label_height=None, reserve=0.0, top_pad=0.06, voices=None,
+                   label_colour=None, para_gap=None, **panel_kwargs):
+        """A uniform grid of panels, `columns` across, as many rows as it needs.
+
+        `cards` is a list; a card is `[items]` (a plain panel) or `(label, [items])`
+        (a raised label above it). The grid owns the geometry; the panel owns the
+        styling — every other keyword (`voice`, `fill`, `outline`, `size`, `pad`,
+        `bullet`, `line_spacing`) is forwarded to `panel` unchanged, the way `table`
+        forwards to its cells. `voices` overrides the voice per cell, which is the
+        two-tone comparison the colloquium deck hand-placed — ("accent",
+        "secondary"), claim against bound.
+
+        `gap` is the COLUMN gap (as in `three_columns`); a panel's paragraph spacing
+        is `para_gap`, because the name `gap` is already spoken for here.
+
+        This is the same `span()` + `columns()` + `panel()` arithmetic the colloquium
+        deck wrote out three times (a chip row, a numbered step grid, a question/answer
+        block) and three more times as voice-tinted pairs. `three_columns` is this for
+        the one case that also wants a header rule and a coloured title (it builds
+        `card()`, not `panel()`).
+        """
+        specs = []
+        for card in cards:
+            label, items = card if isinstance(card, tuple) else (None, card)
+            specs.append((label, [items] if isinstance(items, str) else list(items)))
+        if not specs:
+            return []
+        if para_gap is not None:
+            panel_kwargs["gap"] = para_gap
+        # A label sits above its panel, so it needs its own band or the two collide.
+        if label_height is None:
+            label_height = 0.36 if any(label for label, _ in specs) else 0.0
+
+        rows = -(-len(specs) // columns)
+        width = self.span(columns, gap)
+        if height is None:
+            available = self.body(reserve=reserve) - top_pad
+            height = (available - (rows - 1) * row_gap) / rows - label_height
+
+        out = []
+        for index, (label, items) in enumerate(specs):
+            column, row = index % columns, index // columns
+            x = self.x + column * (width + gap)
+            y = self.top + top_pad + row * (height + label_height + row_gap)
+            if label:
+                self.label(x, y, width, label, colour=label_colour)
+            cell = dict(panel_kwargs)
+            if voices:
+                cell["voice"] = voices[index]
+            out.append(self.panel(x, y + label_height, width, height, items, **cell))
+        return out
+
     def two_columns(self, left, right, *, label_height=0.36, height=None, size=None,
                     gap=0.45, bullet=True, reserve=0.0):
         """`left`/`right` are (label, [items]) pairs shown as labelled panels."""
@@ -154,6 +221,7 @@ class Slide:
         height = height if height is not None else STATEMENT_H
         fill = fill if fill is not None else self.theme.hex(voice)
         y = y if y is not None else self.bottom - height
+        self.claims.append(plain_text(text))
         return self.panel(x if x is not None else self.x, y,
                           width if width is not None else self.w, height, text,
                           fill=fill, size=size or self.theme.size("statement"),
@@ -167,6 +235,9 @@ class Slide:
         rail_x = self.x + self.w * ratio + 0.25
         rail_w = self.w - self.w * ratio - 0.25
         box_h = self.body(reserve=reserve) - (0.50 if note else 0.0)
+        if note:
+            # The same line is the visible caption and the picture's provenance.
+            picture.setdefault("credit", note)
         self.picture(path, self.x, self.top, width, box_h, **picture)
         self.bullets(rail_x, self.top + 0.02, rail_w, items,
                      size=size or self.theme.size("body"))
@@ -177,15 +248,23 @@ class Slide:
         return rail_x, rail_w
 
     def headline(self, text, *, height=1.85, size=None, fill=None, voice="accent",
-                 align=PP_ALIGN.CENTER, reserve=0.0):
-        """The oversized pull-quote: a research question, a contribution, a verdict."""
-        y = self.top if not reserve else self.top
+                 align=PP_ALIGN.CENTER):
+        """The oversized pull-quote: a research question, a contribution, a verdict.
+
+        Pinned to `self.top` and full width by default, so there is no `reserve`
+        here — anything drawn below it is the caller's to place, unlike the
+        archetypes that size themselves against the body floor.
+        """
         return self.statement(text, height=height,
                               size=size or self.theme.size("subtitle"),
-                              y=y, voice=voice, fill=fill, align=align)
+                              y=self.top, voice=voice, fill=fill, align=align)
 
-    def kpi_row(self, cards, *, height=1.42, gap=0.30, reserve=0.0):
-        """`cards` is [(value, caption, trail, voice), ...]."""
+    def kpi_row(self, cards, *, height=1.42, gap=0.30):
+        """`cards` is [(value, caption, trail, voice), ...].
+
+        Fixed height at `self.top`; a statement bar below it is the caller's to
+        reserve for.
+        """
         width = self.span(len(cards), gap)
         return [self.kpi(self.x + i * (width + gap), self.top, width, height,
                          value, caption, trail=trail, voice=voice)
@@ -215,14 +294,18 @@ class Slide:
 
         theme = self.theme
         y = theme.metric("footer_y")
-        self._footer_shapes.append(L.badge(self.shape, theme, self.x, y, self.author))
+        # Both are optional. An empty author draws no badge, and an empty label leaves the
+        # page number alone on the right. A deck can carry neither.
+        if self.author:
+            self._footer_shapes.append(L.badge(self.shape, theme, self.x, y, self.author))
         if note:
-            L.write(self.shape, theme, self.x + 1.98, y + 0.01, 5.9, 0.5,
-                    note.split("\n"), size=theme.size("tiny"),
+            L.write(self.shape, theme, self.x + (1.98 if self.author else 0), y + 0.01,
+                    5.9, 0.5, note.split("\n"), size=theme.size("tiny"),
                     colour=theme.hex("accent_mid"), line_spacing=0.95, gap=1)
-        L.write(self.shape, theme, theme.metric("width") - self.x - 2.15, y + 0.06,
-                1.55, 0.30, self.footer_label, size=theme.size("footer"),
-                colour=theme.hex("accent_mid"), align=PP_ALIGN.RIGHT)
+        if self.footer_label:
+            L.write(self.shape, theme, theme.metric("width") - self.x - 2.15, y + 0.06,
+                    1.55, 0.30, self.footer_label, size=theme.size("footer"),
+                    colour=theme.hex("accent_mid"), align=PP_ALIGN.RIGHT)
         L.write(self.shape, theme, theme.metric("width") - self.x - 0.42, y + 0.06,
                 0.42, 0.30, str(self.number), size=theme.size("footer"),
                 colour=theme.hex("accent_mid"), align=PP_ALIGN.RIGHT)

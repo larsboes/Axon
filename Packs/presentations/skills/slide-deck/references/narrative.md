@@ -3,6 +3,19 @@
 A deck is an argument with pictures, not a document with slides. This file is about
 the argument: what goes in, in what order, and what each slide owes the next one.
 
+This file is the craft **every** talk shares. Two things sit under it for an academic
+talk, and neither replaces it:
+
+- `academic-narrative.md`: the objects an academic argument is built from: the
+  research question, the contribution and its type, the bounding register, the
+  construct column, the four validities.
+- a **genre profile**, `genre-dsr-defence.md` or `genre-empirical-cs-talk.md`, which
+  fixes the spine for the talk in front of you.
+
+For a project readout, a client report or a lecture, this file is enough. For a
+defence or a conference talk, read this, then `academic-narrative.md`, then the genre
+profile. The rest of this file applies either way.
+
 ## Contents
 
 - [The spine](#the-spine)
@@ -27,28 +40,32 @@ naming the claim the section earns:
 ```
 
 If a section's claim cannot be written in one line, the section is two sections, or
-it is not yet an argument — it is a topic. `Methode` is a topic. `Four cumulative
+it is not yet an argument. It is a topic. `Methode` is a topic. `Four cumulative
 configurations, 15 runs` is a claim.
 
-**Read the titles alone.** A reader who sees only the slide titles should be able to
-reconstruct the argument. If they cannot, the deck is a set of notes.
+**Read the assertions alone.** A reader who sees only the slide assertions should be
+able to reconstruct the argument. The assertion is the title, or — in a claim-first
+deck — the claim bar at the foot of the slide. If neither exists, the deck is a set
+of notes.
 
 ## Assertion titles
 
-Every content slide's title is a sentence that could be false.
+Every content slide's title is a sentence that could be false. A claim-first deck
+puts that sentence in the claim bar instead and drops the title; both are the same
+rule, and a slide with neither is the defect the rule exists to prevent.
 
 | not this | this |
 |---|---|
 | Ergebnisse | Im Endstand erreichen beide Zielgrößen alle Läufe |
 | Limitations | Analytische, nicht statistische Generalisierung |
 | Methodik | Das Artefakt ist das Setup, nicht der generierte Code |
-| Fazit | Wartbarkeit blieb offen — und das ist die nächste Aufgabe |
+| Fazit | Wartbarkeit blieb offen, und das ist die nächste Aufgabe |
 
 This is the single highest-leverage change available to a weak deck. It costs
 nothing, it forces the author to know what each slide is for, and it makes the deck
 readable at a glance from the back of the room.
 
-Two-line titles are fine and often better — `header()` positions the rule from the
+Two-line titles are fine and often better. `header()` positions the rule from the
 title height, so nothing is cramped. Put the newline where the sentence breaks, not
 where the line runs out.
 
@@ -62,7 +79,7 @@ The rhythm inside a slide, and across the deck:
 
 A speaker who opens with the bound has conceded before being asked. A speaker who
 never gives the bound is not trusted. Half a slide of evidence and one line of bound
-is the usual proportion — and for a defence or a viva, the bound is what makes the
+is the usual proportion, and for a defence or a viva, the bound is what makes the
 claim credible, not what weakens it.
 
 The same rhythm at deck scale: the results section claims, the discussion bounds, and
@@ -85,7 +102,7 @@ Give dividers 5 seconds. Give a title slide 20. Everything else is content, and 
 content must be weighted by what the audience cannot infer: the gap, the method, the
 result, the bound. **The literature review gets less time than the author wants.**
 
-Write the budget into the notes slide by slide, with a running clock — `ZEIT 4:20–5:10
+Write the budget into the notes slide by slide, with a running clock, `ZEIT 4:20–5:10
 (50 s)`. A budget that is only in the speaker's head gets spent in the first third.
 
 Then name the two slides that are cuttable if the talk runs long, and say so in the
@@ -93,8 +110,8 @@ deck README. A talk that is 30 seconds over is a talk that skipped its own concl
 
 ## Speaker notes
 
-Every slide carries notes. Not a script to read — a script to rehearse, plus the
-things the slide deliberately omits.
+Every slide carries notes. The notes are a script to rehearse rather than a script to
+read, plus the things the slide deliberately omits.
 
 ```python
 s.notes("""
@@ -114,8 +131,15 @@ Three parts, and the third is the one people skip:
 - **The spoken text.** Written out. Improvising from bullets produces a different
   talk every rehearsal, and the rehearsal never converges.
 - **Contingency.** The question this slide will provoke, and the answer. This is
-  where a defence is actually won — the notes are the place where the deck and the
+  where a defence is actually won, the notes are the place where the deck and the
   thing being defended meet.
+
+**The first two parts are machine-readable.** `deck timing` reads the `ZEIT h:mm–h:mm (N s)`
+line for the slot, sums the budget against `Deck(minutes=…)`, and counts the words in the
+`Sprechtext: „…“` block against the 110–130 wpm band. Keep the markers exactly as above or
+the rehearsal report goes blind: a slide with no `ZEIT` line is reported as not budgeted,
+and a slide whose script is not quoted after `Sprechtext` has no word count. `deck handout`
+puts the same notes beside each slide's image, one page per slide, for rehearsal.
 
 `check` fails a slide with no notes. That is on purpose: a slide with no notes is a
 slide nobody has decided how to present.
@@ -139,20 +163,20 @@ Two rules:
 The highest-value backup slides for a defence are: the related-work matrix in full,
 the numbers to have cold, the two or three weakest points with the answer to each,
 and a slide mapping every criticism received to where the reply lives. That last one
-is for the speaker, not the examiners — and it should not be opened unless asked.
+is for the speaker, not the examiners, and it should not be opened unless asked.
 
 ## Ambiguity: what to do when the brief is thin
 
 A deck request often arrives as "make me a deck for X". Four facts change the whole
 design, so ask for them in **one** batched round, recommended option first:
 
-1. **Audience and their prior knowledge** — do they know the domain, or does the
+1. **Audience and their prior knowledge**: do they know the domain, or does the
    first third of the talk have to teach it?
-2. **Duration and whether questions are included** — 10 minutes plus 20 of questions
+2. **Duration and whether questions are included**: 10 minutes plus 20 of questions
    is a different deck from 30 minutes straight.
-3. **Language** — if the request and the source material disagree, ask; do not infer
+3. **Language**: if the request and the source material disagree, ask; do not infer
    from the source. A German defence of an English thesis is normal.
-4. **What the deck must achieve** — persuade a jury, report to a client, teach a
+4. **What the deck must achieve**: persuade a jury, report to a client, teach a
    class, pass a viva. The same content arranged for those four reads completely
    differently, and the difference is in the bound, not the claim.
 
@@ -164,3 +188,8 @@ from the source · backup slides for the eight expected questions
 ```
 
 Then the user can correct one line instead of rejecting the deck.
+
+Once the four facts are fixed, the **genre profile** follows from them: a "defend" goal
+is a defence (`genre-dsr-defence.md`); a "report to a scientific audience" goal with a
+method and baselines is a paper talk (`genre-empirical-cs-talk.md`). Read it before
+writing the spine, because it decides what the spine is.

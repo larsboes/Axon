@@ -1,8 +1,5 @@
 # See schemas/pack.toml.example for the field reference.
 name         = "presentations"
-description  = "Build, check and render slide decks as .pptx from a Python module, with a role-based theme and a contact-sheet verification loop."
+description  = "Build, check, render and readiness-check slide decks as .pptx from a Python module, with talk-genre profiles (DSR/qualitative defence, empirical-CS talk), a role-based theme, and a contact-sheet verification loop."
 skills       = ["slide-deck"]
 license      = "MIT"
-
-# pi: REGISTERED for pi (2026-09-11) — scripts/deck is a bash+uv launcher, so the
-#     skill is harness-neutral: no Claude-only primitive (agents/, hooks) is used.

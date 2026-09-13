@@ -18,8 +18,6 @@ reads those better than YAML does.
     s.three_columns([...])
     s.notes("20 s. ...")
 
-    deck.close()
-
 `scripts/deck build <file>` runs the module and saves whatever `deck` it finds.
 """
 
@@ -33,14 +31,15 @@ from pptx.util import Inches
 
 from . import layout as L
 from .errors import DeckError
-from .slide import Slide
+from .slide import Slide, plain_text
 from .theme import Theme
 
 
 class Deck:
     def __init__(self, theme: Theme, *, name: str = "deck", author: str = "",
                  footer_label: str = "", output: str | Path = "out",
-                 title_text: str | None = None, max_words: int = 120):
+                 title_text: str | None = None, max_words: int = 120,
+                 minutes: float | None = None, export_pdf: bool = False):
         self.theme = theme
         self.name = name
         self.author = author
@@ -52,6 +51,12 @@ class Deck:
         #: the end of a section is dense on purpose, and the default nudge would
         #: fire on every one of them until it stopped meaning anything.
         self.max_words = max_words
+        #: The talk's allotted length, for `deck timing`. Optional: without it, timing
+        #: reports the noted budget and the implied duration and compares nothing.
+        self.minutes = minutes
+        #: Write the PDF beside the `.pptx` on every `build`, so the deck folder is the
+        #: deliverable and the export is not a step to remember. Needs LibreOffice.
+        self.export_pdf = export_pdf
 
         self.prs = Presentation()
         self.prs.slide_width = Inches(theme.metric("width"))
@@ -61,6 +66,9 @@ class Deck:
         self._page = 1
         self.slides: list[Slide] = []
         self._toc: list[str] = []
+        # Set by backup_divider(); every slide opened afterwards is a backup slide, so
+        # `readiness` can split the talk from the appendix without parsing titles.
+        self._in_backup = False
 
     # ── internals ───────────────────────────────────────────────────────
     def _blank(self):
@@ -70,6 +78,9 @@ class Deck:
         # White, not the palette's paper tone: figures are rendered on white and a
         # tinted background shows up as a rectangle around every one of them.
         fill.fore_color.rgb = self.theme.rgb("white")
+        # Drawn first, so it is the bottom layer and every panel sits on top of it.
+        if self.theme.metric("flourish") > 0:
+            L.flourish(slide, self.theme)
         return slide
 
     def _next(self) -> int:
@@ -96,16 +107,31 @@ class Deck:
                     subtitle, size=theme.size("subtitle"),
                     colour=theme.hex("accent"), line_spacing=0.95)
             y += theme.metric("sub_h")
-        rule_y = y + 0.10
-        L.rule(shape_slide, theme, x, rule_y, w)
-        return rule_y + theme.metric("gap") + 0.14
+        # A theme with `title_rule` at 0 carries its assertions in claim bars, so
+        # there is no heading for a rule to belong to. Skipping it also returns a
+        # tighter top, which is what keeps a titleless slide from starting low.
+        if theme.metric("title_rule") > 0:
+            rule_y = y + 0.10
+            L.rule(shape_slide, theme, x, rule_y, w,
+                   thickness=theme.metric("title_rule"))
+            return rule_y + theme.metric("gap") + 0.14
+        return y + theme.metric("gap") + 0.14
 
     # ── slides ──────────────────────────────────────────────────────────
-    def open(self, title: str, subtitle: str | None = None) -> Slide:
-        """A content slide: header, accent rule, footer. Returns the slide."""
+    def open(self, title: str = "", subtitle: str | None = None) -> Slide:
+        """A content slide: optional header, the accent rule, the footer.
+
+        Passing no `title` gives the claim-first slide: nothing is drawn at the top,
+        content starts at `content_y`, and the slide's assertion lives in its claim
+        bar (`statement`/`headline`) at the bottom. `check` cannot tell the two
+        shapes apart, so `readiness` reads the first claim as the assertion.
+        """
         shape_slide = self._blank()
-        top = self._header(shape_slide, title, subtitle)
+        top = (self._header(shape_slide, title, subtitle) if title
+               else self.theme.metric("content_y"))
         slide = self._slide(shape_slide, top)
+        slide.title = title
+        slide.kind = "backup" if self._in_backup else "content"
         slide._footer()
         return slide
 
@@ -119,7 +145,9 @@ class Deck:
                 size=theme.size("subtitle") + 3.5, bold=True)
         L.write(shape_slide, theme, x, 2.22, w - 1.0, 1.5, title,
                 size=theme.size("title") + 1, bold=True, italic=True, line_spacing=1.06)
-        L.rule(shape_slide, theme, x, 3.86, w, thickness=0.03)
+        if theme.metric("title_rule") > 0:
+            L.rule(shape_slide, theme, x, 3.86, w,
+                   thickness=theme.metric("title_rule"))
         if date:
             L.write(shape_slide, theme, x, 4.04, 6.0, 0.3, date,
                     size=theme.size("body") + 0.5, colour=theme.hex("accent_mid"))
@@ -137,22 +165,32 @@ class Deck:
                     colour=theme.hex("accent_mid"), align=PP_ALIGN.RIGHT)
         slide = Slide(shape_slide, theme, 4.40, 1, self.footer_label, self.author, notes)
         self.slides.append(slide)   # page 1: registered directly, not via _next()
+        slide.title = title
+        slide.kind = "title"
         if notes:
             slide.notes(notes)
         return slide
 
     def agenda(self, items: list[str], *, active: int | None = None,
                title: str = "Agenda", subtitle: str | None = None,
-               notes: str = "") -> Slide:
-        """The contents rail. `active` lights one item; call again per section."""
+               claim: str | None = None, notes: str = "") -> Slide:
+        """The contents rail. `active` lights one item; call again per section.
+
+        With `active` and a `claim`, the same call becomes a section divider that keeps
+        the running agenda on screen and marks the section the talk has reached. A talk
+        that repeats its agenda costs the audience nothing and saves them the question
+        of where they are.
+
+        The list is not framed by rules. The active item carries a small accent bar and
+        the ink colour, which is the only thing a reader needs; two full-width lines
+        around a list of six words read as a table border.
+        """
         theme = self.theme
         shape_slide = self._blank()
         top = self._header(shape_slide, title, subtitle)
         slide = self._slide(shape_slide, top)
         rail_x, rail_w = 1.95, 9.1
         y = 2.28
-        L.rule(shape_slide, theme, rail_x, y - 0.30, rail_w,
-               colour=theme.hex("ink"), thickness=0.016)
         for index, item in enumerate(items):
             on = active is not None and index == active
             if on:
@@ -163,12 +201,16 @@ class Deck:
                     colour=theme.hex("ink") if on else theme.hex("accent_mid"),
                     bold=on)
             y += 0.52
-        L.rule(shape_slide, theme, rail_x, y + 0.02, rail_w,
-               colour=theme.hex("ink"), thickness=0.016)
+        if claim:
+            L.write(shape_slide, theme, rail_x, y + 0.16, rail_w - 0.6, 0.6, claim,
+                    size=theme.size("subtitle") - 1,
+                    colour=theme.hex("accent_mid"), line_spacing=1.15)
         slide._footer()
         if notes:
             slide.notes(notes)
         self._toc = list(items)
+        slide.title = title
+        slide.kind = "agenda"
         return slide
 
     def section(self, number, title: str, claim: str = "", *, notes: str = "") -> Slide:
@@ -187,6 +229,10 @@ class Deck:
                     claim, size=theme.size("subtitle") - 2,
                     colour=theme.hex("accent_mid"), line_spacing=1.15)
         slide = self._slide(shape_slide, 2.02)
+        slide.title = title
+        slide.kind = "section"
+        if claim:
+            slide.claims.append(plain_text(claim))
         slide._footer()
         if notes:
             slide.notes(notes)
@@ -204,6 +250,11 @@ class Deck:
                     size=theme.size("statement"), colour=theme.hex("accent_mid"))
         slide = Slide(shape_slide, theme, 2.60, "B0", self.footer_label, self.author)
         self.slides.append(slide)
+        self._in_backup = True
+        slide.title = title
+        slide.kind = "backup_divider"
+        if claim:
+            slide.claims.append(plain_text(claim))
         slide._footer()
         if notes:
             slide.notes(notes)
@@ -228,6 +279,9 @@ class Deck:
             L.write(shape_slide, theme, x, 5.80, 7.0, 0.3, meta,
                     size=theme.size("small"), colour=theme.hex("accent_mid"))
         slide = self._slide(shape_slide, 2.45)
+        slide.title = kicker
+        slide.kind = "closing"
+        slide.claims.append(plain_text(verdict))
         slide._footer()
         if notes:
             slide.notes(notes)
@@ -244,3 +298,14 @@ class Deck:
 
     def __repr__(self) -> str:
         return f"<Deck {self.name}: {len(self.slides)} slides, theme={self.theme.name}>"
+
+    def argument(self) -> list[dict]:
+        """The argument skeleton, in slide order, for `deck readiness`.
+
+        Each entry is `{number, kind, title, claims, notes}`. It is the thing `check`
+        and `render` cannot see: whether the deck answers the question it was built
+        for. `readiness` prints it; the five-question review is the reviewer's.
+        """
+        return [{"number": s.number, "kind": s.kind, "title": s.title,
+                 "claims": list(s.claims), "notes": s._notes}
+                for s in self.slides]

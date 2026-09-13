@@ -99,13 +99,25 @@ def _rgb(value):
     return value if isinstance(value, RGBColor) else RGBColor.from_string(value)
 
 def rect(slide, theme: Theme, x, y, w, h, *, fill=None, line=None, line_width=1.0,
-         shape=MSO_SHAPE.RECTANGLE, adjust=None, deco=False):
+         shape=MSO_SHAPE.RECTANGLE, adjust=None, deco=False, radius=None, alpha=None):
     """A rectangle. `deco=True` marks it as decoration, not a content block.
 
     The marker is a name prefix, and `check` skips those shapes when it looks for
     blocks that collide. Hairlines and table outlines are meant to sit on an edge,
     so counting them as collision candidates would bury the real finding.
+
+    `radius` rounds the corners: pass inches and the shape is built as a rounded
+    rectangle whose adjustment is derived from the shorter side (PowerPoint's
+    `adj` is a fraction, not a length, so the same radius looks different on a
+    statement bar and on a near-square panel unless it is converted here).
+
+    `alpha` sets the fill's opacity, 0..1. python-pptx exposes no opacity API, so
+    the `<a:alpha>` element is written directly; a low-alpha fill is how a motif
+    stays behind the content instead of becoming a block.
     """
+    if radius and radius > 0 and shape == MSO_SHAPE.RECTANGLE and adjust is None:
+        shape = MSO_SHAPE.ROUNDED_RECTANGLE
+        adjust = max(0.0, min(0.5, radius / max(min(w, h), 0.01)))
     sh = slide.shapes.add_shape(shape, Inches(x), Inches(y), Inches(w), Inches(h))
     _flat(sh)
     if deco:
@@ -113,6 +125,8 @@ def rect(slide, theme: Theme, x, y, w, h, *, fill=None, line=None, line_width=1.
     if fill:
         sh.fill.solid()
         sh.fill.fore_color.rgb = _rgb(fill)
+        if alpha is not None:
+            _fill_alpha(sh, alpha)
     else:
         sh.fill.background()
     if line:
@@ -124,6 +138,53 @@ def rect(slide, theme: Theme, x, y, w, h, *, fill=None, line=None, line_width=1.
         sh.adjustments[0] = adjust
     sh.text_frame.word_wrap = True
     return sh
+
+
+def _fill_alpha(shape, alpha: float):
+    """Write `<a:alpha>` into a solid fill. 0 is transparent, 1 is opaque."""
+    sp_pr = shape._element.spPr
+    solid = sp_pr.find(qn("a:solidFill"))
+    if solid is None:
+        return
+    colour = solid.find(qn("a:srgbClr"))
+    if colour is None:
+        return
+    value = max(0, min(100000, int(round(alpha * 100000))))
+    element = colour.makeelement(qn("a:alpha"), {"val": str(value)})
+    colour.append(element)
+    return element
+
+
+def flourish(slide, theme: Theme, *, rotation=-32.0, opacity=1.0):
+    """The optional background motif: one broad diagonal band and its gradations.
+
+    Geometry is fixed in inches on the 16:9 grid and lives in the lower right, so
+    it reads as a corner of the canvas rather than as a block of content. Every
+    part is `deco=True`, which keeps `check` from reporting the motif where the
+    motif is meant to sit: behind the statement bar and the footer.
+
+    The bars stay inside the canvas unrotated. PowerPoint rotates about the shape
+    centre, so the rendered band bleeds a little past the corner, which is the
+    point; `check` measures the unrotated box and therefore passes.
+
+    `opacity` scales every alpha, so a deck can make the motif quieter without
+    touching the geometry.
+    """
+    accent = theme.hex("accent")
+    # (centre x, centre y, length, thickness, alpha) — the band first, then the
+    # progressively shorter rules that step away from it.
+    parts = [
+        (10.60, 5.55, 4.60, 0.34, 0.07),
+        (10.78, 5.79, 3.85, 0.075, 0.10),
+        (10.96, 6.03, 3.05, 0.06, 0.13),
+        (11.13, 6.27, 2.25, 0.05, 0.16),
+        (11.31, 6.51, 1.45, 0.04, 0.20),
+    ]
+    for cx, cy, length, thickness, alpha in parts:
+        bar = rect(slide, theme, cx - length / 2, cy - thickness / 2, length,
+                   thickness, fill=accent, alpha=alpha * opacity, deco=True,
+                   shape=MSO_SHAPE.ROUNDED_RECTANGLE, adjust=0.5)
+        bar.rotation = rotation
 
 def _auto_name(shape, items):
     """Name a block after its first line of text.
@@ -157,7 +218,7 @@ def panel(slide, theme: Theme, x, y, w, h, items, *, voice=None, fill=None,
         theme.hex(voice) if voice else theme.hex("hairline"))
     sh = rect(slide, theme, x, y, w, h,
               fill=fill, line=line_colour if fill is None else None,
-              line_width=outline_width)
+              line_width=outline_width, radius=theme.corners)
     frame = sh.text_frame
     frame.margin_left = frame.margin_right = Inches(pad)
     # Vertical padding does not scale with horizontal padding: a statement bar is
@@ -191,7 +252,7 @@ def label(slide, theme: Theme, x, y, w, text, *, size=None, colour=None):
 
 def table(slide, theme: Theme, x, y, cols, rows, *, row_h=0.38, head_h=0.40,
           size=None, voice="accent", zebra=True, aligns=None, bold_cols=(),
-          first_col_bold=False):
+          first_col_bold=False, highlight_rows=(), highlight_fill=None):
     """A table drawn from rectangles.
 
     python-pptx's own table object carries PowerPoint's theme styling, which fights
@@ -199,6 +260,8 @@ def table(slide, theme: Theme, x, y, cols, rows, *, row_h=0.38, head_h=0.40,
     rectangles costs a few lines and gets the deck's own type and rules.
 
     `cols` is [(header, width_inches), ...]; `aligns` accepts 'left'/'center'/'right'.
+    `highlight_rows` fills those rows with the voice tint and bolds them, which is
+    how a matrix names the row the argument turns on.
     """
     size = size if size is not None else theme.size("small")
     align_map = {"left": PP_ALIGN.LEFT, "center": PP_ALIGN.CENTER,
@@ -206,6 +269,8 @@ def table(slide, theme: Theme, x, y, cols, rows, *, row_h=0.38, head_h=0.40,
     aligns = [align_map[a] for a in (aligns or ["left"] * len(cols))]
     head_fill = theme.hex(voice)
     stripes = (theme.hex("white"), theme.hex("muted_neutral"))
+    highlight_rows = set(highlight_rows)
+    highlight_fill = highlight_fill or theme.tint_for(voice)
 
     cx = x
     for index, (header, width) in enumerate(cols):
@@ -216,15 +281,17 @@ def table(slide, theme: Theme, x, y, cols, rows, *, row_h=0.38, head_h=0.40,
 
     ry = y + head_h
     for row_index, row in enumerate(rows):
-        fill = stripes[row_index % 2] if zebra else stripes[0]
+        marked = row_index in highlight_rows
+        fill = highlight_fill if marked else (
+            stripes[row_index % 2] if zebra else stripes[0])
         cx = x
         for col_index, cell in enumerate(row):
             width = cols[col_index][1]
             sh = rect(slide, theme, cx, ry, width, row_h, fill=fill)
             _cell_text(sh, theme, cell, size, theme.hex("ink"), aligns[col_index],
                        row_h, pad=0.11, accent=theme.hex("accent"),
-                       bold=(col_index in bold_cols) or
-                            (first_col_bold and col_index == 0))
+                       bold=marked or (col_index in bold_cols)
+                            or (first_col_bold and col_index == 0))
             cx += width
         rule(slide, theme, x, ry, sum(w for _, w in cols),
              colour=theme.hex("hairline"), thickness=0.008)
@@ -244,8 +311,15 @@ def _cell_text(shape, theme, text, size, colour, align, height, *, pad, accent, 
                bold=bold, accent=_rgb(accent))
 
 def picture(slide, theme: Theme, path, x, y, w, h, *, align="center",
-            valign="middle", frame=False):
-    """Fit an image inside a box, preserving aspect ratio. Never distorts."""
+            valign="middle", frame=False, alt=None, credit=None):
+    """Fit an image inside a box, preserving aspect ratio. Never distorts.
+
+    `alt` is the accessibility description and `credit` the provenance; both are
+    written to the shape's `descr`, so PowerPoint reads the one and a reader who opens
+    the file finds the other. A figure with neither is a `check` warning: an academic
+    deck that reproduces a figure owes its source a line, and a deck that is read on a
+    projector or by a screen reader owes it a description.
+    """
     path = Path(path)
     if not path.exists():
         raise DeckError(
@@ -267,6 +341,14 @@ def picture(slide, theme: Theme, path, x, y, w, h, *, align="center",
     pic = slide.shapes.add_picture(str(path), Inches(px), Inches(py),
                                    Inches(box_w), Inches(box_h))
     _flat(pic)
+    # Always written, empty when nothing was given: python-pptx may default `descr` to
+    # the filename, and `check` must be able to tell "described" from "not described".
+    descr = " | ".join(part for part in (alt, credit) if part)
+    nv = pic._element.find(qn("p:nvPicPr"))
+    if nv is not None:
+        c_nv = nv.find(qn("p:cNvPr"))
+        if c_nv is not None:
+            c_nv.set("descr", descr)
     if frame:
         pic.line.color.rgb = _rgb(theme.hex("hairline"))
         pic.line.width = Pt(0.75)

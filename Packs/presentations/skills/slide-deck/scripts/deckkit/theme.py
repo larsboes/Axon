@@ -63,13 +63,23 @@ DEFAULT_GRID = {
     "height": 7.5,
     "margin": 0.72,
     "title_y": 0.50,
+    "content_y": 0.92,   # where content starts on a slide that carries no title
     "line_h": 0.50,      # per title line
     "sub_h": 0.36,       # subtitle block
     "gap": 0.12,         # vertical breathing under the header rule
     "footer_y": 6.83,
     "body_bottom": 6.68,
     "accent_rule": 0.022,
-    "header_rule": 0.075,
+    "header_rule": 0.075,  # the short accent rule above a card title
+    #: The full-width rule under a slide heading. 0 draws none. A deck that carries
+    #: its assertion in a claim bar instead of a title wants no heading rule either,
+    #: because there is no heading for it to belong to.
+    "title_rule": 0.0,
+    #: Corner radius of every panel, in inches. 0 = square corners.
+    "corner_radius": 0.09,
+    #: 1 draws the optional background motif (`layout.flourish`). Off by default:
+    #: a motif is a per-deck decision, not a house rule.
+    "flourish": 0.0,
 }
 
 
@@ -189,6 +199,11 @@ class Theme:
 
     def metric(self, key: str) -> float:
         return self.grid[key]
+
+    @property
+    def corners(self) -> float:
+        """Panel corner radius in inches; 0 when the theme wants square corners."""
+        return self.grid.get("corner_radius", 0.0)
 
     @property
     def content_width(self) -> float:

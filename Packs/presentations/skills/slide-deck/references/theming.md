@@ -46,12 +46,13 @@ thesis whose figures share one plotting palette. Its provenance line says so.
     "emphasis_on_dark": "DBAF26",
     "muted_neutral": "F3F5F3", "hairline": "DDD6CF"
   },
-  "type": { "font": "Arial", "title": 24.0, "body": 13.0 }
+  "type": { "font": "Arial", "title": 24.0, "body": 13.0 },
+  "grid": { "title_rule": 0.0, "corner_radius": 0.09, "flourish": 1.0 }
 }
 ```
 
 Hex without `#`. Nine roles are required (`REQUIRED_ROLES` in `theme.py`); the three
-optional ones — `accent_mid`, `muted_neutral`, `hairline` — default to a sane
+optional ones, `accent_mid`, `muted_neutral`, `hairline`, default to a sane
 derivation if omitted. `type` and `grid` merge over the defaults, so a theme only
 states what it changes.
 
@@ -61,10 +62,10 @@ states what it changes.
 |---|---|---|
 | `ink` | near-black, slightly warm or cool to match the accent | pure `000000` is harsh at 24pt |
 | `accent` | the source palette's primary | must reach ~4.5:1 against white for the `small` size |
-| `accent_mid` | `accent` mixed 55% toward white | it carries footnotes — if it is unreadable, the deck looks grey |
+| `accent_mid` | `accent` mixed 55% toward white | it carries footnotes, if it is unreadable, the deck looks grey |
 | `accent_light` | `accent` mixed 90% toward white | must be distinguishable from white on a projector |
 | `secondary` | the source palette's second hue | needs the same contrast discipline as `accent` |
-| `caution` | a warm, muted tone | never a bright red — a limit is not an alarm |
+| `caution` | a warm, muted tone | never a bright red, a limit is not an alarm |
 | `emphasis_on_dark` | a light warm tone | it must read on a **filled** `accent`, not on white |
 | `hairline` | `ink` mixed 85% toward white | if visible from three metres it is too strong |
 
@@ -79,7 +80,7 @@ monitor the deck was built on. Rules that survive:
 
 - Body text and anything at `small` or below is `ink` on white, or white on `accent`.
   Nothing else. Coloured small text fails.
-- `accent_mid` is for footnotes and captions only — things that are allowed to be
+- `accent_mid` is for footnotes and captions only, things that are allowed to be
   hard to read.
 - A `caution` panel is `caution_light` with `ink` text. Never white on `caution_light`.
 - Test the palette at 40% brightness once. If the deck turns into grey rectangles,
@@ -87,7 +88,7 @@ monitor the deck was built on. Rules that survive:
 
 ## Type
 
-Set `font` to whatever the source figures use. If there are no figures, Arial — it is
+Set `font` to whatever the source figures use. If there are no figures, Arial, it is
 the lowest-common-denominator sans and renders identically everywhere, which matters
 more for a deck than character does.
 
@@ -106,7 +107,16 @@ Leave `grid` alone unless the deck is not 16:9. The numbers encode the relations
 between the badge height, the body floor and the footer, and changing one without the
 others puts every slide 0.15in out.
 
-The only grid value worth touching is `margin` (0.72), and only to make a deck feel
+Four values are meant to be set per deck:
+
+| key | default | what it does |
+|---|---|---|
+| `title_rule` | `0.0` | thickness of the full-width rule under a slide heading. `0` draws none and gives the claim-first shape. |
+| `corner_radius` | `0.09` | corner radius of panels, statement bars and KPI cards, in inches. `0` is square. Tables are always square. |
+| `flourish` | `0.0` | `1` draws the background motif (`layout.flourish`). Off by default, because a motif is a per-deck decision. |
+| `content_y` | `0.92` | where content starts on a slide that carries no title. |
+
+The third value worth touching is `margin` (0.72), and only to make a deck feel
 denser or more generous. If the margin changes, re-render: every column width is
 derived from it.
 
