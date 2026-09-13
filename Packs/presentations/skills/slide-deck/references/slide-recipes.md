@@ -64,10 +64,11 @@ The section divider carries **one line**: the claim that section will earn. Not 
 list of what is inside it. `deck.backup_divider()` is the same shape for the
 appendix, and signals clearly that the talk is over.
 
-The running list is **not framed by rules**. The active item carries a small accent
-bar and the ink colour, and that is the only state a reader has to see; full-width
-lines above and below a list of six words read as a table border and compete with
-the slide's claim bar.
+The running list is **not framed by rules**, and the active item is marked by the
+accent bar alone — the same weight and colour as the rest, so the only strong text on
+a divider stays the heading. Repeating the section name in bold turns the rail into a
+second title and the slide into a stutter. Full-width lines above and below a list of
+six words read as a table border and compete with whatever else the slide carries.
 
 ### `s.three_columns`: the default
 ```python

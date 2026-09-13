@@ -181,9 +181,10 @@ class Deck:
         that repeats its agenda costs the audience nothing and saves them the question
         of where they are.
 
-        The list is not framed by rules. The active item carries a small accent bar and
-        the ink colour, which is the only thing a reader needs; two full-width lines
-        around a list of six words read as a table border.
+        The list is not framed by rules, and the active item is marked by the accent bar
+        alone rather than by weight and colour. On a divider the section name is already
+        on the slide once, in the heading; repeating it in bold turns the rail into a
+        second title and the slide into a stutter. The bar says where the talk is.
         """
         theme = self.theme
         shape_slide = self._blank()
@@ -206,8 +207,7 @@ class Deck:
                        min(0.34, step - 0.16), fill=theme.hex("accent"))
             L.write(shape_slide, theme, rail_x, y, rail_w, min(0.42, step),
                     item, size=theme.size("subtitle") + 2,
-                    colour=theme.hex("ink") if on else theme.hex("accent_mid"),
-                    bold=on)
+                    colour=theme.hex("accent_mid"), bold=False)
             y += step
         if claim:
             L.write(shape_slide, theme, rail_x, y + 0.16, rail_w - 0.6, 0.6, claim,
