@@ -78,7 +78,7 @@ license = "MIT"
 # before this entry existed — 0.5.3 arrives through axum 0.7 and reqwest 0.13 — so the six
 # `dev-dependencies` that point here add an edge and no package.
 [workspace.dependencies]
-axum = "0.7"
+axum = "0.8"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 reqwest = "0.13"
 rusqlite = { version = "0.40", features = ["bundled"] }
