@@ -24,6 +24,13 @@ comparison of nine studies was conducted"* out loud.
 - **one** or **man**: avoid it. In a room with one answerable person, it reads as
   evasion.
 
+**The slide is not the script.** The first person belongs in what you say, not in what
+is written. A slide that reads *"Ich zeige an einem realen Enterprise-Fall …"* puts the
+speaker into the evidence, where a reader who arrives late or reads the deck afterwards
+cannot use it. Write the slide as *"Context Engineering ist als Designgegenstand
+evaluierbar"* and say the *ich* out loud. The same applies to the notes' instructions:
+they address no one personally, so the deck survives being handed to someone else.
+
 ## Tense
 
 | what | tense | example |
@@ -46,6 +53,21 @@ A count does not become more certain in the present tense.
   that*. `academic-narrative.md` section The bounding register covers the rule. Claim
   first, bound second, and cut the padding that pretends to be either.
 - Write numbers as numerals, and attach the n.
+
+### Two things that read as machine-written
+
+The em dash and the number cascade. Both are tells a reader notices without being able
+to name, and both were named by a reader of this deck.
+
+- **No em dash (`—`).** On a slide it becomes the strongest mark on the line and the
+  slide starts to look generated. Use a comma, a colon, or a full stop. An en dash
+  (`–`) is fine and is not the same character: it belongs in ranges (*0:40–1:35*,
+  *2–3*, *60 → 80*).
+- **No number cascade.** A pile of counts followed by an instruction reads as a
+  machine's summary: *"36 Bewertungen, Mittelwerte 3,75 / 3,83 / 3,50. Einzelitems
+  sind ordinal …"*. Give the number that carries the sentence, say what it means, and
+  put the rest in the notes. A trajectory (*0/3 → 1/3 → 1/3 → 6/6*) is not a cascade:
+  it is one fact per configuration, and the arrow carries the reading.
 
 ## German and English
 

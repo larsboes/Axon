@@ -268,28 +268,64 @@ class Deck:
             slide.notes(notes)
         return slide
 
-    def closing(self, *, kicker: str, verdict: str, thanks: str, meta: str = "",
+    def closing(self, *, kicker: str, verdict: str | list[str], thanks: str,
+                meta: str = "", answers: list[tuple[str, str]] | None = None,
                 notes: str = "") -> Slide:
+        """The last slide: the answer, in the shape of the question.
+
+        `answers` is [(label, outcome), ...] drawn as a row of panels above the
+        verdict. A talk whose research question has parts ends better with those
+        parts answered than with one paragraph that answers them implicitly: the
+        closing is where the room checks whether every part was addressed, and a
+        list answers that at a glance.
+
+        With `answers` the block sits higher and the verdict is set smaller, because
+        the panels are now the content and the verdict is its summary. Without it the
+        original, roomier geometry is kept, so an existing deck does not move.
+
+        `verdict` may be a list of paragraphs; a one-sentence answer and its bound are
+        two paragraphs, not one long one.
+        """
         theme = self.theme
         shape_slide = self._blank()
         x, w = theme.metric("margin"), theme.content_width
-        L.write(shape_slide, theme, x, 1.55, w, 0.6, kicker,
-                size=theme.size("statement") - 0.5, colour=theme.hex("accent_mid"),
-                bold=True)
-        L.rule(shape_slide, theme, x, 2.05, 2.6, thickness=0.045)
-        L.write(shape_slide, theme, x, 2.45, w - 0.5, 2.4, verdict,
-                size=theme.size("section") - 12, line_spacing=1.18)
-        L.write(shape_slide, theme, x, 4.86, w, 0.5, thanks,
+        verdict_text = " ".join(verdict) if isinstance(verdict, list) else verdict
+
+        if answers is None:
+            L.write(shape_slide, theme, x, 1.55, w, 0.6, kicker,
+                    size=theme.size("statement") - 0.5,
+                    colour=theme.hex("accent_mid"), bold=True)
+            L.rule(shape_slide, theme, x, 2.05, 2.6, thickness=0.045)
+            L.write(shape_slide, theme, x, 2.45, w - 0.5, 2.4, verdict,
+                    size=theme.size("section") - 12, line_spacing=1.18)
+            thanks_y, rule_y = 4.86, 5.62
+        else:
+            L.write(shape_slide, theme, x, 1.10, w, 0.6, kicker,
+                    size=theme.size("statement") - 0.5,
+                    colour=theme.hex("accent_mid"), bold=True)
+            L.rule(shape_slide, theme, x, 1.60, 2.6, thickness=0.045)
+            gap = 0.34
+            width = theme.span(len(answers), gap)
+            for index, (label, outcome) in enumerate(answers):
+                L.panel(shape_slide, theme, x + index * (width + gap), 1.95,
+                        width, 1.35, [f"**{label}**", outcome],
+                        voice="accent", size=theme.size("body") - 0.5,
+                        gap=5, pad=0.20, anchor=MSO_ANCHOR.MIDDLE)
+            L.write(shape_slide, theme, x, 3.60, w - 0.5, 1.55, verdict,
+                    size=theme.size("section") - 18, line_spacing=1.15)
+            thanks_y, rule_y = 5.45, 5.95
+
+        L.write(shape_slide, theme, x, thanks_y, w, 0.5, thanks,
                 size=theme.size("subtitle"), colour=theme.hex("accent"), bold=True)
-        L.rule(shape_slide, theme, x, 5.62, w, colour=theme.hex("hairline"),
+        L.rule(shape_slide, theme, x, rule_y, w, colour=theme.hex("hairline"),
                thickness=0.012)
         if meta:
-            L.write(shape_slide, theme, x, 5.80, 7.0, 0.3, meta,
+            L.write(shape_slide, theme, x, rule_y + 0.18, 7.0, 0.3, meta,
                     size=theme.size("small"), colour=theme.hex("accent_mid"))
-        slide = self._slide(shape_slide, 2.45)
+        slide = self._slide(shape_slide, 2.45 if answers is None else 1.95)
         slide.title = kicker
         slide.kind = "closing"
-        slide.claims.append(plain_text(verdict))
+        slide.claims.append(plain_text(verdict_text))
         slide._footer()
         if notes:
             slide.notes(notes)
