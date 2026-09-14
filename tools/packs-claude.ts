@@ -30,18 +30,23 @@
 //   tools/packs-claude adopt <pack>...
 //   tools/packs-claude sync <pack>|--all
 //   tools/packs-claude remove <pack>...
+//   tools/packs-claude use [<profile>]
 
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
+  activateProfile,
   adoptPack,
   availablePacks,
   deployPack,
   getStatuses,
   printStatuses,
+  readProfiles,
   readState,
   removePack,
   syncPack,
   type DeployConfig,
+  type Profile,
 } from "./lib/pack-deploy.ts";
 
 const AXON_ROOT = resolve(import.meta.dir, "..");
@@ -52,6 +57,7 @@ const HELP = `tools/packs-claude — materialize Axon Packs into Claude Code.
   tools/packs-claude adopt <pack>...        take ownership of identical copies already in place
   tools/packs-claude sync <pack>|--all      update already-deployed Packs
   tools/packs-claude remove <pack>...       remove one or more owned Packs
+  tools/packs-claude use [<profile>]        activate a profile (or list them interactively)
 
 Environment:
   CLAUDE_SKILLS_DIR       skill destination (default: $HOME/.claude/skills)
@@ -59,11 +65,29 @@ Environment:
   AXON_CLAUDE_STATE_FILE  ownership ledger override (mainly for tests)
 `;
 
+function expandHome(path: string): string {
+  return path === "~" ? (process.env.HOME ?? "") : path.startsWith("~/") ? join(process.env.HOME ?? "", path.slice(2)) : path;
+}
+
+function overlayRoot(): string | null {
+  if (process.env.AXON_OVERLAY_ROOT) return expandHome(process.env.AXON_OVERLAY_ROOT);
+  for (const file of [join(AXON_ROOT, "axon.local.toml"), join(AXON_ROOT, "axon.toml")]) {
+    if (!existsSync(file)) continue;
+    const overlay = (Bun.TOML.parse(readFileSync(file, "utf8")) as Record<string, unknown>).overlay;
+    if (typeof overlay === "string" && overlay) return expandHome(overlay);
+  }
+  return null;
+}
+
 export function defaultClaudeDeployConfig(): DeployConfig {
   const home = process.env.HOME ?? "";
   const stateHome = process.env.XDG_STATE_HOME ?? join(home, ".local", "state");
+  const roots = [resolve(import.meta.dir, "..", "Packs")];
+  const overlay = overlayRoot();
+  if (overlay && existsSync(join(overlay, "Packs"))) roots.push(join(overlay, "Packs"));
   return {
     axonRoot: AXON_ROOT,
+    packRoots: roots,
     destination: resolve(process.env.CLAUDE_SKILLS_DIR ?? join(home, ".claude", "skills")),
     stateFile: resolve(
       process.env.AXON_CLAUDE_STATE_FILE ?? join(stateHome, "axon", "pack-deployments", "claude.json"),
@@ -108,6 +132,21 @@ function main(): void {
           for (const line of adoptPack(config, pack)) console.log(`  ${line}`);
         }
         break;
+      case "use": {
+        const profileName = args[0];
+        if (profileName) {
+          const profiles = readProfiles(config);
+          const profile = profiles.find((p: Profile) => p.name === profileName);
+          if (!profile) throw new Error(`no such profile: '${profileName}'`);
+          for (const line of activateProfile(config, profile)) console.log(line);
+        } else {
+          const profiles = readProfiles(config);
+          if (!profiles.length) throw new Error("no profiles in profiles.toml");
+          console.log("Profiles:");
+          for (const p of profiles) console.log(`  ${p.name.padEnd(12)} ${p.description}`);
+        }
+        break;
+      }
       case "sync": {
         const target = args[0];
         if (!target) throw new Error("usage: tools/packs-claude sync <pack>|--all");

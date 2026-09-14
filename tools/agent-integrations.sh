@@ -36,18 +36,22 @@
 #
 # ## Adding an upstream
 #
-# Add a row to INTEGRATIONS below. Never write a version here, and never write one into
-# upstreams.toml either: an upstream's integration is consumed at its latest release
-# (Q77, README.md#patch-first).
+# Add a row to INTEGRATIONS below, a family of <id>_* functions, and a case arm in
+# integration_detect / integration_install / integration_install_command /
+# integration_write_marker / integration_harnesses / integration_description.
+# Never edit another upstream's functions to add yours (C15, 2026-09-11). Never write a
+# version here, and never write one into upstreams.toml either: an upstream's integration
+# is consumed at its latest release (Q77, README.md#patch-first).
 #
 # Usage:
-#   tools/agent-integrations.sh list                 what is available, and where
-#   tools/agent-integrations.sh status               what is installed on this machine
-#   tools/agent-integrations.sh status --json         machine-readable status for tooling
-#   tools/agent-integrations.sh status --machine       key/value-ish status, one line per harness
-#   tools/agent-integrations.sh install <harness>... e.g. install opencode claude
-#   tools/agent-integrations.sh install --all-configured every harness with a config dir
-#   graphify detection states: runnable / configured / stale / integrated
+#   tools/agent-integrations.sh list                              what is available, and where
+#   tools/agent-integrations.sh status                            what is installed on this machine
+#   tools/agent-integrations.sh status --json                     machine-readable status for tooling
+#   tools/agent-integrations.sh status --machine                  key/value-ish status, one line per harness
+#   tools/agent-integrations.sh install [<upstream>] <harness>... e.g. install interceptor claude
+#   tools/agent-integrations.sh install --all-configured          every configured harness x every upstream
+#   tools/agent-integrations.sh update [<upstream>...]            each upstream's native update tooling
+#   integration detection states: missing / runnable / configured / stale / integrated
 #
 # Exit 0 = done / nothing to do, 1 = usage or a missing prerequisite.
 
@@ -59,6 +63,15 @@ _ai_lib="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/lib" && pwd)"
 source "$_ai_lib/paths.sh"
 # toml.sh is no longer sourced here. It existed to read `pin` out of upstreams.toml, and that
 # field is deleted (Q77, 2026-09-02) -- this script reads no manifest at all now.
+
+# The table C15 promised: every upstream this tool can install, status and update.
+# graphify was the first (and, until 2026-09-11, the only) consumer; interceptor is
+# row 2 — driven through its own install/update tooling, never vendored into Packs/
+# (upstreams.toml verdicts). asd-ste100 was row 3 until 2026-09-11, when its flip
+# condition fired and it migrated into the overlay Pack asd-ste100 (upstreams.toml
+# [asd-ste100-skill] now says verdict=overlay) — a Pack is managed by packs-claude,
+# not by this script.
+INTEGRATIONS="graphify interceptor"
 
 # Harnesses Axon knows how to detect, and where each keeps its global config.
 # graphify's --platform vocabulary is much longer; these are the ones Axon has an
@@ -80,6 +93,20 @@ harness_config_dir() {
     opencode) echo "${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}" ;;
     codex)    echo "$HOME/.codex" ;;
     pi)       echo "$HOME/.pi" ;;
+    *)        echo "" ;;
+  esac
+}
+
+# Where each harness keeps its SKILLS, distinct from its config dir. graphify's own
+# installer writes into the global skill root, which for pi is ~/.pi/agent/skills —
+# NOT ~/.pi/skills. Reading the config dir here is what made pi report skill=no while
+# the skill was present (C19, 2026-09-11).
+harness_skill_root() {
+  case "$1" in
+    pi)       echo "$HOME/.pi/agent/skills" ;;
+    claude)   echo "$HOME/.claude/skills" ;;
+    opencode) echo "${OPENCODE_CONFIG_DIR:-$HOME/.config/opencode}/skills" ;;
+    codex)    echo "$HOME/.codex/skills" ;;
     *)        echo "" ;;
   esac
 }
@@ -226,10 +253,10 @@ graphify_detect() {  # graphify_detect <harness> -> pipe-delimited row
     fi
 
     if [ "$harness" = "opencode" ]; then
-      [ -d "$dir/skills/graphify" ] && skill="yes"
+      [ -d "$(harness_skill_root "$harness")/graphify" ] && skill="yes"
       [ -f "$dir/plugins/graphify.js" ] && plugin="yes" || plugin="no"
     else
-      [ -d "$dir/skills/graphify" ] && skill="yes"
+      [ -d "$(harness_skill_root "$harness")/graphify" ] && skill="yes"
       plugin="n/a"
     fi
 
@@ -300,15 +327,23 @@ cmd_status() { # cmd_status [json|machine]
   local first="1"
 
   if [ "$output" = "json" ]; then
-    printf '{ "upstream": "graphify", "harnesses": ['
-  elif [ "$output" = "machine" ]; then
-    :
-  else
-    echo "graphify (latest on every install — upstreams.toml records no version):"
+    printf '{"integrations": ['
   fi
-
-  for h in $HARNESSES; do
-    row="$(graphify_detect "$h")"
+  local u first_upstream="1"
+  for u in $INTEGRATIONS; do
+    if [ "$output" = "json" ]; then
+      [ "$first_upstream" = "0" ] && printf ','
+      first_upstream="0"
+      printf '{ "upstream": "%s", "harnesses": [' "$u"
+      first="1"   # per-upstream row comma flag — each array starts bare
+    elif [ "$output" = "machine" ]; then
+      :
+    else
+      echo "$(integration_description "$u") (${u}; installed at latest — never a recorded version, Q77):"
+    fi
+    local h
+    for h in $(integration_harnesses "$u"); do
+      row="$(integration_detect "$u" "$h")"
     IFS='|' read -r harness state dir_present command runnable command_present configured integration_ready stale graph_state dir skill plugin command_version install_command <<<"$row"
     if [ "$output" = "json" ]; then
       if [ "$first" = "0" ]; then
@@ -342,11 +377,129 @@ cmd_status() { # cmd_status [json|machine]
       printf '  %-9s state=%-11s skill=%-4s plugin=%-4s %s\n' \
         "$h" "$state" "$skill" "$plugin" "$dir"
     fi
+    done
+    if [ "$output" = "json" ]; then
+      printf ' ] }'
+    fi
   done
-
   if [ "$output" = "json" ]; then
-    printf ' ] }'
+    printf '] }'
   fi
+}
+
+# ── interceptor ────────────────────────────────────────────────────────────
+# A product (not a uv/npm tool): CLI at /usr/local/bin/interceptor, product root at
+# /Library/Application Support/Interceptor. It OWNS five skills, which its own `skills`
+# verb symlinks into Claude Code / Codex / ~/.agents (upstreams.toml [interceptor]: never
+# vendor them into Packs/). Version comes from the CLI at status time — the row in
+# upstreams.toml is asked of the runtime, never held (Q77, C18). Native update: `update`.
+
+interceptor_product_dir() {
+  [ -d "/Library/Application Support/Interceptor/skills" ] && echo "/Library/Application Support/Interceptor"
+}
+
+interceptor_skill_names() {
+  local root
+  root="$(interceptor_product_dir)"
+  [ -z "$root" ] && return 0
+  ls "$root/skills" 2>/dev/null
+}
+
+# interceptor adopts into Claude Code and Codex (~/.agents); those are its rows here.
+interceptor_harness_dir() {  # <harness>
+  case "$1" in
+    claude) echo "$HOME/.claude" ;;
+    codex)  echo "$HOME/.agents" ;;
+    *)      echo "" ;;
+  esac
+}
+
+interceptor_detect() {  # <harness> -> the shared 15-field row
+  local harness="$1" dir root total n name link runnable state configured skill
+  local marker marker_present command_version install_command
+  dir="$(interceptor_harness_dir "$harness")"
+  [ -n "$dir" ] || { printf '%s|missing|no|interceptor|no|no|no|no|no|n/a||no|n/a|unknown|interceptor skills\n' "$harness"; return 0; }
+  root="$(interceptor_product_dir)"
+  runnable="no"; command_version="unknown"
+  if command -v interceptor >/dev/null 2>&1; then
+    runnable="yes"
+    command_version="$(interceptor --version 2>/dev/null | head -n 1 | tr -d '\r\n')"
+  fi
+  skill="no"; n=0; total="$(interceptor_skill_names | wc -l | tr -d ' ')"
+  [ -n "$root" ] && [ "$total" -gt 0 ] && {
+    for name in $(interceptor_skill_names); do
+      local link="$dir/skills/$name"
+      [ -L "$link" ] && [ "$(readlink "$link")" = "$root/skills/$name" ] && n=$((n + 1))
+    done
+    [ "$n" -eq "$total" ] && skill="yes"
+  }
+  configured="no"; [ "$skill" = "yes" ] && configured="yes"
+  marker="$dir/.interceptor-skills-axoned"
+  marker_present="no"
+  [ -s "$marker" ] && marker_present="yes"
+  state="missing"
+  if [ "$runnable" = "yes" ] && [ "$configured" = "yes" ] && [ "$marker_present" = "yes" ]; then
+    state="integrated"
+  elif [ "$configured" = "yes" ]; then
+    state="stale"
+  elif [ "$runnable" = "yes" ]; then
+    state="runnable"
+  fi
+  install_command="interceptor skills"
+  printf '%s|%s|yes|interceptor|%s|%s|%s|%s|%s|n/a|%s|%s|n/a|%s|%s\n' \
+    "$harness" "$state" "$runnable" "$runnable" "$configured" "$skill" "$([ "$state" = "stale" ] && echo yes || echo no)" \
+    "$dir" "$skill" "$command_version" "$install_command"
+}
+
+interceptor_install() {  # <harness> — the product re-adopts its own skills
+  command -v interceptor >/dev/null 2>&1 || { echo "✗ interceptor CLI not found — install the product first" >&2; return 1; }
+  interceptor skills
+}
+
+interceptor_write_marker() {  # <harness>
+  local dir
+  dir="$(interceptor_harness_dir "$1")"
+  [ -n "$dir" ] && [ -d "$dir" ] && date -u +%Y-%m-%d > "$dir/.interceptor-skills-axoned"
+}
+
+# ── the table (C15) ────────────────────────────────────────────────────────
+# One row per upstream: which harnesses it ships for, what a status line looks like,
+# how it installs and how it is updated. Adding an upstream = one row here, its own
+# <id>_* functions, and case arms below — never edits inside another upstream's logic.
+
+integration_harnesses() {
+  case "$1" in
+    graphify)   echo "$HARNESSES" ;;
+    interceptor) echo "claude codex" ;;
+  esac
+}
+
+integration_description() {
+  case "$1" in
+    graphify)    echo "code-dependency graph; ships its own skill/plugin installer" ;;
+    interceptor) echo "browser/macOS control product; owns five skills via its own installer" ;;
+  esac
+}
+
+integration_detect() {  # <upstream> <harness> -> the shared 15-field row
+  case "$1" in
+    graphify)    graphify_detect "$2" ;;
+    interceptor) interceptor_detect "$2" ;;
+  esac
+}
+
+integration_install() {  # <upstream> <harness>
+  case "$1" in
+    graphify)    graphify_install "$2" ;;
+    interceptor) interceptor_install "$2" ;;
+  esac
+}
+
+integration_write_marker() {  # <upstream> <harness>
+  case "$1" in
+    graphify)    graphify_write_marker "$2" ;;
+    interceptor) interceptor_write_marker "$2" ;;
+  esac
 }
 
 # ── dispatch ────────────────────────────────────────────────────────────────
@@ -369,40 +522,89 @@ configured_harnesses() {
 cmd_list() {
   echo "Agent-harness integrations shipped by adopted upstreams:"
   echo
-  printf '  %-10s harnesses: %s\n' "graphify" "$HARNESSES"
+  local u
+  for u in $INTEGRATIONS; do
+    printf '  %-12s %-58s harnesses: %s\n' "$u" "$(integration_description "$u")" "$(integration_harnesses "$u")"
+  done
   echo
   echo "Installed at upstream's latest, never a recorded version (Q77)."
+  echo "Update: tools/agent-integrations.sh update [<upstream>...] — each upstream's own updater."
   echo "Configured on this machine: $(configured_harnesses | tr '\n' ' ')"
 }
 
 cmd_install() {
-  local targets=""
-  if [ "${1:-}" = "--all-configured" ] || [ "${1:-}" = "--all-detected" ]; then
+  local upstream="graphify" targets=""
+  if [ "${1:-}" = "--all-configured" ] || [ "${1:-}" = "--all-detected" ] || [ "${1:-}" = "--all" ]; then
     targets="$(configured_harnesses)"
     [ -n "$targets" ] || { echo "No known harness config dirs found — nothing to do."; return 0; }
-  else
-    targets="$*"
+    local u
+    for u in $INTEGRATIONS; do
+      _install_one_upstream "$u" "$targets"
+    done
+    echo
+    echo "Restart the harness to pick up new plugins (most load them once at startup)."
+    return 0
   fi
-  [ -n "$targets" ] || { echo "usage: agent-integrations.sh install <harness>... | --all-configured" >&2; exit 1; }
+  # An explicit upstream may prefix the harness list: install interceptor claude.
+  case " $INTEGRATIONS " in
+    *" ${1:-} "*) upstream="$1"; shift ;;
+  esac
+  targets="$*"
+  [ -n "$targets" ] || { echo "usage: agent-integrations.sh install [<upstream>] <harness>... | --all-configured" >&2; exit 1; }
+  _install_one_upstream "$upstream" "$targets"
+  echo
+  echo "Restart the harness to pick up new plugins (most load them once at startup)."
+}
 
-  local h
+_install_one_upstream() {  # <upstream> <harness>...
+  local upstream="$1"; shift
+  local targets="$*" h
   for h in $targets; do
     if [ -z "$(harness_config_dir "$h")" ]; then
       echo "✗ unknown harness '$h' (known: $HARNESSES)" >&2
       exit 1
     fi
-    echo "graphify -> $h"
-    graphify_install "$h"
-    graphify_write_marker "$h"
+    echo "$upstream -> $h"
+    integration_install "$upstream" "$h"
+    integration_write_marker "$upstream" "$h"
   done
-  echo
-  echo "Restart the harness to pick up new plugins (most load them once at startup)."
+}
+
+# C17: update checking lives HERE — a networked verb that calls each upstream's own
+# updater — and deliberately not in doctor, which stayed offline by PRD Q41's ruling.
+cmd_update() {  # update [<upstream>...]
+  local list="${1:-$INTEGRATIONS}" u
+  for u in $list; do
+    case " $INTEGRATIONS " in
+      *" $u "*) ;;
+      *) echo "✗ unknown upstream '$u' (known: $INTEGRATIONS)" >&2; exit 1 ;;
+    esac
+    echo "── $u"
+    case "$u" in
+      graphify)
+        local h
+        for h in $(configured_harnesses); do
+          echo "  $h: re-deriving graphify integration from upstream's installer"
+          graphify_install "$h" && graphify_write_marker "$h"
+        done
+        ;;
+      interceptor)
+        # the product's own updater, then re-adopt its skills for the harnesses
+        if command -v interceptor >/dev/null 2>&1; then
+          interceptor upgrade && interceptor skills
+        else
+          echo "  interceptor CLI not found — install the product first (its own installer)" >&2
+        fi
+        ;;
+    esac
+  done
 }
 
 case "${1:-list}" in
   list|--list)     cmd_list ;;
   status|--status) shift; cmd_status "${1#--}" ;;
   install)         shift; cmd_install "$@" ;;
+  update)          shift; cmd_update "$@" ;;
   -h|--help|help)  sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) echo "agent-integrations.sh: unknown command '$1' (try: list|status|install|-h)" >&2; exit 1 ;;
+  *) echo "agent-integrations.sh: unknown command '$1' (try: list|status|install|update|-h)" >&2; exit 1 ;;
 esac

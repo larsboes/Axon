@@ -1,0 +1,9 @@
+{
+  "name": "travel",
+  "description": "Travel planning across Axon's capabilities — feasible days from calendar, journey and fare search in transit, measured delay history from punctuality, event discovery from scouting, and itinerary state in trips.",
+  "author": {
+    "name": "Lars Boes",
+    "url": "https://github.com/larsboes/Axon"
+  },
+  "license": "MIT"
+}

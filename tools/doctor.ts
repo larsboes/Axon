@@ -29,8 +29,8 @@ import { basename, resolve, join, relative } from "node:path";
 // Only the --online reachability probe uses this, to tell a dead hostname from a stopped service.
 // The offline doctor path never calls it, so the report stays network-free where it must be.
 import { lookup as dnsLookup } from "node:dns/promises";
-import { defaultCodexDeployConfig, getStatuses } from "./packs-codex.ts";
-import { defaultClaudeDeployConfig } from "./packs-claude.ts";
+import { HARNESSES, harnessById, isInstalled, type Harness } from "./lib/harness-registry.ts";
+import { statusesFor } from "./harnesses.ts";
 import { resolveMachineToml, resolveOverlayRoot } from "./lib/overlay.ts";
 import { releaseTagGlob } from "./lib/release.ts";
 
@@ -906,6 +906,128 @@ type CheckContext = {
 // order of the report.
 type Check = { name: string; run(ctx: CheckContext): void | Promise<void> };
 
+/**
+ * Packs sections generated from the harness registry rather than hardcoded: one
+ * section per INSTALLED harness, plus one consolidated warning per absent harness
+ * that still holds deployed units. The registry decides what counts (isInstalled),
+ * because "which harnesses are here" is the question a health report must not
+ * answer from a stale list — the 2026-09-07 scar: three Packs sat for an uninstalled
+ * Codex while the installed pi got zero rows at all.
+ */
+function packStatusSections(): Check[] {
+  const home = process.env.HOME ?? "";
+  const hints: Record<string, { deploy: (pack: string) => string; sync: (pack: string) => string }> = {
+    claude: {
+      deploy: (pack) => `tools/packs.sh link ${pack}`,
+      sync: (pack) => `tools/packs-claude sync ${pack}`,
+    },
+    codex: {
+      deploy: (pack) => `tools/packs-codex deploy ${pack}`,
+      sync: (pack) => `tools/packs-codex sync ${pack}`,
+    },
+    opencode: {
+      deploy: (pack) => `tools/packs-opencode deploy ${pack}`,
+      sync: (pack) => `tools/packs-opencode sync ${pack}`,
+    },
+    pi: {
+      deploy: (pack) => `tools/packs-pi deploy ${pack}`,
+      sync: (pack) => `tools/packs-pi sync ${pack}`,
+    },
+  };
+
+  const sections: Check[] = [];
+  for (const harness of HARNESSES) {
+    if (!isInstalled(harness)) continue;
+    sections.push({
+      name: `Packs (${harness.label} deployed)`,
+      run(ctx) {
+        try {
+          const rows = statusesFor(harness);
+          if (rows.length === 0) {
+            ctx.warn("no Packs/*/pack.toml found");
+            return;
+          }
+          const commands = hints[harness.id];
+          const unselected: string[] = [];
+          for (const row of rows) {
+            const label = `${row.pack}/${row.skill}`;
+            const detail = row.detail ? ` — ${row.detail}` : "";
+            switch (row.status) {
+              case "current":
+                ctx.ok(`${label} current`);
+                break;
+              case "not-deployed":
+                // Registry selection (pi) is partial by design — profiles decide what
+                // loads. A warning per unselected Pack would be the noise this section
+                // exists to end; accumulate and summarize once instead.
+                if (harness.model === "registry") unselected.push(row.pack);
+                else ctx.warn(`${label} not deployed (${commands.deploy(row.pack)})`);
+                break;
+              case "discovered":
+                ctx.ok(`${label} loaded by pi via discovery, not the ledger${detail}`);
+                break;
+              case "outdated":
+                ctx.warn(`${label} outdated (${commands.sync(row.pack)})${detail}`);
+                break;
+              case "drifted":
+                ctx.bad(`${label} has destination-side changes; sync/remove will refuse`);
+                break;
+              case "migration-required":
+                ctx.warn(
+                  `${label} needs generated-artifact ledger migration${harness.id === "codex" ? ` (tools/packs-codex migrate-generated ${row.pack} --accept-current)` : ""}${detail}`,
+                );
+                break;
+              case "missing":
+                ctx.bad(`${label} is ledger-owned but missing${detail}`);
+                break;
+              case "collision":
+                ctx.bad(
+                  `${label} destination is occupied by an unowned skill${harness.id === "claude" ? ` (tools/packs-claude adopt ${row.pack} if it is identical)` : ""}`,
+                );
+                break;
+              case "invalid":
+                ctx.bad(`${label} invalid${detail}`);
+                break;
+            }
+          }
+          if (harness.model === "registry" && unselected.length) {
+            const packs = [...new Set(unselected)].sort();
+            ctx.ok(`${packs.length} Pack(s) not selected for pi: ${packs.join(", ")} (selection is the design — profiles decide)`);
+          }
+        } catch (error) {
+          ctx.bad(`${harness.label} Pack state unreadable: ${(error as Error).message}`);
+        }
+      },
+    });
+  }
+
+  // Absent harnesses still holding deployed units: one warning line instead of a
+  // section — and when that destination is also a discovery root of an installed
+  // harness (pi reads ~/.agents/skills), the units are NOT inert: say who reads them.
+  for (const harness of HARNESSES) {
+    if (isInstalled(harness) || harness.model !== "materialized") continue;
+    const deployed = statusesFor(harness).filter((row) => row.status !== "not-deployed");
+    if (!deployed.length) continue;
+    const packs = [...new Set(deployed.map((row) => row.pack))].sort();
+    const piReads = isInstalled(harnessById("pi")) && harness.config().destination === join(home, ".agents", "skills");
+    sections.push({
+      name: `Packs (${harness.label} NOT installed)`,
+      run(ctx) {
+        const base = `${deployed.length} units from ${packs.length} Pack(s) sit at ${harness.config().destination} for a ${harness.label} that is not installed`;
+        if (piReads) {
+          ctx.warn(
+            `${base} — pi IS installed and discovers that directory, so pi is loading these right now. ` +
+              `Keep them in pi (tools/packs-pi deploy ${packs.join(" ")}) before removing; otherwise they leave both harnesses.`,
+          );
+        } else {
+          ctx.warn(`${base}; nothing reads them. Remove: ${harness.cli} remove ${packs.join(" ")}`);
+        }
+      },
+    });
+  }
+  return sections;
+}
+
 const CHECKS: Check[] = [
   // overlay location. axon.local.toml (gitignored, per-machine) wins; the tracked
   // axon.toml carries only a shipped default, which is what keeps the repo gates
@@ -1121,15 +1243,17 @@ const CHECKS: Check[] = [
       }
 
       let payload: {
-        upstream?: string;
-      harnesses?: Array<{
-          name?: string;
-          state?: "runnable" | "configured" | "integrated" | "stale" | string;
-          command?: string;
-          command_version?: string;
-          graph_state?: string;
-          install_command?: string;
-          config_dir?: string;
+        integrations?: Array<{
+          upstream?: string;
+          harnesses?: Array<{
+            name?: string;
+            state?: "runnable" | "configured" | "integrated" | "stale" | string;
+            command?: string;
+            command_version?: string;
+            graph_state?: string;
+            install_command?: string;
+            config_dir?: string;
+          }>;
         }>;
       };
 
@@ -1140,7 +1264,12 @@ const CHECKS: Check[] = [
         return;
       }
 
-      const harnesses = Array.isArray(payload?.harnesses) ? payload.harnesses : [];
+      // Flatten the per-upstream envelope; each row keeps its upstream so the hints
+      // below can say which installer owns it (graphify-specific advice stays
+      // graphify-shaped — integration rows are not all graphify since 2026-09-11).
+      const harnesses = (payload?.integrations ?? [])
+        .flatMap((i) => (i.harnesses ?? []).map((h) => ({ upstream: h.upstream ?? i.upstream ?? "unknown", ...h })))
+        .filter((h) => h.name);
       if (harnesses.length === 0) {
         ctx.warn("no assistant integration rows reported");
         return;
@@ -1148,18 +1277,19 @@ const CHECKS: Check[] = [
 
       for (const item of harnesses) {
         const name = item.name || "unknown";
+        const upstream = item.upstream || "graphify";
         const state = item.state || "unknown";
-        const installCommand = (item.install_command || `tools/agent-integrations.sh install ${name}`).trim();
+        const installCommand = (item.install_command || `tools/agent-integrations.sh install ${upstream} ${name}`).trim();
         const location = item.config_dir ? ` (${item.config_dir})` : "";
         const graphState = item.graph_state || "unknown";
         const command = item.command || "unknown";
         const commandVersion = item.command_version ? ` (${item.command_version})` : "";
         const stateSuffix = `graph=${graphState}; command=${command}${commandVersion}`;
         if (state === "integrated") {
-          if (graphState === "present") {
-            ctx.ok(`${name}: ${state}${location}; ${stateSuffix}`);
-          } else {
+          if (upstream === "graphify" && graphState !== "present") {
             ctx.warn(`${name}: ${state}${location}; ${stateSuffix}; check graph with tools/graphify.sh`);
+          } else {
+            ctx.ok(`${name}: ${state}${location}; ${stateSuffix}`);
           }
         } else if (state === "runnable") {
           ctx.warn(`${name}: ${state}${location}; ${stateSuffix}; install with: ${installCommand}`);
@@ -2367,108 +2497,14 @@ const CHECKS: Check[] = [
   // Packs — Claude Code deployment state.
   //
   // This used to assert that every destination was a SYMLINK into Packs/. It stopped being
-  // true on 2026-08-09, when deployment changed to copy-with-a-ledger (principal: "we should
-  // only deploy from axon overlays never using symlinks"), and the check was not updated. The
-  // result was eight hard failures reading "occupied by a non-symlink" against skills that
-  // packs-claude reported as `current` — doctor calling correct state broken, which is worse
-  // than not checking at all, because it trains you to ignore the report.
-  //
-  // It now reads the same ledger the deployer writes, exactly as the Codex section below does.
-  // One source of truth, and it cannot drift from the tool again.
-  {
-    name: "Packs (Claude Code materialized)",
-    run(ctx) {
-      try {
-        const rows = getStatuses(defaultClaudeDeployConfig());
-        if (rows.length === 0) {
-          ctx.warn("no Packs/*/pack.toml found");
-          return;
-        }
-        for (const row of rows) {
-          const label = `${row.pack}/${row.skill}`;
-          const detail = row.detail ? ` — ${row.detail}` : "";
-          switch (row.status) {
-            case "current":
-              ctx.ok(`${label} current`);
-              break;
-            case "not-deployed":
-              ctx.warn(`${label} not deployed (tools/packs.sh link ${row.pack})`);
-              break;
-            case "outdated":
-              ctx.warn(`${label} outdated (tools/packs-claude sync ${row.pack})${detail}`);
-              break;
-            case "drifted":
-              ctx.bad(`${label} has destination-side changes; sync/remove will refuse`);
-              break;
-            case "migration-required":
-              ctx.warn(`${label} needs generated-artifact ledger migration${detail}`);
-              break;
-            case "missing":
-              ctx.bad(`${label} is ledger-owned but missing from the Claude skill root`);
-              break;
-            case "collision":
-              ctx.bad(`${label} destination is occupied by an unowned skill (tools/packs-claude adopt ${row.pack} if it is identical)`);
-              break;
-            case "invalid":
-              ctx.bad(`${label} invalid${detail}`);
-              break;
-          }
-        }
-      } catch (error) {
-        ctx.bad(`Claude Pack state unreadable: ${(error as Error).message}`);
-      }
-    },
-  },
-
-  // Codex copies are owned through packs-codex's ledger; getStatuses is the
-  // shared read-only source of truth for current/outdated/drift/collision state.
-  {
-    name: "Packs (Codex materialized)",
-    run(ctx) {
-      try {
-        const rows = getStatuses(defaultCodexDeployConfig());
-        if (rows.length === 0) {
-          ctx.warn("no Packs/*/pack.toml found");
-        } else {
-          for (const row of rows) {
-            const label = `${row.pack}/${row.skill}`;
-            const detail = row.detail ? ` — ${row.detail}` : "";
-            switch (row.status) {
-              case "current":
-                ctx.ok(`${label} current`);
-                break;
-              case "not-deployed":
-                ctx.warn(`${label} not deployed (tools/packs-codex deploy ${row.pack})`);
-                break;
-              case "outdated":
-                ctx.warn(`${label} outdated (tools/packs-codex sync ${row.pack})${detail}`);
-                break;
-              case "drifted":
-                ctx.bad(`${label} has destination-side changes; sync/remove will refuse`);
-                break;
-              case "migration-required":
-                ctx.warn(
-                  `${label} needs generated-artifact ledger migration ` +
-                    `(tools/packs-codex migrate-generated ${row.pack} --accept-current)${detail}`,
-                );
-                break;
-              case "missing":
-                ctx.bad(`${label} is ledger-owned but missing from the Codex skill root`);
-                break;
-              case "collision":
-                ctx.bad(`${label} destination is occupied by an unowned skill`);
-                break;
-              case "invalid":
-                ctx.bad(`${label} invalid${detail}`);
-                break;
-            }
-          }
-        }
-      } catch (error) {
-        ctx.bad(`Codex Pack state unreadable: ${(error as Error).message}`);
-      }
-    },
-  },
+  // Packs sections used to be two hardcoded entries here — Claude, then Codex — so an
+  // absent harness got ~30 warnings for a directory nothing read, and pi got zero rows.
+  // The registry (tools/lib/harness-registry.ts) was written for exactly that and doctor
+  // was the one consumer that never adopted it; 2026-09-09 it did. Lesson that predates
+  // it, preserved: deployment checks read the same ledger the deployer writes, never a
+  // symlink test — eight "occupied by a non-symlink" hard failures on correct state
+  // (2026-08-09) are the scar that earns that rule.
+  ...packStatusSections(),
 
   // Decision freshness — do the entries still describe this tree? See
   // findDecisionPathRot above for why this is here and not a repo gate.

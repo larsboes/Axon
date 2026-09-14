@@ -30,6 +30,13 @@ axon pack deploy claude travel
 axon pack deploy codex travel
 ```
 
+## Deployment status
+
+Not deployed to any harness as of 2026-09-10 — recorded, not a build decision: the capability
+chain it drives (calendar / transit / punctuality / scouting / trips) is present in this
+machine's registry, so the Pack is deployable where its capabilities run. It awaits the Phase 2
+profile decision; travel is a profile member candidate.
+
 ## Ownership boundary
 
 Axon owns the workflow. The active overlay owns every value that makes it personal: home and

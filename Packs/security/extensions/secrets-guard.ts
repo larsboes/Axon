@@ -17,6 +17,8 @@
  *   bash  — cat/grep/head/tail/less/more/nl/wc/type on those file patterns
  *         — bw get, bw list, bw sync (reading secrets from Bitwarden)
  *         — echo $SECRET_VAR (echoing env vars that match known secret names)
+ *         — env, env | …, env > f (dumping the whole environment; the word
+ *           "env" in `process.env.X`, `env_file:` or `environment:` is not that)
  *
  *   edit  — any edit targeting a path matching *.env, *.secrets, etc.
  *
@@ -87,7 +89,13 @@ const SECRET_BASH_PATTERNS: RegExp[] = [
   // Printing env vars that likely hold secrets
   /\becho\s+\$[A-Z_]*(?:TOKEN|SECRET|KEY|PASSWORD|PASS|CREDENTIAL|API_KEY|SECRET_)\w*/,
   /\bprintenv\b/,
-  /\benv\b.*\n/,
+  // A bare `env` dump: `env` at a command position, optionally with flags, then a
+  // pipe, a redirect, a separator or the end of the command. Anchored this way,
+  // the word "env" inside `process.env.X = …`, `env_file:` or `environment:` is
+  // not a dump, while `env`, `env | grep`, `env > f`, `x; env` and `$(env)` are.
+  // The previous rule here required a trailing newline, so it missed a plain
+  // `env` (the common case) and blocked any multi-line command mentioning env.
+  /(^|[;&|()`]\s*|\bsudo\s+)env(\s+-{1,2}[\w-]+)*\s*($|[|>;&)`])/m,
   // OpenSSL reading private keys
   /\bopenssl\s+(?:pkey|rsa|ec|dsa)\s+.*-in\s+.*\.(?:pem|key)/,
 ];
@@ -122,13 +130,26 @@ function matchReason(path: string): string {
   return matched.length > 0 ? `(${matched.join(", ")})` : "(pattern match)";
 }
 
+/**
+ * Tokens that look like a secret file but name a variable namespace in code:
+ * `process.env.X`, `import.meta.env`, `os.environ`, `$env:PATH`. They are removed
+ * before the secret-file patterns run, so searching code for `process.env` is not
+ * mistaken for reading a dotenv file. A genuine `.env` path in the same command
+ * survives the removal and still blocks it.
+ */
+const ENV_NAMESPACE = /\b(?:process|import\.meta|Deno|Bun)\.env\b|\bos\.environ\b|\$env:(?=[A-Za-z_])/g;
+
 /** Heuristic: does a bash command try to read secret files? */
 function isSecretReadCommand(command: string): { blocked: boolean; reason?: string } {
+  // The command as it should be judged: namespaces that merely contain "env" are
+  // blanked out first, so `rg process.env` is not a read of `.env`.
+  const probe = command.replace(ENV_NAMESPACE, "ENV_NAMESPACE");
+
   // Allow `source` — it loads vars into env without printing them
   if (/^(\s*source\s+|\s*\.\s+)[^\n&|;]*\.(env|secrets?)\b/.test(command)) {
     // But still check if the same command also tries to cat/grep the file
     for (const pattern of SECRET_BASH_PATTERNS) {
-      if (pattern.test(command)) {
+      if (pattern.test(probe)) {
         return { blocked: true, reason: `matches secret-read pattern: ${pattern.source}` };
       }
     }
@@ -152,7 +173,7 @@ function isSecretReadCommand(command: string): { blocked: boolean; reason?: stri
 
   // Check against known secret-leaking patterns
   for (const pattern of SECRET_BASH_PATTERNS) {
-    if (pattern.test(command)) {
+    if (pattern.test(probe)) {
       return { blocked: true, reason: `matches secret-read pattern: ${pattern.source}` };
     }
   }
@@ -348,6 +369,10 @@ export default function (pi: ExtensionAPI) {
     }),
 
     async execute(toolCallId, params, signal, onUpdate, ctx) {
+      // execSync cannot be interrupted, so a call that is already cancelled is
+      // refused up front rather than pretending the signal is honoured mid-command.
+      if (signal?.aborted) throw new Error("vault_exec: cancelled before the command started");
+
       try {
         const env = { ...process.env };
 
@@ -370,7 +395,6 @@ export default function (pi: ExtensionAPI) {
           maxBuffer: 10 * 1024 * 1024,
           stdio: ["ignore", "pipe", "pipe"],
           timeout: (params.timeout ?? 30) * 1000,
-          signal,
         });
 
         const sanitized = sanitizeOutput(result);
@@ -389,11 +413,11 @@ export default function (pi: ExtensionAPI) {
         const stdout = err.stdout ? sanitizeOutput(err.stdout) : "";
         const message = sanitizeOutput(err.message || String(error));
 
+        const content: { type: "text"; text: string }[] = [{ type: "text", text: stdout || message }];
+        if (stderr) content.push({ type: "text", text: `stderr: ${stderr}` });
+
         return {
-          content: [
-            { type: "text", text: stdout || message },
-            ...(stderr ? [{ type: "text", text: `stderr: ${stderr}` }] : []),
-          ],
+          content,
           details: {
             exitCode: err.status ?? -1,
             cmd: params.cmd,

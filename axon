@@ -89,7 +89,7 @@ EOF
 Usage: axon pack <command> <harness> ...
 
 Harnesses: claude, codex, opencode, pi
-Commands: list [harness], status, deploy, sync, remove
+Commands: list [harness], status, deploy, sync, remove, use <profile>
 EOF
       ;;
     context) echo "Usage: axon context with [capability] | on [unit-or-path]" ;;
@@ -280,7 +280,7 @@ pack_command() {
         *) echo "axon: unknown harness '$harness'" >&2; exit 1 ;;
       esac
       ;;
-    status|deploy|sync|remove)
+    status|deploy|sync|remove|use)
       [ -n "$harness" ] || { echo "usage: axon pack $command <harness> ..." >&2; exit 1; }
       case "$harness" in
         # First-class since 2026-08-09: the Claude adapter deploys copies with a
@@ -294,7 +294,7 @@ pack_command() {
         *) echo "axon: unknown harness '$harness'" >&2; exit 1 ;;
       esac
       ;;
-    *) echo "usage: axon pack {list|status|deploy|sync|remove} ..." >&2; exit 1 ;;
+    *) echo "usage: axon pack {list|status|deploy|sync|remove|use} ..." >&2; exit 1 ;;
   esac
 }
 

@@ -17,9 +17,10 @@ VAULT=$(scripts/vault root)          # from the overlay's config/knowledge.toml
 scripts/vault contract               # fails loudly if the contract is missing
 ```
 
-Read `$VAULT/Projects/Soma/Vault-Contract.md` **before creating, moving, or retyping any note.**
-It owns placement, the no-doubling law, naming, and frontmatter typing. If it is missing, stop and
-say so — do not improvise structure. `$VAULT/AGENTS.md` is the vault-side pointer to the same file.
+Read `$VAULT/Projects/Axon/Knowledge-Base/Vault-Contract.md` **before creating, moving, or retyping
+any note.** It owns placement, the no-doubling law, naming, and frontmatter typing. If it is
+missing, stop and say so — do not improvise structure. There is no vault-root `AGENTS.md` pointer
+today; the contract path above is the pointer (verified absent 2026-09-09).
 
 Three rules from it that gate every single write, restated because they are what goes wrong:
 
@@ -46,14 +47,14 @@ A note with no inbound or outbound link is a leak.
 | Obsidian CLI (notes, search, properties, plugin dev) | `references/cli.md`, then `obsidian help` — authoritative |
 | Ingest a source · synthesize across notes · lint the wiki | `references/wiki.md` |
 
-**25 bases already exist** in `$VAULT/Resources/Bases/` (Tasks · Projects · Knowledge · People ·
-Media · Journal · Focus · …) plus `Projects/Sessions.base`. Query or embed one before building a
+**28 bases already exist** in `$VAULT/Resources/Bases/` (Tasks · Projects · Sessions · Knowledge ·
+People · Media · Journal · Focus · …). Query or embed one before building a
 new view — most "show me X" needs are already a view away. Never write base or canvas syntax from
 memory.
 
 ## 4 · Operations
 
-**Session and planning notes.** Ratified in `$VAULT/Projects/LifeOS/Vault-Planning-Convention.md`:
+**Session and planning notes.** Ratified in `$VAULT/Projects/Axon/Knowledge-Base/Vault-Planning-Convention.md`:
 a session note goes into the project it serves, `Projects/<Name>/Sessions/YYYY-MM-DD <Title>.md`;
 no fitting project → `Resources/Inbox/`. Frontmatter `type: session-isa | session-plan |
 project-isa`, `phase:`, `progress: M/N`, `started:`, `principal_stated_goal:` verbatim. Body: H1 ·
@@ -104,7 +105,8 @@ Report these when touched; do not silently work around them.
 
 - `Knowledge/llm-wiki/` is a two-file stub (`index.md`, `log.md`) from an abandoned parallel wiki
   layout, sitting as a sibling of the nine real domains. It has no owner and violates §2.
-- `Projects/LifeOS/` holds the ratified planning convention and 13 session notes, but LifeOS itself
-  is retired — the project name outlived the system.
+- `Projects/Archive/LifeOS/` holds 13 session notes under a project name that outlived the system;
+  the planning convention it once owned moved to `Projects/Axon/Knowledge-Base/` with the 2026-09-07
+  ruling (contract §2 conv. 6).
 - The Vault-Planning Convention's "Registry pointer" section points at `MEMORY/STATE/work.json`,
   which retired with LifeOS.

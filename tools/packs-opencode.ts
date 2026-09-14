@@ -1,3 +1,4 @@
+#!/usr/bin/env bun
 // tools/packs-opencode.ts — materialize Axon and overlay Packs into OpenCode's skill root.
 //
 // This is the OpenCode counterpart to packs-codex: full skills are copied into

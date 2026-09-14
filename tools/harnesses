@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Thin launcher: the cross-harness deployment matrix is implemented in
+# harnesses.ts because it reads every adapter's ledger, parses JSON state and
+# hashes deployed trees — none of which bash does well. The launcher exists so
+# the command the docs print, `tools/harnesses`, is the thing that runs it.
+_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec bun run "$_here/harnesses.ts" "$@"

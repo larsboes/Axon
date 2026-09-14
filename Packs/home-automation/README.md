@@ -19,9 +19,14 @@ entity ID, automation, device inventory, component pin, and secret reference.
 ## Activate
 
 ```sh
-"$AXON_ROOT/tools/packs.sh" link home-automation
 "$AXON_ROOT/tools/packs-codex" deploy home-automation
 ```
+
+## Deployment status
+
+Not deployed to any harness as of 2026-09-10 — deferred to the `home` profile decision (Phase 2).
+The `home-assistant` capability it wraps is declared for this machine and the skill set is
+harness-neutral, so this is a selection decision, not a build or wiring decision.
 
 ## Ownership boundary
 

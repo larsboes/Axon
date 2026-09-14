@@ -98,7 +98,8 @@ export type SkillStatus =
   | "migration-required"
   | "missing"
   | "collision"
-  | "invalid";
+  | "invalid"
+  | "discovered";
 
 export type StatusRow = {
   pack: string;
@@ -624,9 +625,13 @@ function installOne(
   return `✓ ${unit.key} ${mode === "deploy" ? "deployed" : "synced"}`;
 }
 
-export function deployPack(config: DeployConfig, pack: string): string[] {
+export function deployPack(config: DeployConfig, pack: string, skillSubset?: Set<string>): string[] {
   return withStateLock(config, () => {
-    const units = packUnits(config, pack);
+    // A profile subset deploys ONLY the named skills; tree units (agents/ and
+    // similar) are excluded with it, so a subset is an exact load statement.
+    const units = skillSubset
+      ? packUnits(config, pack).filter((u) => !u.isSkill || skillSubset.has(u.key))
+      : packUnits(config, pack);
     const state = readState(config);
     // Validate every source and collision before the first write so a bad unit
     // cannot leave a normally-failing Pack only partially deployed.
@@ -892,6 +897,14 @@ export type Profile = {
   name: string;
   description: string;
   packs: string[];
+  /**
+   * Optional per-Pack skill subset. A Pack with no entry loads all its skills;
+   * a Pack with an entry loads ONLY the named skills (tree units like agents/
+   * are excluded with a subset). Enables a profile like `home` to stop dragging
+   * ten ha-* skills into every session when the measurements say most are never
+   * used (2026-09-11).
+   */
+  skills?: Record<string, string[]>;
 };
 
 export function readProfiles(config: DeployConfig): Profile[] {
@@ -922,9 +935,31 @@ export function resolveProfilePacks(config: DeployConfig, profile: Profile): str
   return profile.packs;
 }
 
+/**
+ * The per-Pack skill subset a profile asks for: `null` means "all skills of that
+ * Pack". Validates every named skill against its Pack before anything moves.
+ */
+export function resolveProfileSkills(config: DeployConfig, profile: Profile): Map<string, Set<string> | null> {
+  const out = new Map<string, Set<string> | null>();
+  if (!profile.skills) return out;
+  const profilePacks = new Set(resolveProfilePacks(config, profile));
+  for (const [pack, skills] of Object.entries(profile.skills)) {
+    if (!profilePacks.has(pack)) {
+      throw new Error(`profile '${profile.name}': skills names pack '${pack}', which is not in packs`);
+    }
+    const unitNames = new Set(packUnits(config, pack).filter((u) => u.isSkill).map((u) => u.key));
+    for (const skill of skills) {
+      if (!unitNames.has(skill)) throw new Error(`profile '${profile.name}': pack '${pack}' has no skill '${skill}'`);
+    }
+    out.set(pack, new Set(skills));
+  }
+  return out;
+}
+
 export function activateProfile(config: DeployConfig, profile: Profile): string[] {
   return withStateLock(config, () => {
     const targetPackNames = new Set(resolveProfilePacks(config, profile));
+    const skillSubsets = resolveProfileSkills(config, profile);
     const state = readState(config);
     const messages: string[] = [];
 
@@ -962,7 +997,7 @@ export function activateProfile(config: DeployConfig, profile: Profile): string[
       messages.push("", `Deploying ${toDeploy.length} pack(s):`);
       for (const pack of toDeploy) {
         try {
-          messages.push(...deployPack(config, pack).map((l) => `  ${l}`));
+          messages.push(...deployPack(config, pack, skillSubsets.get(pack) ?? undefined).map((l) => `  ${l}`));
         } catch (error) {
           messages.push(`  ✗ ${pack}: ${(error as Error).message}`);
         }

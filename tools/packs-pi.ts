@@ -1,3 +1,4 @@
+#!/usr/bin/env bun
 // tools/packs-pi.ts — select Axon and overlay Packs for Pi's settings-managed registries.
 // Pi scans each path in ~/.pi/agent/settings.json:skills and settings.json:extensions.
 // Skills come from a pack's skills/ dir; a pack MAY also carry an extensions/ dir of
@@ -9,6 +10,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { availablePacks, readPackSkills, type DeployConfig } from "./packs-codex.ts";
+import { readProfiles, resolveProfilePacks, resolveProfileSkills } from "./lib/pack-deploy.ts";
 
 const AXON_ROOT = resolve(import.meta.dir, "..");
 const home = process.env.HOME ?? "";
@@ -83,13 +85,15 @@ function writeState(state: State): void {
   renameSync(temporary, statePath);
 }
 
-function pathsForPack(pack: string): string[] {
+function pathsForPack(pack: string, subset?: Set<string>): string[] {
   const cfg = defaultPiDeployConfig();
-  return readPackSkills(cfg, pack).map((skill) => {
-    const matches = (cfg.packRoots ?? []).map((root) => join(root, pack, "skills", skill)).filter(existsSync);
-    if (matches.length !== 1) throw new Error(`${pack}/${skill}: source is missing or ambiguous`);
-    return matches[0];
-  });
+  return readPackSkills(cfg, pack)
+    .filter((skill) => !subset || subset.has(skill))
+    .map((skill) => {
+      const matches = (cfg.packRoots ?? []).map((root) => join(root, pack, "skills", skill)).filter(existsSync);
+      if (matches.length !== 1) throw new Error(`${pack}/${skill}: source is missing or ambiguous`);
+      return matches[0];
+    });
 }
 
 function extensionsForPack(pack: string): string[] {
@@ -105,6 +109,76 @@ function extensionsForPack(pack: string): string[] {
     if (matches.length !== 1) throw new Error(`${pack}/extensions/${name}: source is missing or ambiguous`);
     return matches[0];
   });
+}
+
+/**
+ * The recorded `# pi:` decision line in a Pack's pack.toml (written 2026-09-10,
+ * C8) — when it says REFUSED, a profile activation must not override it. Returns
+ * the recorded text, or null when the Pack carries no refusal.
+ *
+ * REFUSED is the ONLY `# pi:` line with an effect. Informational lines ("REGISTERED",
+ * "deferred to profile N") are read by nothing and go stale silently — which Pack is
+ * deployed where is an ad-hoc choice, visible in `tools/harnesses status`, not a
+ * recorded decision. Do not add them.
+ */
+function piRefusal(pack: string): string | null {
+  const cfg = defaultPiDeployConfig();
+  for (const root of cfg.packRoots ?? []) {
+    const manifest = join(root, pack, "pack.toml");
+    if (!existsSync(manifest)) continue;
+    const head = readFileSync(manifest, "utf8");
+    const m = head.match(/^# pi:\s*REFUSED\b.*$/mi);
+    if (m) return m[0].replace(/^# pi:\s*/, "").trim();
+  }
+  return null;
+}
+
+/**
+ * Registry-model profile activation: the pi settings file IS the selection, so
+ * activating a profile rewrites settings.json's skills AND extensions to exactly
+ * the profile's set (per-Pack skill subsets honoured), and drops ledger entries
+ * for Pack(s) the profile does not name. Packs whose pack.toml records them as
+ * REFUSED for pi are skipped with a message instead of registered.
+ */
+export function activateProfileOnPi(profileName: string): void {
+  const config = defaultPiDeployConfig();
+  const profiles = readProfiles(config);
+  const profile = profiles.find((p) => p.name === profileName);
+  if (!profile) throw new Error(`no such profile: '${profileName}'`);
+  const target = new Set(resolveProfilePacks(config, profile));
+  const subsets = resolveProfileSkills(config, profile);
+  const state = readState();
+  const settings = readSettings();
+  const messages: string[] = [];
+  messages.push(`Activating profile '${profile.name}' — ${profile.description}`);
+  const active: string[] = [];
+  const skills: string[] = [];
+  const extensions: string[] = [];
+  for (const pack of [...target].sort()) {
+    const refused = piRefusal(pack);
+    if (refused) {
+      messages.push(`  → skipped ${pack}: pack.toml records it as REFUSED for pi (${refused})`);
+      continue;
+    }
+    const paths = pathsForPack(pack, subsets.get(pack) ?? undefined);
+    const extPaths = extensionsForPack(pack);
+    skills.push(...paths);
+    extensions.push(...extPaths);
+    active.push(pack);
+    messages.push(`  → ${pack}: ${paths.length} skill(s), ${extPaths.length} extension(s)`);
+  }
+  const removed = Object.keys(state.packs).filter((p) => !active.includes(p)).sort().join(", ");
+  if (removed) messages.push(`Removing Pack(s) not in profile: ${removed}`);
+  settings.skills = dedupeCanonical(skills);
+  settings.extensions = dedupeCanonical(extensions);
+  state.packs = Object.fromEntries(active.map((p) => [p, pathsForPack(p, subsets.get(p) ?? undefined)]));
+  state.extensions = Object.fromEntries(active.map((p) => [p, extensionsForPack(p)]));
+  writeSettings(settings);
+  writeState(state);
+  for (const m of messages) console.log(m);
+  console.log(
+    `✓ profile '${profile.name}' active for pi: ${active.length} pack(s), ${settings.skills.length} skill(s), ${settings.extensions.length} extension(s)${removed ? `; removed ${removed}` : ""}`,
+  );
 }
 
 function status(packs: string[]): void {
@@ -190,7 +264,7 @@ function remove(packs: string[]): void {
 }
 
 function usage(): never {
-  throw new Error("usage: tools/packs-pi list | status [pack ...] | deploy <pack ...> | sync <pack ...> | remove <pack ...>");
+  throw new Error("usage: tools/packs-pi list | status [pack ...] | deploy <pack ...> | sync <pack ...> | remove <pack ...> | use <profile>");
 }
 
 // Guarded so this module can be imported for its exported DeployConfig without
@@ -205,6 +279,11 @@ if (import.meta.main) {
     } else if (command === "status") status(args);
     else if (command === "deploy" || command === "sync") deploy(args);
     else if (command === "remove") remove(args);
+    else if (command === "use" || command === "profile") {
+      const profileName = args[0];
+      if (!profileName) throw new Error("usage: tools/packs-pi use <profile>");
+      activateProfileOnPi(profileName);
+    }
     else usage();
   } catch (error) {
     console.error(`packs-pi: ${(error as Error).message}`);

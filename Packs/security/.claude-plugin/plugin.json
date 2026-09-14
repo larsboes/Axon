@@ -1,0 +1,9 @@
+{
+  "name": "security",
+  "description": "Guard secrets and credentials from agent visibility. Pi agent extension that blocks reading .env, .secrets, and Bitwarden items at the tool-call boundary, while allowing commands that use those secrets. Ships a Claude Code secrets-guard skill for the same doctrine.",
+  "author": {
+    "name": "Lars Boes",
+    "url": "https://github.com/larsboes/Axon"
+  },
+  "license": "MIT"
+}

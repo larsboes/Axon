@@ -668,6 +668,21 @@ Codex deployment is materialized and drift-checked; destination edits are never 
 silently. Other adapters may use a different mechanism, but no installed copy becomes the editing
 source.
 
+### Native Claude Code plugin marketplace
+
+`tools/generate-marketplace.ts` reads every `Packs/<name>/pack.toml` and generates
+`.claude-plugin/marketplace.json` plus one `Packs/<name>/.claude-plugin/plugin.json` per pack, so
+this repo is directly addable as a Claude Code marketplace (`claude plugin marketplace add
+/path/to/Axon`) and each Pack installs as a native plugin. `tools/check-marketplace-fresh.sh`
+gates staleness in CI, the same way `tools/check-architecture-fresh.sh` gates ARCHITECTURE.md —
+never hand-edit the generated JSON.
+
+This is a second Claude-facing install path alongside `tools/packs-claude` (which copies a Pack
+into `~/.claude/skills`), not a replacement for it. A Pack enabled through both at once can
+double-load its skills; pick one path per Pack. A dedicated `deployer` still excludes a Pack here
+too, for the same reason it excludes it from `tools/packs-claude`. Only this repo's own `Packs/`
+is read — an overlay Pack is private and never appears in the committed marketplace.
+
 ### Pack documentation and attribution
 
 Every Pack has a README and SPDX license field. Adapted material names its canonical upstream,

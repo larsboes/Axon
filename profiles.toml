@@ -1,16 +1,58 @@
-# Axon Pack profiles — named use-cases that deploy a set of Packs together.
-# Run `tools/packs-codex use` to pick one interactively, or
-# `tools/packs-codex use <name>` to activate directly.
+# Axon Pack profiles — named use-cases that deploy a set of Packs together,
+# optionally narrowed to a per-Pack skill subset so a profile does not drag a
+# whole Pack into every session when the measurements say most of it is unused.
+#
+#   tools/harnesses use <name> [--harness <id>]   apply to every installed harness
+#   tools/packs-claude use <name>                 apply to Claude Code
+#   tools/packs-pi use <name>                     apply to pi (rewrites settings.json)
+#   tools/packs-codex use <name>                  apply to Codex (declined on this host)
+#
+# A profile is a SELECTION, not a recommendation: activating it replaces what the
+# harness loads with exactly this set (pi additionally skips Packs whose pack.toml
+# records `# pi: REFUSED` — the C8 decision lines; home-automation is the one
+# currently refused, i.e. dormant everywhere, and `full` below is the whole store
+# minus it).
+#
+# PI IS PROFILE-DRIVEN (2026-09-11, Lars: "I want to be able to change through axon
+# profiles what's deployed"; pi is used from the home folder, so the GLOBAL registry
+# is the load set — no project scoping). The registry currently holds `full` minus
+# home-automation; switching it is one command: tools/harnesses use <name> --harness pi.
+#
+# Usage evidence per Pack, measured 2026-09-11 over present-day transcripts
+# ("\"command\":…<script>" tool calls across ~/.claude/projects; audit-era baselines
+# from the 2026-08-22 skills audit named per Pack). A membership is a decision with
+# a number behind it; where the number is 0 the Pack is in by role and says so.
+#
+# Note on `sync` vs profiles: after activating a profile, a manual `sync <pack>`
+# deploys the WHOLE Pack again (the ledger does not remember the subset). Re-run
+# `use <name>` to re-trim.
 
 [[profile]]
 name = "productive"
-description = "Daily driver — coding, prose, academic writing"
-packs = ["writing", "unslop", "academic-writing", "deliberation"]
+description = "Daily driver — coding, prose, academic writing, decks, orientation, focus"
+packs = ["writing", "unslop", "academic-writing", "presentations", "deliberation", "axon", "cognitive-load"]
+# writing: human-writing 15 runs (430 audit-era) + writing-skills 12 runs
+# unslop: 0 script runs — code-quality review pass by role
+# academic-writing: 7 runs (45 audit-era)
+# presentations: 0 runs — new Pack (2026-09-11); in by role, deck work is adjacent to
+#   academic-writing and a deck request would otherwise land in a profile that has neither
+# deliberation: council/red-team drive subagents; role-keeper in the writing stack (0 runs)
+# axon: orientation for repo work; role (0 runs)
+# cognitive-load: attention-control; small focus metacognition; role (0 runs)
 
 [[profile]]
 name = "home"
+# DORMANT as of 2026-09-11 (Lars): home-automation is not deployed to any harness right
+# now; 3d-printing + cv remain live members. Activating this profile is the switch that
+# brings the house stack back, and pi keeps skipping home-automation via its REFUSED line.
 description = "Home automation, network, devices, CV, 3D printing"
 packs = ["home-automation", "3d-printing", "cv"]
+skills = { "home-automation" = ["homectl", "ha-cli", "pihole", "fritz", "netmon", "ha-deploy"] }
+# home-automation narrowed to the measured-by-use six (2026-09-11, runs):
+#   homectl 13 · ha-cli 27 · pihole 63 · fritz 60 · netmon 12 · ha-deploy 7
+# Excluded until used (≤1 session each): ha-inventory, wlanwatch, espctl,
+# energy-dashboard, ha-dashboard, ha-dashgen. Re-run `use home` after a full sync.
+# 3d-printing: printctl 6 runs (221 audit-era) · cv: cv build 2 runs (75 audit-era)
 
 [[profile]]
 name = "writing"
@@ -20,12 +62,34 @@ packs = ["academic-writing", "writing"]
 [[profile]]
 name = "coding"
 description = "Code quality and writing tools"
-packs = ["writing", "unslop"]
+packs = ["writing", "unslop", "axon"]
 
 [[profile]]
 name = "knowledge"
 description = "Knowledge vault stack — teaching, LLM wiki, Obsidian operations"
 packs = ["knowledge"]
+# obsidian/vault scripts: 10 runs — the vault gate; registry-loaded in pi
+
+[[profile]]
+name = "harness"
+description = "Keep the harness itself in shape"
+packs = ["harness"]
+# harness-sync / suggest-skills / trim: 0 runs outside their own construction (audit);
+# one `use` away so maintenance tooling is never always-on.
+
+[[profile]]
+name = "security"
+description = "Secrets and credentials doctrine"
+packs = ["security"]
+# secrets-guard: the doctrine is enforced on pi by the Pack's extension at the
+# tool-call boundary, independently of any profile
+
+[[profile]]
+name = "travel"
+description = "Travel planning across Axon's capabilities"
+packs = ["travel"]
+# capability-backed (calendar/transit/punctuality/scouting/trips); 0 script runs —
+# a reach-for-it profile for one use-case, never an always-on one
 
 [[profile]]
 name = "full"

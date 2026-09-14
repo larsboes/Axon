@@ -1,0 +1,69 @@
+{
+  "name": "axon-packs",
+  "description": "Togglable agent-skill bundles mirrored from Axon's harness-neutral Packs (Packs/<name>/pack.toml).",
+  "owner": {
+    "name": "Lars Boes",
+    "url": "https://github.com/larsboes/Axon"
+  },
+  "metadata": {
+    "pluginRoot": "./Packs"
+  },
+  "plugins": [
+    {
+      "name": "3d-printing",
+      "source": "3d-printing"
+    },
+    {
+      "name": "academic-writing",
+      "source": "academic-writing"
+    },
+    {
+      "name": "axon",
+      "source": "axon"
+    },
+    {
+      "name": "cognitive-load",
+      "source": "cognitive-load"
+    },
+    {
+      "name": "cv",
+      "source": "cv"
+    },
+    {
+      "name": "deliberation",
+      "source": "deliberation"
+    },
+    {
+      "name": "harness",
+      "source": "harness"
+    },
+    {
+      "name": "home-automation",
+      "source": "home-automation"
+    },
+    {
+      "name": "knowledge",
+      "source": "knowledge"
+    },
+    {
+      "name": "presentations",
+      "source": "presentations"
+    },
+    {
+      "name": "security",
+      "source": "security"
+    },
+    {
+      "name": "travel",
+      "source": "travel"
+    },
+    {
+      "name": "unslop",
+      "source": "unslop"
+    },
+    {
+      "name": "writing",
+      "source": "writing"
+    }
+  ]
+}

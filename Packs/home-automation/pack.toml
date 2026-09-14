@@ -5,3 +5,7 @@ skills       = ["homectl", "fritz", "ha-cli", "pihole", "netmon", "esphome", "ha
 license      = "MIT"
 capabilities = ["home-assistant"]
 personal     = ["config/home-assistant.vars"]
+
+# pi: REFUSED (2026-09-11) — Lars: not deployed AT ALL currently (neither pi nor claude); was
+#     "deferred to the home profile" until then. The `home` profile is the switch that deploys
+#     it again, and pi skips it even then, per this line.

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Thin launcher: Pi's settings-managed registries are JSON, and rewriting
+# settings.json (dedupe, canonical paths, atomic write) is clearer in
+# packs-pi.ts than in bash.
+_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec bun run "$_here/packs-pi.ts" "$@"

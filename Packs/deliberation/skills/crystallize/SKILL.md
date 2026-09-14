@@ -79,6 +79,20 @@ The questions that produce the best answers are the ones where you have *already
 and found a genuine fork. "Which of these two things that both exist should win?" beats "what do
 you want?" every time.
 
+### The round runs in the `ask` tool
+
+When the `ask` tool is available, the round is one tool call, not prose. Each question takes 2–4
+mutually exclusive options, a one-line consequence each, your recommendation marked and given
+first, and a preview block for anything with shape. The user picks in one keystroke — the
+recommendation is focused, so Enter accepts it — and can attach a note to each decision. **Read
+the notes.** A correction to your framing arrives there far more often than in the choice itself,
+and the tool tells you which picks overruled your recommendation, which is where the interesting
+information lives. `s` skips a question and leaves it open: that is "not sure yet, come back",
+recorded rather than lost.
+
+Without the tool — another harness, a non-interactive run — ask the same round as text: numbered
+options, your recommendation marked, and room for a note after each.
+
 ## Recording a decision
 
 Each answer becomes a durable record at the point in the document where it applies, not in a

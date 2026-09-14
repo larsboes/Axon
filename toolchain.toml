@@ -191,6 +191,20 @@ why = "capabilities/host-net execs `tailscale status --json`, `tailscale debug p
 install_macos = "brew install --cask tailscale"
 install_linux = "curl -fsSL https://tailscale.com/install.sh | sh"
 
+[libreoffice]
+required = "optional"
+bin = "soffice"
+# NO needed_by, the [tailscale] decision above. toolchain-check resolves `workflow:<name>`,
+# `capability:<id>` and `capability-field:<field>`; a *skill* is none of those, so any scope
+# would print `n/a` on every run forever -- the silent gap this entry exists to close. Core
+# scope with required = "optional" is the shape that runs: checked everywhere, a miss is a
+# warning with an install hint, never a failure. The one consumer is the slide-deck Pack
+# (Packs/presentations), whose `scripts/deck render` shells out to `soffice --headless
+# --convert-to pdf` and has no fallback: an unrendered deck is an unverified deck.
+why = "headless LibreOffice is the only renderer the slide-deck skill can use, and rendering is its verification step; `scripts/deck render` fails without it (Packs/presentations). Axon calls it and builds nothing from it, so no `upstream` id, the [ollama] rule. macOS note: the cask installs a .app and links a `soffice` shim into the Homebrew bin dir, which is what `shutil.which(\"soffice\")` finds; without that shim the binary sits at /Applications/LibreOffice.app/Contents/MacOS/soffice and render reports it as missing."
+install_macos = "brew install --cask libreoffice"
+install_linux = "apt-get install -y libreoffice"
+
 [cargo]
 required = "optional"
 needed_by = ["workflow:build"]

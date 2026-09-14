@@ -71,19 +71,34 @@ def cmd_root(_args) -> None:
 
 
 def cmd_contract(_args) -> None:
-    path = vault_root() / "Projects/Soma/Vault-Contract.md"
-    if not path.exists():
-        die(f"vault contract missing at {path} — stop and say so; do not improvise structure")
-    print(path)
+    # Ruled 2026-09-07 (contract §2 conv. 6): the law lives at
+    # Projects/Axon/Knowledge-Base/ and graduates to Knowledge/Meta/Vault/ if Axon
+    # ever archives. Check the current home first, then the two former/next homes,
+    # so a vault that predates or outlives the ruling still answers.
+    candidates = [
+        vault_root() / "Projects/Axon/Knowledge-Base/Vault-Contract.md",
+        vault_root() / "Knowledge/Meta/Vault/Vault-Contract.md",
+        vault_root() / "Projects/Soma/Vault-Contract.md",
+    ]
+    for path in candidates:
+        if path.exists():
+            print(path)
+            return
+    searched = ", ".join(str(p) for p in candidates)
+    die(f"vault contract missing (searched {searched}) — stop and say so; do not improvise structure")
 
 
 def cmd_sessions(args) -> None:
-    """Every vault-native planning note, newest first — the CLI view of Projects/Sessions.base."""
+    """Every vault-native planning note, newest first — the CLI view of Resources/Bases/Sessions.base."""
     root = vault_root()
     rows = []
     for note in root.glob("Projects/*/Sessions/*.md"):
-        head = note.read_text(errors="replace")[:1200]
-        fm = re.match(r"^---\s*\n(.*?)\n---", head, re.S)
+        text = note.read_text(errors="replace")
+        # Read the whole file, not a fixed window: `principal_stated_goal` is verbatim
+        # and can be long enough to push the closing `---` past any 1-2 KB cap, which
+        # silently dropped such notes (2026-09-09: the harness-deployment plan). The
+        # non-greedy match stops at the first `---` after the opening marker.
+        fm = re.match(r"^---\s*\n(.*?)\n---", text, re.S)
         meta = dict(re.findall(r"^(\w+):\s*(.+)$", fm.group(1), re.M)) if fm else {}
         if args.phase and meta.get("phase") != args.phase:
             continue

@@ -24,6 +24,28 @@ the overrule is usually informed by something you had no way to know.
 sketches. Prose comparing two structures is slow to read and easy to misread; two rendered blocks
 side by side settle it instantly.
 
+**A note line under each decision.** The choice records the decision; the note records the reason,
+and the reason is the part the next reader needs. Leave room for it, and read it before you write
+the answer down.
+
+## How the round maps onto the `ask` tool
+
+When `ask` is available, the round is one tool call and each beat above is a field:
+
+| Beat | Field |
+|---|---|
+| The fork's label | `title` ("Data classes") — shown beside the `id`, which is what the record cites |
+| The evidence | `context` — what you measured, what disagrees, where it lives |
+| The question | `prompt` |
+| An option | `options[].label` |
+| What happens if chosen | `options[].consequence` — the cost, not a description |
+| What it looks like | `options[].preview` — rendered only for the highlighted option |
+| Your recommendation | `recommendedIndex`, with that option at index 0 |
+| The user's reason | comes back as `note` on that decision |
+
+Send the round's questions together in one call — 3–4 of them. The tool shows one at a time, but a
+round is still one conversation turn, not a session.
+
 ## What makes a question worth asking
 
 The best questions come from *already having done the work* and hitting a genuine fork. In
@@ -65,7 +87,9 @@ you have not done enough work to narrow them.
 ## Handling the answers
 
 **Non-answers are answers.** "Not sure yet, let's discover it" means *keep going and come back*.
-Record it as open with a marker, do not press.
+Record it as open with a marker, do not press. In the `ask` tool this is the `s` key, and the
+decision comes back marked skipped rather than answered — never turn a skip into a silent vote for
+your recommendation.
 
 **A correction to your framing is the most valuable reply.** When someone says "gear doesn't go in
 Knowledge, gear is a database" they have told you your model is wrong, not just their preference.

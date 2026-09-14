@@ -46,16 +46,21 @@ import {
 } from "./lib/harness-registry.ts";
 import {
   adoptPack,
+  activateProfile,
   availablePacks,
   desiredFiles,
   getStatuses,
   packUnits,
+  readProfiles,
   readState,
   reconcileUnit,
   syncPack,
   type DeployConfig,
+  type Profile,
+  type SkillStatus,
   type StatusRow,
 } from "./lib/pack-deploy.ts";
+import { activateProfileOnPi } from "./packs-pi.ts";
 
 const AXON_ROOT = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 const argv = process.argv.slice(2);
@@ -89,6 +94,100 @@ function list(): void {
 // ---------------------------------------------------------------- status
 
 /** A registry harness has no copy, so it has no digest. Its states are its own. */
+export type PiDiscovered = {
+  name: string;
+  /** Discovery root the entry was found in, as a human label — ~/.agents/skills, *.pi/skills, … */
+  label: string;
+  kind: "copy" | "external" | "symlink" | "md";
+  detail?: string;
+};
+
+export type PiExtension = { path: string; source: "ledger" | "discovered" | "both" };
+
+/**
+ * The roots pi loads without being told (pi docs/skills.md, docs/extensions.md):
+ * two global ones plus `.pi/skills` / `.agents/skills` in cwd and every ancestor up
+ * to the git repo root (filesystem root when not in a repo). The registry model only
+ * knew settings.json; the whole point of discovery is that it is not in the ledger.
+ */
+function discoveryRoots(): { root: string; label: string }[] {
+  const home = process.env.HOME ?? "";
+  const roots = [
+    { root: join(home, ".pi", "agent", "skills"), label: "~/.pi/agent/skills" },
+    { root: join(home, ".agents", "skills"), label: "~/.agents/skills" },
+  ];
+  let dir = process.cwd();
+  while (true) {
+    for (const name of [".pi", ".agents"]) {
+      const root = join(dir, name, "skills");
+      if (existsSync(root)) roots.push({ root, label: `project ${root}` });
+    }
+    if (existsSync(join(dir, ".git"))) break; // pi stops its walk at the repo root
+    const parent = dirname(dir);
+    if (parent === dir) break; // filesystem root
+    dir = parent;
+  }
+  return roots;
+}
+
+function discoveredAt(root: string, label: string): PiDiscovered[] {
+  const out: PiDiscovered[] = [];
+  if (!existsSync(root)) return out;
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const full = join(root, entry.name);
+    if (entry.isSymbolicLink()) {
+      out.push({ name: entry.name, label, kind: "symlink", detail: `→ ${readlinkSync(full)}` });
+    } else if (entry.isDirectory()) {
+      if (!existsSync(join(full, "SKILL.md"))) continue;
+      const external = existsSync(join(full, ".git"));
+      out.push({
+        name: entry.name,
+        label,
+        kind: external ? "external" : "copy",
+        detail: external ? "carries .git; another installer owns it" : undefined,
+      });
+    } else if (entry.isFile() && entry.name.endsWith(".md") && entry.name !== "SKILL.md") {
+      // Root .md files are skills when they carry valid skill frontmatter (pi docs/skills.md).
+      const head = readFileSync(full, "utf8").slice(0, 1000);
+      if (/^---\s*\n[\s\S]*?\bname:\s*\S+[\s\S]*?\bdescription:\s*\S+/.test(head)) {
+        out.push({ name: entry.name.replace(/\.md$/, ""), label, kind: "md" });
+      }
+    }
+  }
+  return out;
+}
+
+/** Everything pi loads that the ledger does not name: discovered skills and extensions. */
+export function piDiscovery(): { entries: PiDiscovered[]; extensions: PiExtension[] } {
+  const home = process.env.HOME ?? "";
+  const entries: PiDiscovered[] = [];
+  for (const { root, label } of discoveryRoots()) entries.push(...discoveredAt(root, label));
+
+  const settingsPath = join(home, ".pi", "agent", "settings.json");
+  const parsed = existsSync(settingsPath)
+    ? (JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>)
+    : {};
+  const ledger = Array.isArray(parsed.extensions) ? (parsed.extensions as string[]) : [];
+  const found: string[] = [];
+  const extsRoot = join(home, ".pi", "agent", "extensions");
+  if (existsSync(extsRoot)) {
+    for (const entry of readdirSync(extsRoot, { withFileTypes: true })) {
+      const full = join(extsRoot, entry.name);
+      if ((entry.isFile() || entry.isSymbolicLink()) && entry.name.endsWith(".ts")) found.push(full);
+      else if (entry.isDirectory() && existsSync(join(full, "index.ts"))) found.push(join(full, "index.ts"));
+    }
+  }
+  const byPath = new Map<string, PiExtension>();
+  for (const p of ledger) byPath.set(p, { path: p, source: "ledger" });
+  for (const p of found) {
+    const existing = byPath.get(p);
+    if (existing) existing.source = "both";
+    else byPath.set(p, { path: p, source: "discovered" });
+  }
+  return { entries, extensions: [...byPath.values()] };
+}
+
+/** A registry harness has no copy, so it has no digest. Its states are its own. */
 function registryStatuses(harness: Harness, selected?: string): StatusRow[] {
   const config = harness.config();
   const settingsPath = (config as DeployConfig & { settingsPath?: string }).settingsPath;
@@ -98,21 +197,38 @@ function registryStatuses(harness: Harness, selected?: string): StatusRow[] {
     const parsed = JSON.parse(readFileSync(piSettings, "utf8")) as Record<string, unknown>;
     registered = Array.isArray(parsed.skills) ? (parsed.skills as string[]) : [];
   }
+  const discovered = new Map<string, PiDiscovered[]>();
+  for (const { root, label } of discoveryRoots()) {
+    for (const d of discoveredAt(root, label)) {
+      if (!discovered.has(d.name)) discovered.set(d.name, []);
+      discovered.get(d.name)!.push(d);
+    }
+  }
   const rows: StatusRow[] = [];
   for (const pack of availablePacks(config, true)) {
     if (selected && pack !== selected) continue;
     for (const unit of packUnits(config, pack)) {
       if (!unit.isSkill) continue;
       const isRegistered = registered.some((p) => p.replace(/\/$/, "") === unit.sourceRoot.replace(/\/$/, ""));
-      rows.push({
-        pack,
-        skill: unit.key,
-        status: isRegistered ? "current" : "not-deployed",
-        detail: isRegistered ? "registered in settings" : undefined,
-      });
+      const hits = discovered.get(unit.key) ?? [];
+      let status: SkillStatus;
+      let detail: string | undefined;
+      if (isRegistered && hits.length) {
+        status = "current";
+        detail = `registered in settings; ALSO discovered from ${hits.map((h) => `${h.label}/${h.name}`).join(", ")} — pi keeps the first found, so the copy can shadow the registration`;
+      } else if (isRegistered) {
+        status = "current";
+        detail = "registered in settings";
+      } else if (hits.length) {
+        status = "discovered";
+        detail = hits.map((h) => `${h.label}/${h.name} (${h.kind}${h.detail ? `, ${h.detail}` : ""})`).join("; ");
+      } else {
+        status = "not-deployed";
+      }
+      rows.push({ pack, skill: unit.key, status, detail });
     }
   }
-  // A registered path that no longer exists is this model's only real defect.
+  // A registered path that no longer exists is this model's only other defect.
   for (const path of registered) {
     if (!existsSync(path)) {
       rows.push({ pack: "(registered)", skill: basename(path), status: "missing", detail: `${path} does not exist` });
@@ -121,7 +237,8 @@ function registryStatuses(harness: Harness, selected?: string): StatusRow[] {
   return rows;
 }
 
-function statusesFor(harness: Harness, selected?: string): StatusRow[] {
+/** A registry harness has no copy, so it has no digest. Its states are its own. */
+export function statusesFor(harness: Harness, selected?: string): StatusRow[] {
   return harness.model === "registry" ? registryStatuses(harness, selected) : getStatuses(harness.config(), selected);
 }
 
@@ -133,6 +250,7 @@ const MARK: Record<string, string> = {
   missing: "M",
   collision: "C",
   invalid: "!",
+  discovered: "~",
   "migration-required": "m",
 };
 
@@ -161,6 +279,7 @@ function status(): void {
             // uninstalled Codex, and a report that skipped absent harnesses would
             // have hidden them the same way the adapters did.
             units: statusesFor(h, selected).map((row) => ({ pack: row.pack, skill: row.skill, status: row.status, detail: row.detail })),
+            discovered: h.model === "registry" ? piDiscovery() : undefined,
             unowned: foreignAt(h),
           })),
           unsupported: UNSUPPORTED,
@@ -202,7 +321,7 @@ function status(): void {
     });
     console.log(`  ${key.split("/").slice(1).join("/").padEnd(width - 2)}${cells.join("")}`);
   }
-  console.log("\n· current   o outdated   D drifted   M missing   C collision   ! invalid   (blank) not deployed");
+  console.log("\n· current   o outdated   D drifted   M missing   C collision   ! invalid   ~ discovered (loaded outside the ledger)   (blank) not deployed");
 
   // An absent harness holding deployed copies is invisible in the matrix above,
   // because the matrix only shows harnesses that are installed. It is also the
@@ -216,7 +335,40 @@ function status(): void {
       `\n${harness.label} is NOT installed (no ${harness.marker}), and ${deployed.length} units from ${packs.length} Pack(s) are deployed at ${harness.config().destination}:`,
     );
     console.log(`  ${packs.join(", ")}`);
-    console.log(`  Nothing on this machine reads them. Remove: ${harness.cli} remove ${packs.join(" ")}`);
+    // ~/.agents/skills doubles as pi's global discovery root. Saying "nothing reads
+    // this" there with pi installed was 2026-09-09's motivating lie: pi was loading
+    // all four units while the tool told the operator the opposite. Name the reader.
+    const pi = harnessById("pi");
+    const piReadsDestination =
+      isInstalled(pi) && harness.config().destination === join(process.env.HOME ?? "", ".agents", "skills");
+    if (piReadsDestination) {
+      console.log(`  pi IS installed and discovers ${harness.config().destination} — these units are loaded by pi right now.`);
+      console.log(`  If pi should keep them, deploy them there FIRST: tools/packs-pi deploy ${packs.join(" ")}.`);
+      console.log(`  Removing without that step strips them from pi without replacement: ${harness.cli} remove ${packs.join(" ")}`);
+    } else {
+      console.log(`  Nothing on this machine reads them. Remove: ${harness.cli} remove ${packs.join(" ")}`);
+    }
+  }
+
+  // Pi's discovery roots are live surfaces with no ledger entry, and a registry
+  // harness has no destination section above — so discovered skills (interceptor,
+  // a foreign skills dir) and the discovered extensions get their own lines here.
+  if (harnesses.some((h) => h.id === "pi")) {
+    const { entries, extensions } = piDiscovery();
+    const seen = new Set<string>();
+    if (entries.length || extensions.some((e) => e.source !== "ledger")) {
+      console.log("\npi loads these outside settings.json (discovered, not ledger-owned):");
+      for (const d of entries) {
+        const key = `${d.label}/${d.name}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        console.log(`  ~ ${key}  (${d.kind}${d.detail ? `, ${d.detail}` : ""})`);
+      }
+      for (const e of extensions) {
+        if (e.source === "ledger") continue;
+        console.log(`  ~ ${e.path}  (extension; ${e.source === "both" ? "ledger + discovered" : "discovered, not in the ledger"})`);
+      }
+    }
   }
 
   for (const h of harnesses) {
@@ -320,6 +472,30 @@ function drift(): void {
     }
   }
   if (!found) console.log("no drift: every deployed unit matches its Pack source");
+}
+
+// ---------------------------------------------------------------- use
+
+/**
+ * Activate a profile on every selected harness through the registry: pi rewrites
+ * settings.json (skills AND extensions) via packs-pi's registry-model activation;
+ * materialized harnesses go through the shared engine, honouring per-Pack skill
+ * subsets. The direction rule is unchanged — this deploys Pack -> harness.
+ */
+function useProfile(): void {
+  const profileName = positional[1];
+  if (!profileName) throw new Error("usage: tools/harnesses use <profile> [--harness <id>]");
+  const harnesses = selectedHarnesses();
+  const profile = readProfiles({ axonRoot: AXON_ROOT } as DeployConfig).find((p: Profile) => p.name === profileName);
+  if (!profile) throw new Error(`no such profile: '${profileName}'`);
+  for (const h of harnesses) {
+    console.log(`── ${h.label}`);
+    if (h.model === "registry") {
+      activateProfileOnPi(profileName);
+    } else {
+      for (const line of activateProfile(h.config(), profile)) console.log(`  ${line}`);
+    }
+  }
 }
 
 // ---------------------------------------------------------------- sync
@@ -493,6 +669,7 @@ const HELP = `tools/harnesses — Packs across every agent harness at once.
   status [<pack>] [--json]              one matrix: every Pack skill x every harness
   drift [<pack>] [--diff]               per-file detail for anything that drifted
   sync <pack>|--all                     one-way Axon -> harness (installed harnesses only)
+  use <profile> [--harness <id>]        activate a profile on every installed harness (or one)
   promote <skill> --pack <p> [--from h] bring a harness-level skill Axon does not own into a Pack
   accept <pack> <skill> [--from h]      keep a destination edit to a skill Axon already owns
 
@@ -510,6 +687,7 @@ if (import.meta.main) {
       case "status": status(); break;
       case "drift": drift(); break;
       case "sync": sync(); break;
+      case "use": useProfile(); break;
       case "promote": promote(); break;
       case "accept": accept(); break;
       case "help": case "-h": case "--help": console.log(HELP); break;

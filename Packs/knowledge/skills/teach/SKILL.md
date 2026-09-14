@@ -28,7 +28,7 @@ The arc is **Probe → Plan → Teach → Close**. Do not skip or merge phases.
 
 Goal: a detailed map of the student's current understanding on every strand the topic depends on.
 
-1. Ask what they want to learn and to what depth, if not already clear. Note any context they volunteer about what they already know.
+1. Ask what they want to learn and to what depth, if not already clear. Note any context they volunteer about what they already know. Depth is a decision, so the `ask` tool fits it: 2-4 levels with a one-line consequence each, your recommendation marked, and the student's note coming back with the choice. Without the tool, ask it as plain text.
 2. Build the dependency tree of the topic in your head, then **binary-search the edge on each strand** with the `quiz` tool: start broad (does the foundation hold?), then split toward the frontier. 2-4 questions per call, graded, always with explanations. Continue until each strand's edge is located — don't stop at the first wrong answer; find *where* it stops holding.
 3. If the `quiz` tool is unavailable (non-interactive, or a harness without the pack's quiz extension), ask numbered questions as text instead.
 4. While probing, in parallel where possible, **fact-check anything you'll teach that you're not certain of** (web search if available, or flag as to-verify).

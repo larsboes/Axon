@@ -17,7 +17,7 @@
 //   tools/packs-codex remove <pack>...
 //   tools/packs-codex use [<profile>]
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import {
@@ -112,6 +112,7 @@ export function defaultCodexDeployConfig(): DeployConfig {
 }
 
 async function main(): Promise<void> {
+  const home = process.env.HOME ?? "";
   const [command = "status", ...args] = process.argv.slice(2);
   if (command === "-h" || command === "--help" || command === "help") {
     console.log(HELP);
@@ -149,6 +150,16 @@ async function main(): Promise<void> {
         if (args.length === 0) throw new Error("usage: tools/packs-codex remove <pack>...");
         for (const pack of args) {
           for (const line of removePack(config, pack)) console.log(line);
+        }
+        // ~/.agents/skills is pi's global discovery root (pi docs: skills.md), so on a
+        // machine with pi installed the destination has TWO readers and this removal
+        // costs pi the skills it was loading from here. Name that cost instead of
+        // letting the removal look like a pure cleanup.
+        if (config.destination === join(home, ".agents", "skills") && existsSync(join(home, ".pi", "agent", "settings.json"))) {
+          console.log(
+            `note: pi is installed and discovers ${config.destination} by default, so the removed unit(s) were loaded by pi until now. ` +
+              `If pi should keep them, deploy them there before removing next time: tools/packs-pi deploy ${args.join(" ")}`,
+          );
         }
         break;
       case "migrate-generated": {

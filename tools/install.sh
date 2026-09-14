@@ -237,8 +237,8 @@ echo "Available Packs:"
 "$TOOLS_DIR/packs.sh" list
 echo "Activate for Claude Code: tools/packs.sh link <name>"
 echo "Deploy for Codex:        tools/packs-codex deploy <name>"
-echo "Deploy for OpenCode:     tools/packs-opencode.ts deploy <name>"
-echo "Select for Pi:           tools/packs-pi.ts deploy <name>"
+echo "Deploy for OpenCode:     tools/packs-opencode deploy <name>"
+echo "Deploy for Pi:           tools/packs-pi deploy <name>"
 
 # 6) Deploy Axon's baseline Claude Code harness settings (auto permission mode, etc.)
 # into ~/.claude/settings.json — a general default Axon delivers on every machine, not

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Thin launcher: the Pack-drift session hook is implemented in pack-drift-hook.ts
+# because it compares tree digests and prints JSON-shaped output.
+_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec bun run "$_here/pack-drift-hook.ts" "$@"

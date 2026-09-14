@@ -1,6 +1,9 @@
 # knowledge
 
-Knowledge work on the Obsidian vault, for any agent harness (Claude Code, pi, Codex).
+Knowledge work on the Obsidian vault. Deployed per harness where the vault is that harness's
+surface: pi today, any other harness when a profile selects it. `teach` and question rounds in
+`crystallize` degrade to plain text without the pi `quiz` extension — see the degraded paths
+below.
 The pack is the purpose; `obsidian` is the tool inside it. Eight skills collapsed to
 three on 2026-08-22.
 
@@ -38,6 +41,25 @@ trigger cost, behind the one skill that reads the contract first.
 `Knowledge/<domain>/llm-wiki/` tree with its own `index.md`, `log.md`,
 `sources/`, `entities/` and `concepts/` folders, which contradicts the contract's
 placement table and no-doubling law on every point. The vault *is* the wiki.
+
+## Extensions
+
+`extensions/questions.ts` registers the two tools that put a question in front of the
+human instead of into the transcript. Both refuse to hang in a non-interactive run:
+they return an error the caller degrades from, rather than waiting forever.
+
+- **`ask`** — a batched decision round. Each question carries 2-9 mutually
+exclusive options with a one-line consequence each, an optional preview block
+shown for the highlighted option, and your recommendation marked ★ and focused,
+so Enter accepts it. The user picks one option and can attach a free-text note to
+that decision; `s` skips a question and leaves it open. The result reports every
+decision with its note and says whether it overruled your recommendation — so a
+caller can tell an informed answer from an accepted default, and can carry the
+user's own reasoning into the document it writes. Question rounds in
+`crystallize` are this tool.
+- **`quiz`** — graded multiple-choice, one question at a time, graded on
+selection with the correct answer and explanation revealed, and "I don't know"
+always offered. Used by `teach` to find the edge and to check each step.
 
 ## Attribution
 
