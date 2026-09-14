@@ -907,7 +907,7 @@ dependencies = [
 name = "candidate-fingerprint"
 version = "0.1.0"
 dependencies = [
- "sha2 0.10.9",
+ "sha2 0.11.0",
 ]
 
 [[package]]
@@ -1106,7 +1106,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "thiserror 1.0.69",
  "tokio",
  "tower-http",
@@ -1686,7 +1686,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tokio",
  "tower 0.5.3",
  "tower-http",
@@ -3552,7 +3552,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
- "sha2 0.10.9",
+ "sha2 0.11.0",
  "tokio",
 ]
 
