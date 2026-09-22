@@ -1255,7 +1255,7 @@ await new Promise((r) => setTimeout(r, 50));
 				(origin ? `Origin: ${origin}\r\n` : "") +
 				(cookie ? `Cookie: ${cookie}\r\n` : "") +
 				"Upgrade: websocket\r\nConnection: Upgrade\r\n" +
-				"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+				"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n", // gitleaks:allow — RFC 6455 example nonce, not a credential
 			));
 			socket.on("data", (data) => {
 				firstLine = (firstLine + data.toString()).split("\r\n")[0];

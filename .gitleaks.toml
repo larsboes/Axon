@@ -1,0 +1,8 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "RFC 6455's published example WebSocket nonce is test data, not a credential."
+paths = ['''Packs/harness/pi-packages/accordion/extension/smoke\.mjs$''']
+regexTarget = "secret"
+regexes = ['''dGhlIHNhbXBsZSBub25jZQ==''']
