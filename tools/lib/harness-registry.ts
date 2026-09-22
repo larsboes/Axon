@@ -26,12 +26,23 @@ const home = process.env.HOME ?? "";
 /**
  * How a harness receives a Pack.
  *
+ * This describes the SKILL channel, which is what `statusesFor` dispatches on and
+ * what the `destination` and drift reporting below describe. A harness is not
+ * required to use one model for every artifact it needs, and one does not:
+ *
  * `materialized` — the adapter COPIES the skill to a destination it owns, so a
  * destination edit is drift and the ledger's digest can prove it.
  *
  * `registry` — the harness reads the Pack source in place through a path list in
  * its own settings file. There is no copy, so there is no drift by construction;
  * the failure mode is a registered path that no longer exists.
+ *
+ * `registry` is NOT a claim that nothing is ever copied. pi registers its skills
+ * this way and ALSO materializes agent files, because the pi-subagents extension
+ * reads those off disk and ignores settings.json entirely (packs-pi.ts says why).
+ * That second channel keeps its own ledger through the shared engine, and
+ * `tools/harnesses status` shows it alongside the registered skill rows. Reading
+ * this field as "pi copies nothing" is the mistake the sentence above prevents.
  */
 export type DeliveryModel = "materialized" | "registry";
 
@@ -79,6 +90,10 @@ export const HARNESSES: Harness[] = [
     id: "pi",
     label: "pi",
     marker: join(home, ".pi", "agent", "settings.json"),
+    // Registry for skills, materialized for agent files — see DeliveryModel. The
+    // field stays `registry` because statusesFor uses it to pick the settings-based
+    // reader for the skill rows, and pi's agent rows come from a second config
+    // (defaultPiAgentsDeployConfig) rather than from a different value here.
     model: "registry",
     cli: "tools/packs-pi",
     config: defaultPiDeployConfig,

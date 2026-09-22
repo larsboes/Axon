@@ -1,9 +1,0 @@
-{
-  "name": "academic-writing",
-  "description": "Draft, critique, and cite-check academic writing across empirical-CS and DSR/qualitative-thesis genre profiles, with an adversarial multi-skeptic review pass.",
-  "author": {
-    "name": "Lars Boes",
-    "url": "https://github.com/larsboes/Axon"
-  },
-  "license": "MIT"
-}

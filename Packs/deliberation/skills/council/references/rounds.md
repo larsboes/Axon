@@ -12,9 +12,9 @@ How a council run is executed. The transcript shape is in `output-format.md`.
 | The failure mode: what breaks and who notices | `council-skeptic` | opus |
 | What it costs to build, run and reverse | `council-cost` | sonnet |
 | Precedent, measurement, what other people found | `council-evidence` | sonnet |
-| A fifth angle none of the four covers | `general-purpose`, with the read-only contract pasted into the prompt | inherited |
+| One assigned option, held whether or not the member agrees | `council-advocate` | opus |
 
-  These four agent types carry the contract, not the character: read-only tools, the evidence rule,
+  These agent types carry the contract, not the character: read-only tools, the evidence rule,
   the `[unverified]` mark, and "return the round text alone". The member's name, stance, what it
   pushes on and what it demands all still come from the brief in the prompt, so two councils on two
   topics share the type and share nothing else. The model per type is set in the agent file
@@ -31,10 +31,16 @@ How a council run is executed. The transcript shape is in `output-format.md`.
 - Do not add or drop a member after round 1.
 
 Every member prompt is built from four parts, in this order: the member brief, the decision and
-its options, the evidence collected in step 4 of the skill, and the round instruction below.
+its options, the evidence collected in step 5 of the skill, and the round instruction below.
+
+**Assemble the evidence pack for this run. Do not reuse one from an earlier run.** Its line numbers
+are citations, and one `edit` between two runs moves every one of them: re-running the same decision
+after editing a cited file left line 72 pointing at an unrelated sentence, and the clerk returned
+`missing` on three claims that were true and merely mis-numbered. The clerk caught it, which is the
+control working — but a pack that costs nothing to rebuild is not worth defending.
 
 A member cannot run a command and cannot fetch a page. It reads files. Everything else it is
-allowed to cite has to arrive in the prompt, which is what step 4 of the skill is for. A member
+allowed to cite has to arrive in the prompt, which is what step 5 of the skill is for. A member
 that needs a measurement nobody took names the command and marks the claim `[unverified]`.
 
 Two pointers exist that are not file paths, and every member prompt has to say so, because a clerk
@@ -63,8 +69,20 @@ Give your position on the decision from your role.
 - Write [unverified] after any claim you cannot cite.
 ```
 
-Then write the QUICK summary from `output-format.md`. Escalate to DEBATE when two members
-contradict each other on a fact, or when the summary cannot name a recommendation.
+Then write the QUICK summary from `output-format.md`.
+
+**Narrow the clerk on QUICK.** The synthesis here rests on a handful of claims, so send the clerk
+the claims the recommendation and the minority position actually depend on, and have it name the
+remainder as unchecked rather than resolving them. A full pass is what a three-round DEBATE needs.
+Two measured runs of the same decision, 2026-09-16: a full pass over 18 claims took 204 seconds and
+66k tokens; a narrowed pass over 19 claims took 68 seconds and 44k tokens, and it caught more,
+because the claims it did check were the ones that mattered. Say in the clerk line that the pass was
+narrowed, so a later reader can tell a cheap check from a complete one.
+
+Escalate to DEBATE when two members contradict each other on a fact, when the clerk returns
+`contradicted` on a claim the recommendation rests on, or when the summary cannot name a
+recommendation. Only the last of those is visible without the clerk — the other two are why a QUICK
+run with a real decision behind it still pays for one.
 
 ## DEBATE — three rounds
 
@@ -146,6 +164,32 @@ Apply the clerk's verdicts to the transcript before the next round runs:
 
 Round 2 and round 3 read the annotated transcript, never the raw one. A member that argues against
 a struck claim wastes its round.
+
+## Wall clock
+
+Measured on the first real pi run, 2026-09-16, QUICK mode with four members and one clerk.
+
+| Phase | Wall clock | Parallelism |
+|---|---|---|
+| Round 1 | 9 to 18 s | every member at once (4 members) |
+| Rounds 2 and 3 | same as round 1 | every member at once |
+| Clerk | **1 to 4 minutes** | one clerk, after the round it checks |
+| Synthesis | inline | the orchestrator, no subagent |
+
+The clerk, not the members, is the cost. That run's four members returned in 9 to 18 seconds; the one
+clerk pass took 204 seconds and 66k tokens, because it reads every pointer itself and on a live round
+it has fifteen or more to resolve. So QUICK is one round plus one clerk, 1.5 to 4 minutes, and DEBATE
+is three of each, 4 to 13 minutes — not the 45 to 90 seconds this table claimed before it had been
+run. Both figures assume the round was sent as a single message; a round launched one member at a time
+costs the sum of its members rather than the maximum, which is the whole reason the launch is batched.
+
+Two consequences worth knowing before convening:
+
+- **Budget the clerk, not the debate.** A member writes 40 to 150 words from evidence already in its
+  prompt. The clerk opens files. If a run feels expensive, the fix is fewer claims to check, not fewer
+  members.
+- **Skip the clerk on a rehearsal.** While composing members and tuning briefs, run the round without
+  it — the verdicts only matter on a round whose result you intend to act on.
 
 ## After the rounds
 

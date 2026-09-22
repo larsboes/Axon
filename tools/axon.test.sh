@@ -19,7 +19,7 @@ contains() { case "$1" in *"$2"*) ;; *) fail "expected '$2' in: $1" ;; esac; }
 # looking for, so `[ ! -e ... ]` was true about the sandbox and false about the repo.
 # PRD Q44 (2026-08-25) retired Bazel, this test started reading the real checkout, and
 # it went red on the first run. Dropped rather than inverted — the CLI contract below
-# is what this file is for; where the Pack lives is Packs/axon/README.md's fact.
+# is what this file is for; where the Pack lives is Packs/harness/README.md's fact.
 
 out="$("$AXON" help)"
 contains "$out" "capability list"

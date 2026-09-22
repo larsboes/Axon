@@ -1,6 +1,6 @@
 ---
 name: ha-cli
-description: Queries and controls an explicitly configured Home Assistant instance and can write a private inventory into the active overlay. Use for Home Assistant state, configuration, integration, service-call, reload, or inventory operations. Never place returned instance data in public Axon.
+description: Queries and controls an explicitly configured Home Assistant instance and can write a private inventory into the active overlay. Use for Home Assistant state, configuration, integration, service-call, reload, or inventory operations. Do not use for Lovelace dashboard deploys or backups (use ha-dashboard or ha-dashgen), for automation-template materialization and component vendoring (use homectl), or for router, DNS and LAN queries (use fritz, pihole or netmon). Never place returned instance data in public Axon.
 allowed-tools: Bash
 ---
 

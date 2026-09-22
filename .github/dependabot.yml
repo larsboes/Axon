@@ -3,11 +3,26 @@
 # zero Renovate pull requests and zero Renovate issues over its whole life. Dependabot needs no
 # App.
 #
-# `cooldown: default-days: 0` is written out in EVERY block, and that is the ruling rather than
-# noise. Dependabot applies a three-day cooldown to version updates even when `cooldown` is not
-# configured — GitHub's own options reference states it — so omitting the key does not mean "no
-# hold", it silently reinstates the one this change deleted. Patch first
-# (README.md#patch-first): a hold that needs a human to end it is a hold that ends late.
+# `cooldown:` is written out in EVERY block, and that is the ruling rather than noise. Dependabot
+# applies a three-day cooldown to version updates even when `cooldown` is not configured —
+# GitHub's own options reference states it — so omitting the key does not mean "no hold", it
+# silently reinstates a hold nobody chose. Patch first (README.md#patch-first): a hold that needs
+# a human to end it is a hold that ends late.
+#
+# THE VALUE IS NO LONGER THE SAME IN EVERY BLOCK, and that is the change of 2026-09-22 (Q109).
+# `default-days: 0` remains the ruling for cargo and github-actions; it is `1` for the two `bun`
+# blocks. The three-day default is not what this rules out — a LONG hold is — and the measured
+# basis for the split is in dashboard/bunfig.toml, which is where the npm-only hold is configured
+# for a human running `bun add`. One sentence of it matters here: a malicious npm publish is
+# caught in hours (chalk/debug ~2.5h, Shai-Hulud ~12h, Mini Shai-Hulud / TanStack ~3h), so one
+# day is the whole window, while a malicious Cargo crate or a compromised `actions/*` tag is
+# close to unheard of and a hold there buys nothing.
+#
+# This block is the automated path, and it is the one that needed the hold: every pull request
+# below is armed to merge itself (Q77), so without it a poisoned publish would reach `main` with
+# no human anywhere in the loop. The bunfig hold is not a substitute and does not cover it —
+# `bun install --frozen-lockfile` ignores `minimumReleaseAge` by design (measured 2026-09-22 on
+# Bun 1.4.2), which is exactly what a Dependabot pull request installs.
 #
 # `default-days: 0` IS accepted, verified 2026-09-02 on this repository: the config validates and
 # Dependabot opened pull requests under it. That was the one open question when this file landed
@@ -15,7 +30,9 @@
 # window to 0, and Job::CooldownDefinition passes an explicit 0 straight through), while the
 # community JSON schema at json.schemastore.org/dependabot-2.0.json declares `default-days`
 # minimum 1, and GitHub's own validator is closed. The validator sided with dependabot-core, so
-# the `default-days: 1` fallback is not needed.
+# the `default-days: 1` fallback is not needed. 2026-09-22: the `1` in the two `bun` blocks above
+# is NOT that fallback coming back. It is the Q109 hold, chosen on its own reasoning, and the
+# blocks that needed no hold still read 0.
 #
 # The pull requests these open MERGE THEMSELVES once the required checks pass:
 # .github/workflows/dependabot-automerge.yml arms `gh pr merge --auto --squash` on each one
@@ -58,7 +75,7 @@ updates:
     schedule:
       interval: "daily"
     cooldown:
-      default-days: 0
+      default-days: 1          # 24h — the npm-only hold, Q109. Not 0, and not the 3-day default.
     open-pull-requests-limit: 3
     groups:
       dashboard:
@@ -70,7 +87,7 @@ updates:
     schedule:
       interval: "daily"
     cooldown:
-      default-days: 0
+      default-days: 1          # 24h — the npm-only hold, Q109. See the header.
     open-pull-requests-limit: 3
     groups:
       soundscape-ui:

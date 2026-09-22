@@ -35,6 +35,19 @@ follows on the next render.
 The full table is in `references/mermaid.md`, with the layout defaults and the
 measurement behind each one.
 
+**Which roles a palette must carry is this Pack's contract, and it is held as a GATE rather
+than a shared file.** Each skill names its own required roles — this skill's `NEEDED` in
+`theme.py`, `slide-deck`'s `REQUIRED_ROLES` in its own — because a skill has to be able to run
+from its own directory. What keeps them honest is
+`tools/check-presentations-theme-contract.sh`, which fails when a role required here is not one
+a deck-valid theme defines. That is the property that matters; a file both skills read was
+tried and removed, because it made the source skill incomplete and was copied into all four
+skills of the Pack when two read it.
+
+`paper` is in both lists for exactly this reason. It is here because diagrams need it, and it
+was diagram-only until 2026-09-17, which let a theme build a deck and then be unrenderable as a
+diagram. The gate now catches that shape at the source rather than at render time.
+
 ## Workflow
 
 ```

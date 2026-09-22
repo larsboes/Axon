@@ -14,14 +14,6 @@
       "source": "3d-printing"
     },
     {
-      "name": "academic-writing",
-      "source": "academic-writing"
-    },
-    {
-      "name": "axon",
-      "source": "axon"
-    },
-    {
       "name": "cognitive-load",
       "source": "cognitive-load"
     },
@@ -56,10 +48,6 @@
     {
       "name": "travel",
       "source": "travel"
-    },
-    {
-      "name": "unslop",
-      "source": "unslop"
     },
     {
       "name": "writing",

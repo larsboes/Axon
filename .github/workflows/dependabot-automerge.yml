@@ -1,9 +1,11 @@
 name: Dependabot auto-merge
 
-# Q77 (2026-09-02): a dependency update lands the day it exists. Dependabot opens the pull
-# requests daily with no cooldown (.github/dependabot.yml); this arms auto-merge on each one, so
-# the ordinary bump merges itself the moment the required checks go green and a human is not the
-# thing standing between a published fix and this repository.
+# Q77 (2026-09-02): a dependency update lands as soon as its checks pass. Q109 (2026-09-22)
+# restores a 24-hour cooldown for the two Bun manifests; Cargo and github-actions remain at 0.
+# Dependabot opens the pull requests daily (.github/dependabot.yml), and this still arms
+# auto-merge on each one, so the ordinary bump merges itself the moment the required checks go
+# green after its ecosystem's window. A human is not the thing standing between a published fix
+# and this repository.
 #
 # It was armed by hand on #199-#203 before this file existed, which is exactly why the file
 # exists: a step that needs somebody to remember it is a step that happens late.

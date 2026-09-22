@@ -178,6 +178,10 @@ bun install --frozen-lockfile --ignore-scripts
 bun run dev      # or: bun run build / bun run check
 ```
 
+`bunfig.toml` holds fresh npm resolutions for 24 hours and runs the Socket security scanner;
+`--frozen-lockfile` keeps the committed install reproducible and is not delayed. Inspect the
+current lockfile directly with `bun pm scan`.
+
 Live system metrics (temperature, power, memory) on **/systems** come from macmon, which is
 `capabilities/macmon` — enabled and started the ordinary way:
 

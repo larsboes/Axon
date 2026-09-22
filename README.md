@@ -58,9 +58,11 @@ contract, install, or review decision.
    capability contract, and leaves a trace.
 5. **Security is continuous observation.** An audit gate is a start, never the property itself.
    Nothing here is held at a version any more: Q74 and Q77 (2026-09-02) removed the adoption
-   cooldown and every `pin`, so a fix lands the day it exists and reporting stands where the
-   hold stood ([Patch first](#patch-first)). Egress, access and agent touches stay observable
-   after install; their logs live privately.
+   cooldown and every `pin`, so a fix outside the npm ecosystem lands the day it exists and
+   reporting stands where the hold stood ([Patch first](#patch-first)). Q109 (2026-09-22)
+   restores a 24-hour resolution hold for Bun/npm packages only, because that registry's threat
+   model is different; it is an age window, not a version pin. Egress, access and agent touches
+   stay observable after install; their logs live privately.
 6. **Replaceable edges, stable contracts.** Agent harnesses, model providers, visual renderers
    and deployment substrates are adapters. Adopt first and record why. Re-open the call when
    its stated flip condition comes true.
@@ -317,7 +319,7 @@ is required — a verdict, a licence and an argument, before consumption — is 
 | Question | Answered by |
 |---|---|
 | Is there a verdict, a licence and a reason? | `upstreams.toml` itself, read by a human at review time |
-| Is a newer release out? | Dependabot version updates — `.github/dependabot.yml`, one grouped pull request per ecosystem per day, with no cooldown |
+| Is a newer release out? | Dependabot version updates — `.github/dependabot.yml`, one grouped pull request per ecosystem per day; Cargo/actions use 0 days, Bun uses the Q109 one-day window |
 | Is a locked dependency known-vulnerable? | Dependabot alerts and security updates, and `osv-scanner` in `.github/workflows/security.yml` and in `tools/audit` |
 | Is there a CVE in a declared capability image? | `grype registry:<image>:<tag>` in `security.yml`, weekly. Findings are report-only and land in the run summary; the job goes red only if it discovered no image to scan. No container runtime and no local pull |
 | Is there a secret in this repository? | GitHub secret scanning, with push protection — and `gitleaks` in `tools/audit`, which reads history the push protection never saw |
@@ -341,8 +343,11 @@ rather than stopping being asked.
 
 **Two gaps, named rather than left to be inferred from a green check.** Shell is scanned by
 nothing: CodeQL has no shell extractor, `semgrep` was retired with the rest of the set, and
-0.44 MB of `tools/` is the largest hand-written surface here. And nothing detects a malicious
-release — see [Patch first](#patch-first) for why that trade was taken.
+0.44 MB of `tools/` is the largest hand-written surface here. A malicious release is not
+covered uniformly: Q109 adds Socket's scanner to the two Bun UI trees, while every other
+install path relies on its own ecosystem controls, lifecycle-hook blocking where Bun applies,
+and the observation that happens outside this repository. The scanner is network-backed and its free mode is not a
+substitute for that hold — see [Patch first](#patch-first) for the trade.
 
 ### Patch first
 
@@ -350,11 +355,16 @@ This section was **Pins and cooldown** until 2026-09-02, and an `upstreams.toml`
 before then was decided under the hold it described. Those entries still point here; their text is
 left as written, because rewriting a decision's reasoning to match a later rule falsifies it.
 
-Take the patch. There is no adoption cooldown, on the host or in this repository, and nothing is
-held at a version anywhere. Q74 removed the cooldown on 2026-09-02; Q77, the same day,
-removed what was left — `upstreams.toml`'s 86 `pin` lines, the Rust toolchain literal, the three
-container image versions, and `capabilities/agentbox`'s pinned release and checksums. Every
-dependency here tracks its upstream's latest, and an update lands the day it exists.
+Take the patch. There is no adoption cooldown on host packages, Cargo, containers, rustup or
+repository-wide version policy, and nothing is held at a version anywhere. Q74 removed the
+cooldown on 2026-09-02; Q77, the same day, removed what was left — `upstreams.toml`'s 86 `pin`
+lines, the Rust toolchain literal, the three container image versions, and
+`capabilities/agentbox`'s pinned release and checksums. Q109 (2026-09-22) is the narrow
+exception: Bun/npm resolution waits 24 hours in the two UI trees and on this laptop, while
+Dependabot applies the same one-day window to those two manifests. The laptop-wide copy is
+`~/.bunfig.toml`; `tools/install.sh` offers it opt-in and `tools/doctor` reports drift. It is an
+age hold, not a version pin, and every dependency still tracks its upstream's latest after that
+window.
 
 The hold asked a release to age seven to fourteen days before adoption, on the argument that the
 ecosystem finds a compromised publish in days and reading the dependency tree yourself cannot.
@@ -375,11 +385,11 @@ one leaves something a check can read:
 - `capabilities/container-refresh` runs `tools/container-refresh.sh` every 24 hours on a host
   that runs containers: it pulls every image a `service.toml` declares and recreates the ones
   whose digest moved.
-- `.github/dependabot.yml` opens the repository half daily, with `cooldown: default-days: 0`
-  written out in every block so the three-day default cannot creep the hold back in, and
-  `.github/workflows/dependabot-automerge.yml` arms `gh pr merge --auto --squash` on each pull
-  request — so the ordinary bump merges itself once the required checks pass, and no bump waits
-  for somebody to look.
+- `.github/dependabot.yml` opens the repository half daily. Cargo and github-actions carry
+  `cooldown: default-days: 0`; the two Bun manifests carry `default-days: 1`, the 24-hour npm
+  window restored by Q109. `.github/workflows/dependabot-automerge.yml` still arms
+  `gh pr merge --auto --squash` on each pull request — so the ordinary bump merges itself once
+  the required checks pass, and no bump waits for somebody to look.
 - `rust-toolchain.toml` names the `stable` channel rather than a release, which is the toolchain
   `rustup update` above already installs.
 
@@ -387,11 +397,14 @@ Both scheduled jobs write a receipt the next `tools/doctor` reads out, because a
 real failure is that it quietly stops running. `.github/workflows/security.yml`, CodeQL and
 GitHub's advisory alerts are what now stand between a bad publish and this machine.
 
-**The named cost.** A compromised publish now reaches this host within a day instead of after a
-seven-day hold. Nothing here detects that class: a scanner reads advisories, and the advisory for
-a malicious release is written after somebody finds it. What stands against it is smallness and
-reading — every entry in `upstreams.toml` carries a human verdict, and `bun install` never runs a
-lifecycle hook (`tools/check-bun-install-policy.sh`), which is the path ChainDrop took.
+**The named cost.** A compromised publish reaches the npm path after one day instead of after a
+seven-day hold; host packages and the other ecosystems still take the patch immediately. The two
+Bun UI trees now add Socket's scanner, but it is a network-backed detector rather than a guarantee:
+free mode needs no token, a Socket outage is an operational dependency, and the scanner does not
+cover non-Bun paths. What stands against the remaining gap is smallness and reading — every entry
+in `upstreams.toml` carries a human verdict, every resolving UI tree carries the hold and scanner,
+and `bun install` never runs a lifecycle hook (`tools/check-bun-install-policy.sh`), which is the
+path ChainDrop took.
 
 **The second cost, from dropping the versions.** A merely BAD release now lands too. A broken
 `graphify` breaks `tools/graphify.sh` the day it ships, a bad Home Assistant `:stable` is what

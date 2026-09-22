@@ -67,6 +67,13 @@ export type DesiredFile = {
   absolutePath: string;
   relativePath: string;
   mode: number;
+  /**
+   * The bytes to install, when they are not the source file's own. Only a flat-file
+   * unit sets this, because its `transform` rewrote the file on the way out. Every
+   * reader — digestFiles, materializeStage — must prefer it over absolutePath, or a
+   * transformed deployment reports permanent drift against its own source.
+   */
+  content?: Buffer;
 };
 
 export type DeployConfig = {
@@ -88,6 +95,33 @@ export type DeployConfig = {
    * convention, and an adapter that knows nothing about it simply omits this.
    */
   treeConvention?: { sourceDir: string; destinationRoot: string };
+  /**
+   * A directory of independent files a Pack may carry, where EVERY FILE deploys as
+   * its own owned unit into a SHARED destination directory.
+   *
+   * Distinct from `treeConvention`, and pi forced the distinction (2026-09-16): pi's
+   * agent loader reads `*.md` directly in one flat directory and does NOT recurse, so
+   * the per-Pack subdirectory a tree convention produces would be invisible to it.
+   * Two Packs therefore share that one destination, which rules out a single
+   * whole-directory unit — ownership has to be per file. `ownerOf` already compares
+   * resolved destinations for exactly this class of problem, so it holds.
+   *
+   * `transform` runs on each file's bytes on the way out, because pi's agent files
+   * are not byte-compatible with Claude Code's (tools/lib/pi-agent-file.ts). The
+   * digest is taken over the TRANSFORMED bytes, so a transform is never drift.
+   */
+  flatFileConvention?: {
+    sourceDir: string;
+    destinationRoot: string;
+    transform?: (content: string, label: string) => string;
+  };
+  /**
+   * Deploy the flat-file convention and nothing else. For a harness that owns its
+   * skill selection by some other means — pi registers paths in settings.json rather
+   * than materializing them — so that reusing this engine for its agent files does
+   * not also copy every skill to a destination nothing reads.
+   */
+  skipManifestSkills?: boolean;
 };
 
 export type SkillStatus =
@@ -121,6 +155,12 @@ export type Unit = {
   sourceRoot: string;
   destination: string;
   isSkill: boolean;
+  /**
+   * Set on a flat-file unit: the one file inside `sourceRoot` this unit owns. The
+   * directory stays the source root because collectFiles owns the symlink and
+   * entry-type checks, and running them per file beats a second implementation.
+   */
+  onlyFile?: string;
 };
 
 function emptyState(destination: string): DeploymentState {
@@ -303,17 +343,55 @@ export function treeKey(sourceDir: string): string {
 }
 
 /**
+ * A flat-file unit's ledger key: the source directory plus the file's own name.
+ * No trailing slash, so it can never collide with a tree key, and the dot keeps it
+ * out of the lowercase-hyphen-case skill namespace.
+ */
+export function flatKey(sourceDir: string, file: string): string {
+  return `${sourceDir}/${file}`;
+}
+
+/**
+ * The files a Pack carries under a flat source directory, sorted for a stable
+ * deploy order. A non-`.md` entry is an error rather than a silent skip: the harness
+ * loads `.md` only, so anything else in there is either a stray or a rename that
+ * would make an agent vanish from the harness with nothing reported.
+ */
+function flatSourceFiles(config: DeployConfig, pack: string, sourceDir: string): string[] {
+  const dir = join(packDir(config, pack), sourceDir);
+  if (!existsSync(dir)) return [];
+  const files: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name.startsWith(".")) continue;
+    if (!entry.isFile()) throw new Error(`${pack}/${sourceDir}: ${entry.name} is not a file`);
+    if (!entry.name.endsWith(".md")) {
+      throw new Error(
+        `${pack}/${sourceDir}/${entry.name}: only .md files deploy from a flat-file convention; `
+          + `the harness loads nothing else, so this file would be silently inert`,
+      );
+    }
+    files.push(entry.name);
+  }
+  return files.sort();
+}
+
+/**
  * Every unit a Pack deploys: its manifest skills, plus the tree convention when
  * the adapter declares one and the Pack actually carries that directory.
  */
 export function packUnits(config: DeployConfig, pack: string): Unit[] {
   const dir = packDir(config, pack);
-  const units: Unit[] = readPackSkills(config, pack).map((skill) => ({
-    key: skill,
-    sourceRoot: join(dir, "skills", skill),
-    destination: join(config.destination, skill),
-    isSkill: true,
-  }));
+  // Read the manifest even when its skills are not deployed, so a mistyped Pack name
+  // still fails here rather than deploying nothing and reporting success.
+  const manifestSkills = readPackSkills(config, pack);
+  const units: Unit[] = config.skipManifestSkills
+    ? []
+    : manifestSkills.map((skill) => ({
+        key: skill,
+        sourceRoot: join(dir, "skills", skill),
+        destination: join(config.destination, skill),
+        isSkill: true,
+      }));
   const tree = config.treeConvention;
   if (tree && existsSync(join(dir, tree.sourceDir))) {
     units.push({
@@ -322,6 +400,18 @@ export function packUnits(config: DeployConfig, pack: string): Unit[] {
       destination: join(tree.destinationRoot, pack),
       isSkill: false,
     });
+  }
+  const flat = config.flatFileConvention;
+  if (flat) {
+    for (const file of flatSourceFiles(config, pack, flat.sourceDir)) {
+      units.push({
+        key: flatKey(flat.sourceDir, file),
+        sourceRoot: join(dir, flat.sourceDir),
+        destination: join(flat.destinationRoot, file),
+        isSkill: false,
+        onlyFile: file,
+      });
+    }
   }
   return units;
 }
@@ -378,8 +468,38 @@ function collectFiles(
  */
 export function desiredFiles(config: DeployConfig, pack: string, unit: Unit): Map<string, DesiredFile> {
   if (!existsSync(unit.sourceRoot)) throw new Error(`${pack}/${unit.key}: source missing at ${unit.sourceRoot}`);
-  const files = collectFiles(config, unit.sourceRoot, `${pack}/${unit.key}`);
-  if (!unit.isSkill) return files;
+  const collected = collectFiles(config, unit.sourceRoot, `${pack}/${unit.key}`);
+  if (!unit.isSkill) {
+    if (!unit.onlyFile) return collected;
+    const file = collected.get(unit.onlyFile);
+    if (!file) throw new Error(`${pack}/${unit.key}: source file '${unit.onlyFile}' missing from ${unit.sourceRoot}`);
+    // The transform runs here, on the way out, so every consumer downstream —
+    // digestFiles, materializeStage, getStatuses — sees the bytes the harness will
+    // actually read. Hashing the source instead would report permanent drift.
+    const transform = config.flatFileConvention?.transform;
+    const content = transform
+      ? Buffer.from(transform(readFileSync(file.absolutePath, "utf8"), `${pack}/${unit.key}`), "utf8")
+      : undefined;
+    return new Map([[file.relativePath, { ...file, content }]]);
+  }
+  const files = collected;
+
+  // A Pack level `shared/` merge lived here briefly: built and removed on 2026-09-17, after
+  // a review asked the obvious question — must a skill be self-contained? It materialized a
+  // Pack's shared/ into EVERY skill unit at `<skill>/shared/...`, harness-neutrally, so a
+  // script could open a file at a path that held on every surface.
+  //
+  // Two things killed it. It made the SOURCE skill incomplete: the deployed skill was
+  // self-contained, but in the repo the file was absent, so the tree a human reads and
+  // reviews did not show a dependency the skill actually had, and any copy not made by this
+  // deployer broke at runtime. And it went to every skill of the Pack, which is why the one
+  // thing big enough to want it — a 500-line tell catalog — could never use it.
+  //
+  // What it bought was that two lists were the same BYTES. The property that matters is that
+  // they AGREE, and a gate proves that without any of the cost: see
+  // tools/presentations-theme-contract.test.sh, which fails if a role one skill requires is
+  // not one the other's themes define. A skill must be able to RUN from its own directory;
+  // it may still POINT at a sibling by name for material it merely reads.
   const overlayRoot = join(packDir(config, pack), config.adapter, unit.key);
   const overlay = collectFiles(config, overlayRoot, `${pack}/${unit.key} ${config.adapter} overlay`);
   if (overlay.has("SKILL.md")) {
@@ -394,7 +514,7 @@ export function digestFiles(files: Map<string, DesiredFile>): string {
   for (const rel of [...files.keys()].sort()) {
     const file = files.get(rel)!;
     hash.update(`${rel}\0${file.mode.toString(8)}\0`);
-    hash.update(readFileSync(file.absolutePath));
+    hash.update(file.content ?? readFileSync(file.absolutePath));
     hash.update("\0");
   }
   return hash.digest("hex");
@@ -408,6 +528,35 @@ function legacyDigestTree(config: DeployConfig, root: string): string {
   return digestFiles(collectFiles(config, root, root, true));
 }
 
+/**
+ * The digest of whatever is installed at a destination, which is a directory for a
+ * skill or a tree unit and a single FILE for a flat-file unit.
+ *
+ * A file is hashed through digestFiles under the same relative path its source
+ * carries, which is its basename on both sides, so a desired digest and an installed
+ * digest of the same bytes stay comparable. Every drift check here assumes that, and
+ * the alternative — teaching each of the eight call sites to branch — would put the
+ * assumption in eight places instead of one.
+ */
+function digestDestination(config: DeployConfig, destination: string): string {
+  const stats = statSync(destination);
+  if (stats.isDirectory()) return digestTree(config, destination);
+  return digestFileAt(destination, stats.mode & 0o777);
+}
+
+/** The legacy-policy counterpart of digestDestination. Generated-artifact exclusion
+ *  has no meaning for a single file, so both policies agree there. */
+function legacyDigestDestination(config: DeployConfig, destination: string): string {
+  const stats = statSync(destination);
+  if (stats.isDirectory()) return legacyDigestTree(config, destination);
+  return digestFileAt(destination, stats.mode & 0o777);
+}
+
+function digestFileAt(path: string, mode: number): string {
+  const name = basename(path);
+  return digestFiles(new Map([[name, { absolutePath: path, relativePath: name, mode }]]));
+}
+
 function adoptDigestPolicyIfSafe(
   config: DeployConfig,
   record: SkillRecord,
@@ -415,18 +564,18 @@ function adoptDigestPolicyIfSafe(
   unitKey: string,
 ): void {
   if (record.digestPolicy === DIGEST_POLICY) {
-    if (digestTree(config, destination) !== record.installedDigest) {
+    if (digestDestination(config, destination) !== record.installedDigest) {
       throw new Error(`${unitKey}: installed copy has local changes`);
     }
     return;
   }
-  if (legacyDigestTree(config, destination) !== record.installedDigest) {
+  if (legacyDigestDestination(config, destination) !== record.installedDigest) {
     throw new Error(
       `${unitKey}: legacy digest is ambiguous; review the destination and run ` +
         `migrate-generated <pack> --accept-current`,
     );
   }
-  record.installedDigest = digestTree(config, destination);
+  record.installedDigest = digestDestination(config, destination);
   record.digestPolicy = DIGEST_POLICY;
 }
 
@@ -518,7 +667,10 @@ function materializeStage(config: DeployConfig, pack: string, unit: Unit): { sta
     for (const file of files.values()) {
       const dest = join(stage, ...file.relativePath.split("/"));
       mkdirSync(dirname(dest), { recursive: true });
-      copyFileSync(file.absolutePath, dest);
+      // A transformed file is written from its bytes; everything else is copied, so
+      // the common path keeps mtime and hard-link behaviour it always had.
+      if (file.content) writeFileSync(dest, file.content);
+      else copyFileSync(file.absolutePath, dest);
       chmodSync(dest, file.mode);
     }
     return { stage, digest: digestTree(config, stage) };
@@ -548,7 +700,16 @@ function ownerOf(config: DeployConfig, state: DeploymentState, unit: Unit): stri
   return null;
 }
 
-function replaceAtomically(config: DeployConfig, stage: string, destination: string): void {
+function replaceAtomically(config: DeployConfig, stage: string, destination: string, singleFile = false): void {
+  if (singleFile) {
+    // The stage is a directory holding this one file, and the destination is a file,
+    // so renaming the stage over it would fail outright (ENOTDIR). Rename the file
+    // itself: on POSIX that replaces the destination in one step, which is why no
+    // rollback copy is needed here and one is needed for a directory.
+    renameSync(join(stage, basename(destination)), destination);
+    rmSync(stage, { recursive: true, force: true });
+    return;
+  }
   if (!existsSync(destination)) {
     renameSync(stage, destination);
     return;
@@ -596,7 +757,7 @@ function installOne(
   }
   if (mode === "deploy" && existingRecord && existsSync(destination)) {
     adoptDigestPolicyIfSafe(config, existingRecord, destination, unit.key);
-    const actual = digestTree(config, destination);
+    const actual = digestDestination(config, destination);
     const wanted = digestFiles(desiredFiles(config, pack, unit));
     return wanted === actual ? `= ${unit.key} (already current)` : `= ${unit.key} (deployed; run sync to update)`;
   }
@@ -611,12 +772,12 @@ function installOne(
 
   const { stage, digest } = materializeStage(config, pack, unit);
   try {
-    if (existsSync(destination) && digestTree(config, destination) === digest) {
+    if (existsSync(destination) && digestDestination(config, destination) === digest) {
       rmSync(stage, { recursive: true, force: true });
       recordUnit(config, state, pack, unit, digest);
       return `= ${unit.key} (already current)`;
     }
-    replaceAtomically(config, stage, destination);
+    replaceAtomically(config, stage, destination, Boolean(unit.onlyFile));
   } catch (error) {
     if (existsSync(stage)) rmSync(stage, { recursive: true, force: true });
     throw error;
@@ -693,7 +854,7 @@ export function adoptPack(config: DeployConfig, pack: string): string[] {
       const files = desiredFiles(config, pack, unit);
       validateUnit(config, files, unit, `${pack}/${unit.key}`);
       const wanted = digestFiles(files);
-      const actual = digestTree(config, unit.destination);
+      const actual = digestDestination(config, unit.destination);
       if (wanted !== actual) {
         failures.push(`${unit.key}: ${unit.destination} differs from the Pack source; refusing to adopt`);
         continue;
@@ -731,7 +892,7 @@ export function reconcileUnit(config: DeployConfig, pack: string, unit: Unit): s
     // is worse than one that reports drift.
     validateUnit(config, files, unit, `${pack}/${unit.key}`);
     const wanted = digestFiles(files);
-    const installed = digestTree(config, unit.destination);
+    const installed = digestDestination(config, unit.destination);
     if (wanted !== installed) {
       throw new Error(`${unit.key}: destination still differs from the Pack source; refusing to re-record`);
     }
@@ -749,6 +910,10 @@ export function reconcileUnit(config: DeployConfig, pack: string, unit: Unit): s
 function recordedDestination(config: DeployConfig, pack: string, unitKey: string): string {
   const tree = config.treeConvention;
   if (tree && unitKey === treeKey(tree.sourceDir)) return join(tree.destinationRoot, pack);
+  const flat = config.flatFileConvention;
+  if (flat && unitKey.startsWith(`${flat.sourceDir}/`)) {
+    return join(flat.destinationRoot, unitKey.slice(flat.sourceDir.length + 1));
+  }
   return join(config.destination, unitKey);
 }
 
@@ -882,7 +1047,7 @@ export function migrateGeneratedArtifacts(
       if (readdirSync(directory).length === 0) rmdirSync(directory);
     }
     const record = state.packs[pack].skills[unitKey];
-    record.installedDigest = digestTree(config, destination);
+    record.installedDigest = digestDestination(config, destination);
     record.digestPolicy = DIGEST_POLICY;
     messages.push(`✓ ${unitKey} migrated (${artifacts.files.length} generated artifact(s) removed)`);
   }
@@ -897,6 +1062,20 @@ export type Profile = {
   name: string;
   description: string;
   packs: string[];
+  /**
+   * Packs a `*` profile must NOT deploy. Only meaningful with `packs = ["*"]`.
+   *
+   * This is where "what to deploy, and what not" belongs — the operator's decision,
+   * in the file the operator owns, naming only Packs that actually exist. It replaces
+   * the `# pi: REFUSED` line a Pack used to carry in its own `pack.toml` (retired
+   * 2026-09-17): that was a harness-specific veto inside a manifest the schema keeps
+   * harness-neutral, and it made `full` silently mean "all packs except …".
+   *
+   * An `except` list also keeps `full` portable. Writing the same set as an explicit
+   * `packs = ["…"]` would have to name the private overlay's Packs, which do not exist
+   * on another machine, and would silently drop every Pack added later.
+   */
+  except?: string[];
   /**
    * Optional per-Pack skill subset. A Pack with no entry loads all its skills;
    * a Pack with an entry loads ONLY the named skills (tree units like agents/
@@ -917,8 +1096,24 @@ export function readProfiles(config: DeployConfig): Profile[] {
 }
 
 export function resolveProfilePacks(config: DeployConfig, profile: Profile): string[] {
+  const except = profile.except ?? [];
   if (profile.packs.length === 1 && profile.packs[0] === "*") {
-    return availablePacks(config);
+    const available = new Set(availablePacks(config));
+    for (const pack of except) {
+      // Named-but-absent is an error, not a no-op: an exclusion list that silently
+      // does nothing because of a typo reads as "deployed" for a Pack that is not.
+      if (!available.has(pack)) {
+        throw new Error(`profile '${profile.name}': except names unknown pack '${pack}'`);
+      }
+    }
+    const excluded = new Set(except);
+    return availablePacks(config).filter((pack) => !excluded.has(pack));
+  }
+  if (except.length) {
+    throw new Error(
+      `profile '${profile.name}': except is only meaningful with packs = ["*"]; ` +
+        `list the Packs this profile wants instead of excluding from a list it does not have`,
+    );
   }
   const allPacks = new Set(availablePacks(config, true));
   for (const pack of profile.packs) {
@@ -1085,9 +1280,9 @@ export function getStatuses(config: DeployConfig, selectedPack?: string): Status
         continue;
       }
       try {
-        const actual = digestTree(config, destination);
+        const actual = digestDestination(config, destination);
         if (record.digestPolicy !== DIGEST_POLICY) {
-          if (legacyDigestTree(config, destination) !== record.installedDigest) {
+          if (legacyDigestDestination(config, destination) !== record.installedDigest) {
             rows.push({
               pack,
               skill: unit.key,

@@ -16,6 +16,7 @@ import {
   adoptPack,
   deployPack,
   reconcileUnit,
+  resolveProfilePacks,
   syncPack,
   withStateLock,
   packUnits as unitsOf,
@@ -300,5 +301,41 @@ describe("the ledger lock", () => {
     });
     expect([outer, inner]).toEqual(["done", "reached"]);
     expect(existsSync(lockPath())).toBe(false);
+  });
+});
+
+describe("a profile's except list", () => {
+  // "What to deploy, and what not" is the operator's decision, and this is where it is
+  // written. It replaced a `# pi: REFUSED` line a Pack carried in its own pack.toml
+  // (retired 2026-09-17), which put a harness-specific veto in a manifest the schema keeps
+  // harness-neutral — and made `full` mean something other than "all packs".
+  beforeEach(() => {
+    writeManifest("dormant", ["dormant-skill"]);
+    writeSkill("dormant", "dormant-skill");
+  });
+
+  test("removes the named Pack from a wildcard profile", () => {
+    const packs = resolveProfilePacks(config, { name: "full", packs: ["*"], except: ["dormant"] });
+    expect(packs).not.toContain("dormant");
+    // And the rest of the sweep is untouched, so the exclusion is not a filter over all.
+    expect(packs).toContain("demo");
+  });
+
+  test("a wildcard profile with no except still takes everything", () => {
+    expect(resolveProfilePacks(config, { name: "everything", packs: ["*"] })).toContain("dormant");
+  });
+
+  test("a name that matches no Pack throws, rather than silently excluding nothing", () => {
+    // The typo case is the one that matters: an exclusion that does nothing looks exactly
+    // like a Pack that was deployed on purpose.
+    expect(() =>
+      resolveProfilePacks(config, { name: "full", packs: ["*"], except: ["dormat"] }),
+    ).toThrow("except names unknown pack 'dormat'");
+  });
+
+  test("except on a list that is not a wildcard is refused as meaningless", () => {
+    expect(() =>
+      resolveProfilePacks(config, { name: "x", packs: ["demo"], except: ["dormant"] }),
+    ).toThrow("except is only meaningful with packs = [\"*\"]");
   });
 });

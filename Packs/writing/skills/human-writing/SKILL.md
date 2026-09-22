@@ -11,7 +11,7 @@ description: >-
   a reader (post, email, essay, README, marketing copy), when text "sounds like
   ChatGPT", "reads like AI", or "is too polished", and for "de-slop this" or "make it sound
   like me". Trigger even if the request never says "AI tell". Do not use for authoring agent
-  skills (use writing-skills), thesis or paper prose (use academic-writing), source code or
+  skills (use skill-creator), thesis or paper prose (use academic-writing), source code or
   web UI (use unslop).
 allowed-tools: Read, Edit, Write, Bash, Glob, Grep
 ---

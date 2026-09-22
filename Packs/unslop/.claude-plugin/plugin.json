@@ -1,9 +1,0 @@
-{
-  "name": "unslop",
-  "description": "Strip AI-generated tells from code and web UI; one skill, two data-grounded CI-gateable scanners. Prose lives in Packs/writing (human-writing).",
-  "author": {
-    "name": "Lars Boes",
-    "url": "https://github.com/larsboes/Axon"
-  },
-  "license": "MIT"
-}

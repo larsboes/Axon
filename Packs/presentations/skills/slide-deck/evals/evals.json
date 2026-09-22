@@ -1,5 +1,5 @@
 {
-  "skill": "slide-deck",
+  "skill_name": "slide-deck",
   "note": "Five cases. Run each in a fresh context, with and without the skill, and record the delta. Assertions are checked against the artifacts on disk, not against the transcript.",
   "baseline": {
     "captured": "2026-09-11",
@@ -20,7 +20,7 @@
     "delta": "The academic layer surfaced five findings the unaided process produced no mechanism to see: (1) the spoken script is 2:23 over the ten-minute budget at a deliberate pace; (2) the positioning slide reproduced the engineering-columns matrix the written assessment criticised, with no construct column; (3) the title claims a class the evidence does not cover and no talk slide concedes it; (4) the contribution is claimed well but its type is named only on a backup slide; (5) the DSRM figure was a local rebuild rather than the published original, with no visible source line. Findings 2-4 remain open content decisions; 5 is fixed and 1 is now measurable.",
     "not_run": "The LLM-sensitive assertions (c1, c2, c5 with and without the skill) require fresh contexts and a second model run; they are the protocol above, not a result. The deterministic assertions were run for real on the worked deck."
   },
-  "cases": [
+  "evals": [
     {
       "id": "c1-build-a-paper-talk",
       "prompt": "I need a 15-minute conference talk deck for our paper. The paper is in ./paper.md and the plots are in ./figures/. The talk is in English.",

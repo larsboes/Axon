@@ -4,8 +4,13 @@
 
 # deliberation pack
 
-Four moves on one decision, in the order a decision usually needs them.
+Five moves on one decision, in the order a decision usually needs them.
 
+- **`diverge`** produces the options. Every other skill here assumes somebody already thought of
+  them: council needs two to weigh, red-team needs one proposal, crystallize needs notes, root-cause
+  needs a failure. It assigns each candidate a different generator so the pile is not one idea in
+  five outfits, winnows it with the `narrow` widget one keystroke per candidate, and carries a
+  rejection table — the artifact that shows the pass happened rather than being described.
 - **`crystallize`** turns an unstructured mess — a brainstorm, a pile of notes, a half-written
   PRD — into one document where every claim is measured against the repo or the vault and every
   answer is recorded dated, with its reasoning. It drives with batched multiple-choice questions,
@@ -29,16 +34,28 @@ as the hand-off.
 
 ## The agents
 
-`agents/` holds seven Claude-Code-native subagents (added 2026-09-07). A harness without native
+`agents/` holds eight Claude-Code-native subagents (added 2026-09-07; the advocate added
+2026-09-16). A harness without native
 subagents never sees them, and every skill here states the `general-purpose` fallback at the point
 it dispatches.
 
-| Agent | Used by | Model |
+They are not Claude-Code-only any more, and getting them into pi took a translation rather than a
+copy (2026-09-16). Claude Code scans agent directories recursively and names tools `Read`, `Grep`
+and `Glob`; pi's `pi-subagents` extension reads `*.md` in ONE flat directory, does not recurse, and
+names the same three `read`, `grep` and `find` — `Glob` does not exist there at all. An
+unrecognised tool name is not ignored by that extension, it is dropped from the agent's allowlist,
+so a member copied across unchanged comes up with no read tool, marks every claim `[unverified]`,
+and hands the clerk nothing to resolve. `tools/lib/pi-agent-file.ts` rewrites the frontmatter and
+refuses rather than degrading; `tools/packs-pi` deploys the result to `~/.pi/agent/agents/`, one
+owned unit per file because that directory is shared by every Pack.
+
+| Agent | Used by | Model (Claude Code only) |
 |---|---|---|
 | `council-owner` | council — the member that argues from having built the thing | sonnet |
 | `council-skeptic` | council — the member that argues from the failure mode | opus |
 | `council-cost` | council — the member that argues from build, run and reversal cost | sonnet |
 | `council-evidence` | council — the member that argues from precedent and measurement | sonnet |
+| `council-advocate` | council — the member assigned an option nobody else defends | opus |
 | `council-clerk` | council — resolves every citation in a round, after each round | sonnet |
 | `red-team-lens` | red-team — one instance per attack lens | opus |
 | `cause-hypothesis` | root-cause — one instance per candidate cause, tasked to refute it | sonnet |
@@ -59,9 +76,19 @@ council different from the last one. So `compose.md` keeps writing topic-specifi
 they stop being able to edit the repository. Four fixed personas would have been the easy version
 of this and the wrong one.
 
-The `model` field is the third lever: the sceptic and the attack lenses run on opus because their
-job is to find what nobody else did; the rest run on sonnet because their job is 150 words of
-argument from evidence that is already in the prompt. Change it in the agent file, never per run.
+The `model` field is the third lever: the sceptic, the advocate and the attack lenses run on opus
+because their job is to find what nobody else did; the rest run on sonnet because their job is 150
+words of argument from evidence that is already in the prompt. Change it in the agent file, never
+per run.
+
+**This lever is Claude-Code-only, and the translation above is where it stops.** pi's copy of each
+agent has no `model:` at all and inherits the session model (decision of 2026-09-16, to keep a pi
+run at the cost of the session it was asked from). So on pi every member runs on the same model as
+the council that convened them, and a run there is a single-tier council: the sceptic is not the
+expensive one. It is still worth convening — the four angles, the evidence rule and the clerk are
+all intact — but it is a different instrument, and it should not be described as the one in the
+table above. Reversing this is a change to the transform in `tools/lib/pi-agent-file.ts`, which is
+the single place the tier would be restored.
 
 ### The clerk is the point
 
@@ -112,8 +139,22 @@ anything. It is this Pack's own answer to a hole the upstream shape leaves open.
 
 ```bash
 "$AXON_ROOT/tools/packs.sh" link deliberation      # → ~/.claude/skills/{crystallize,council,red-team,root-cause}
-                                                   # → ~/.claude/agents/deliberation/ (the 7 subagents)
+                                                   # → ~/.claude/agents/deliberation/ (the 8 subagents)
 "$AXON_ROOT/tools/packs-codex" deploy deliberation # → ~/.agents/skills/… (skills only; pack-level Claude agents are skipped)
+"$AXON_ROOT/tools/packs-pi" deploy deliberation    # → ~/.pi/agent/settings.json (skills)
+                                                   # → ~/.pi/agent/agents/ (the same 7, tool names translated)
+```
+
+The pi line needs the `pi-subagents` extension, which Axon now VENDORS at
+`Packs/harness/pi-packages/pi-subagents` and `tools/packs-pi deploy harness` registers with pi as a
+local path. That extension is what gives pi an `Agent` tool and a custom agent type at all; without
+it the eight files are deployed, on disk, and read by nothing. It is the one third-party thing
+Axon keeps inside a Pack rather than leaving to its own installer, and `Packs/harness/README.md`
+says why that exception is made for the extension that carries these agents' types — see also the
+`[pi-subagents]` row in `upstreams.toml`. A machine running this Pack needs its dependencies once:
+
+```bash
+cd "$AXON_ROOT/Packs/harness/pi-packages/pi-subagents" && bun install
 ```
 
 `tools/doctor` reports the skills under "Packs (Claude Code materialized)".
@@ -126,6 +167,14 @@ reply would have given. Two consecutive runs where it does not, on decisions tha
 convening for, and the skill is theatre — a longer transcript arguing for what was already going to
 happen. Delete it and keep `red-team`, which fails loudly instead: it either names a mechanism or
 it reports nothing found.
+
+**That test is currently unenforceable, and the reason is recorded here so nobody mistakes it for a
+working gate.** Nothing persists a run: a council leaves a transcript in the session and no record
+anywhere (decided 2026-09-16 — the alternative, one vault note per run through `obsidian`, was
+offered and declined). "Two consecutive runs" therefore cannot be counted, and neither can the
+clerk's ten-round condition below. Both are answered by memory or by hand. Persisting runs is the
+single change that would make either one fire, and it is a note type and a handoff rather than new
+machinery.
 
 The clerk has its own flip condition, and it is measurable rather than felt: it reports a count
 every round. If ten consecutive rounds return every claim as `resolves`, the members are honest

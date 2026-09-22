@@ -24,6 +24,50 @@ esac
 
 source "$TOOLS_DIR/lib/toml.sh"
 
+# Write only the one safety setting Axon owns in the laptop-wide Bun config. Do not put the
+# scanner here: Bun requires a configured scanner to be a dependency of every project, so a
+# global scanner block would break unrelated checkouts. This function preserves every other
+# line and key in an existing file; it only creates or replaces [install].minimumReleaseAge.
+write_bun_global_hold() {
+  local path="$HOME/.bunfig.toml"
+  local tmp="${path}.tmp.$$"
+  if [ -f "$path" ]; then
+    awk '
+      BEGIN { in_install = 0; found_install = 0; found_age = 0 }
+      /^[[:space:]]*\[install\][[:space:]]*$/ {
+        if (in_install && !found_age) print "minimumReleaseAge = 86400"
+        in_install = 1; found_install = 1
+        print
+        next
+      }
+      /^[[:space:]]*\[[^]]+\][[:space:]]*$/ {
+        if (in_install && !found_age) print "minimumReleaseAge = 86400"
+        in_install = 0
+        print
+        next
+      }
+      in_install && /^[[:space:]]*minimumReleaseAge[[:space:]]*=/ {
+        print "minimumReleaseAge = 86400"
+        found_age = 1
+        next
+      }
+      { print }
+      END {
+        if (in_install && !found_age) print "minimumReleaseAge = 86400"
+        if (!found_install) {
+          print ""
+          print "[install]"
+          print "minimumReleaseAge = 86400"
+        }
+      }
+    ' "$path" > "$tmp"
+    mv "$tmp" "$path"
+  else
+    printf '%s\n' '[install]' 'minimumReleaseAge = 86400' > "$path"
+  fi
+  echo "Bun install policy: ~/.bunfig.toml now holds new npm releases for 24h."
+}
+
 # `axon` is the public human/agent interface, so installation puts a stable launcher in the
 # conventional user bin directory. Never replace an unrelated command: an existing non-symlink
 # requires an explicit operator decision instead of silently changing their PATH behavior.
@@ -313,7 +357,24 @@ else
   echo "  Non-interactive — skipped. Later: tools/agent-integrations.sh install --all-configured"
 fi
 
-# 7) Capability selection — opt-in and skippable. Delegates entirely to
+# 7) Laptop-wide Bun/npm resolution policy — opt-in because this affects projects outside Axon.
+# The two Axon UI trees carry the same 24-hour hold in tracked bunfig.toml files. This optional
+# copy covers other projects on THIS machine and is deliberately hold-only: the Socket scanner
+# cannot be global because Bun requires it to be installed in each project's dependencies.
+# Never ask on a non-TTY; CI and piped installs must not hang on a machine-policy prompt.
+if [ -t 0 ]; then
+  echo
+  read -r -p "Hold newly published npm/Bun packages for 24h on this machine? [y/N]: " BUN_HOLD_INPUT
+  case "$BUN_HOLD_INPUT" in
+    y|Y|yes|Yes|YES) write_bun_global_hold ;;
+    *) echo "Skipped — run tools/install.sh again to add the laptop-wide hold." ;;
+  esac
+else
+  echo
+  echo "No TTY — skipped the optional laptop-wide Bun/npm hold."
+fi
+
+# 8) Capability selection — opt-in and skippable. Delegates entirely to
 # tools/capability.sh (the single writer of machine.toml's capabilities line);
 # install.sh only drives the prompt. enable is idempotent, so re-running the
 # installer and re-picking an already-enabled capability is a harmless no-op.
@@ -346,7 +407,7 @@ case "$CAP_INPUT" in
     ;;
 esac
 
-# 8) Boot persistence for the autostart set. Nothing reconciled this before (#9): a capability
+# 9) Boot persistence for the autostart set. Nothing reconciled this before (#9): a capability
 # could declare autostart = true, be enabled here, start fine, and be gone after the next reboot,
 # with no warning at any point. Asked rather than assumed — installing persistence loads a launchd
 # or systemd unit, which is a machine-level change an installer should not make silently. Declining

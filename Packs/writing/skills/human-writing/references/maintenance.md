@@ -11,6 +11,11 @@ SKILL.md.
   SKILL.md. Verified against the calibration corpus: 0 of 24 human and 0 of 10 ESL-formal files
   pick up a false positive. **Re-apply this delta if the linter is ever re-vendored.**
 - Additive entries in `ai_prose_patterns.json`. No other code changes.
+- **One user-facing string corrected in `patterns.py` (2026-09-17).** Its pattern-file-not-found
+  message told the user to fall back to `references/ai-tells.md`, a path that has never existed in
+  this repository. It now names `references/tells.md`, which is the catalog it means. A string, not
+  behaviour — but it is a string a user reads at the moment the linter has already failed, which is
+  the worst moment to send them to a file that is not there. **Re-apply if re-vendored.**
 
 ## What the calibration corpus proves, and does not
 
@@ -46,6 +51,12 @@ three") manufactures exactly the uniform signature this skill exists to prevent.
 
 ```bash
 python3 scripts/detect_ai_prose.py --help    # prints without error
-python3 "$AXON_ROOT/Packs/writing/skills/writing-skills/scripts/validate_metadata.py" \
-  --file SKILL.md --dir "$(pwd)"             # metadata valid, body inside its Level-2 budget
 ```
+
+Metadata and body-budget validation is **not** run from here. It used to be, as a command
+reaching into `skill-creator`'s own `scripts/validate_metadata.py` by repo path — a dependency on
+a sibling skill's file, which is exactly what a skill must not have: it resolves in the Axon
+checkout and nowhere else, so a skill copied into a harness carried a verification step that
+could not run. `tools/check-skill-metadata.sh` now runs that same validator over every authored
+SKILL.md on every push, which is strictly stronger than checking one skill when someone
+remembers to. The validator has one owner, and this skill is not it.

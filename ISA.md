@@ -126,7 +126,9 @@ whose error was silenced.
 Why: an upstream that moves and a deployment that does not is the drift worth watching. Q77
 (2026-09-02) reversed the answer rather than the question: nothing is held at a version any more,
 so the risk is no longer "the bump is late" but "the bump landed and broke something", and what
-has to be visible is the pull request, the alert and the receipt.
+has to be visible is the pull request, the alert and the receipt. Q109 (2026-09-22) adds one
+narrow age window rather than a version pin: Bun/npm resolutions wait 24 hours, the two UI trees
+run Socket's scanner, and Cargo/actions keep the zero-day path.
 
 - [ ] ISC-8 — every entry a Dependabot pull request or alert names as behind or vulnerable
   is either merged or has a written reason it is held. Falsifier: an open Dependabot pull
@@ -141,7 +143,11 @@ has to be visible is the pull request, the alert and the receipt.
   half is gone with the cooldown, so "held with a reason" now means a deliberate refusal,
   never a timer. 2026-09-02, Q77: Dependabot pull requests carry `--auto --squash`
   (`.github/workflows/dependabot-automerge.yml`), so the ordinary bump merges itself once the
-  required checks pass and this claim is about the exceptions only.)
+  required checks pass and this claim is about the exceptions only. 2026-09-22, Q109: the
+  two Bun blocks carry `default-days: 1`, while Cargo and github-actions remain at 0; each
+  resolving UI tree carries `minimumReleaseAge = 86400` and
+  `@socketsecurity/bun-security-scanner`, and CI runs `bun pm scan`. The scanner is free-mode
+  network-backed and therefore an operational dependency, not a replacement for the hold.)
 - [x] ISC-9 — the postgres 17.9 → 17.10 image decision is made on its own, not ridden
   along with another change. Falsifier: the bump appears in a commit about something else.
   Closed 2026-08-27 by PRD Q45, which retired the image rather than bumping it: the running

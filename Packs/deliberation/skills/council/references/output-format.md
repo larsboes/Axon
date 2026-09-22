@@ -12,8 +12,14 @@ Print this before round 1:
 **Options:** [option A] · [option B] · …
 **Mode:** DEBATE (3 rounds) | QUICK (1 round)
 **Members:** [name — role, type], [name — role, type], …
-**Evidence supplied:** [what was gathered in step 4, listed]
+**Advocates:** [option A] — [name] · [option B] — [name] · …
+**Evidence supplied:** [what was gathered in step 5, listed]
 ```
+
+Every option gets a name beside it. An option with nothing beside it means the council is not ready:
+fix it per step 4 of the skill before round 1 runs. The table is printed here rather than checked
+silently because this is the last moment the fault is cheap — one member's brief, against a clerk
+pass that reads every pointer in every round.
 
 ## Rounds
 
@@ -67,6 +73,14 @@ Rules for the synthesis:
 - The minority position is never omitted. If every member converged, write "none — the council
   converged in round [n]" and treat the converged run as the weaker result it is.
 - The synthesis adds no claim that no member made.
+- **A load-bearing `[unverified]` claim gets settled or it gets named.** When the recommendation
+turns on one claim nobody could check, the synthesis is not finished: use the `ask` tool once and
+offer to settle it now — with the exact command or lookup that would do it — or to leave it open.
+If the caller leaves it open, the synthesis states it as open under a heading that says so, and
+names what would settle it. Do not present a recommendation resting on an unchecked claim as
+decided. A run's unverified claims are the only part of a council whose value survives the round
+that produced it, and on the first real run three of them were left in a transcript that nothing
+kept.
 
 ## QUICK summary
 
@@ -77,8 +91,14 @@ QUICK ends with this instead:
 
 **Consensus:** [what they agree on, or "none"]
 **Concerns:** [each concern, with the member who raised it]
-**Verdict:** proceed | reconsider | escalate to DEBATE
+**Verdict:** proceed | reconsider | escalate to DEBATE | recompose
 ```
 
-Choose `escalate to DEBATE` when two members contradict each other on a fact, or when no option
-can be named.
+Choose `escalate to DEBATE` when two members contradict each other on a fact, when no option can be
+named, or when the clerk returns `contradicted` on a claim an argument rests on — QUICK has no second
+round, so nothing corrects that claim, and a one-round verdict resting on it is not a result.
+
+Choose `recompose` when the council did not test what it claims to: an option had no advocate, or
+every member converged in round 1. Both are faults in the council rather than evidence about the
+decision, and a recommendation from either is a receipt for what the caller already thought. This is
+the verdict to reach for when the run felt smooth.

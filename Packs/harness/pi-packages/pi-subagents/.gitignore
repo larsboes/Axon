@@ -1,0 +1,6 @@
+# Dependencies — installed in place, never committed.
+node_modules/
+
+# Build output, if a bundle is ever produced here.
+dist/
+*.tsbuildinfo

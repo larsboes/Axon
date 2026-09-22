@@ -29,8 +29,13 @@ from .errors import DiagramError
 #: The palette roles a deckkit theme must define for the mapping to work. A
 #: subset of deckkit's required roles: a diagram needs no caution tint, but it
 #: does need a paper tone to sit a cluster on.
-NEEDED = ("ink", "white", "paper", "accent", "accent_light", "secondary",
-          "secondary_light", "caution")
+#:
+#: This list and deckkit's `REQUIRED_ROLES` must agree — every role named here has to be
+#: one a deck-valid theme defines, or a theme can build a deck and then be unrenderable
+#: as a diagram. That is a gate, not a shared file:
+#: tools/presentations-theme-contract.test.sh fails if the two drift apart.
+NEEDED = ("ink", "white", "accent", "accent_light", "secondary",
+          "secondary_light", "caution", "paper")
 
 #: Mermaid themeVariables, and where each value comes from. `diagram.<key>` is
 #: read from the theme's optional block; a bare name is a palette role. Mermaid

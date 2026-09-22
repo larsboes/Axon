@@ -26,8 +26,12 @@ OrcaSlicer's CLI rejects the bundled system presets — it needs presets **saved
 OrcaSlicer 2.4.2's CLI compatibility validator rejects dynamically-loaded system profiles with `run 2652: process not compatible with printer`. Flattening the inheritance chain, blanking the compatibility condition, and pointing at the real datadir were all tried and all still trip the gate — verified 2026-07-09. Saved user presets (or slicing a project 3MF that already bundles paired settings) is the working path. printctl's `slice` therefore loads user presets by name from `~/Library/Application Support/OrcaSlicer/user/`.
 
 ## 4. Install / discovery
-This skill ships in the Axon **3d-printing pack** (`Packs/3d-printing/skills/home-3d-printing/`). Link the pack's skills into your active harness so they load everywhere:
+This skill ships in the Axon **3d-printing pack** (`Packs/3d-printing/skills/home-3d-printing/`).
+Deploy the pack into your active harness so it loads everywhere:
 ```bash
-"$AXON_ROOT/tools/packs.sh" link 3d-printing   # symlinks into ~/.claude/skills/
+"$AXON_ROOT/tools/packs-claude" deploy 3d-printing   # copies into ~/.claude/skills/
 ```
-`tools/packs.sh list` shows every pack and its link state.
+`tools/packs-claude status 3d-printing` reports whether the deployed copy is current. It is a
+copy, not a symlink — the symlink model was retired 2026-08-09, and the deployer now refuses a
+symlinked source outright. Use `tools/harnesses status` to see every pack against every harness
+at once.

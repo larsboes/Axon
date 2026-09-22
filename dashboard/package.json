@@ -6,7 +6,8 @@
   "description": "Axon — the spine's shell: what is enabled on this machine, what it is saying, and what starts on demand.",
   "overrides": {
     "cookie": "0.7.2",
-    "nanoid": "3.3.18"
+    "nanoid": "3.3.18",
+    "devalue": "5.9.2"
   },
   "scripts": {
     "dev": "vite dev",
@@ -25,6 +26,7 @@
     "vega-lite": "6.4.3"
   },
   "devDependencies": {
+    "@socketsecurity/bun-security-scanner": "^1.1.2",
     "@sveltejs/adapter-static": "^3.0.0",
     "@sveltejs/vite-plugin-svelte": "^6.0.0",
     "@types/node": "^26.1.0",

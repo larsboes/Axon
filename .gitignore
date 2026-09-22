@@ -48,6 +48,12 @@ to-integrate/
 **/*.tsbuildinfo
 # Static application output
 **/dist/
+
+# Vendored, committed build output — the one exception to the rule above. This is the
+# SvelteKit browser client behind Accordion's Map, and it cannot be rebuilt from this
+# tree (the build needs app/, which is not vendored). Upstream ships it in its npm
+# package while never committing it to git; see Packs/harness/README.md.
+!Packs/harness/pi-packages/accordion/extension/dist/
 # SvelteKit generated output
 **/.svelte-kit/
 
@@ -88,3 +94,9 @@ demo/overlay/data/
 # `local_gate::lock_path` falls back to the working directory when a config
 # carries no database path, which is how one of these reached a commit once.
 axon-local-*.lock
+
+# Skill eval workspaces. tools/skill-eval writes one next to the skill it evaluates
+# (<skill>-workspace/iteration-N/), which is where skill-creator's method says results live —
+# next to the thing they are about. The outputs, timings and gradings are run artifacts, not
+# source, so only the suite that produced them is committed.
+*-workspace/

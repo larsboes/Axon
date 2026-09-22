@@ -80,12 +80,18 @@ interface AskQuestion {
 interface AskAnswer {
 	id: string;
 	title?: string;
-	/** null when the question was skipped. */
+	/** null when the question was skipped, or answered in free text. */
 	selectedIndex: number | null;
 	label: string | null;
+	/**
+	 * The user's own answer, recorded when none of the given options fitted. Distinct from `note`:
+	 * a note reasons about a choice that was made, this is a refusal of the whole option set, and
+	 * distinct from `skipped` because the question was answered rather than left open.
+	 */
+	freeText: string | null;
 	/** Free text the user attached to this decision, or null. */
 	note: string | null;
-	/** null when there was no recommendation, or the question was skipped. */
+	/** null when there was no recommendation, or the question was skipped, or free text was used. */
 	followedRecommendation: boolean | null;
 	skipped: boolean;
 }
@@ -179,7 +185,7 @@ async function runAsk(
 	const result = await ctx.ui.custom<AskResult>((tui, theme, _kb, done) => {
 		let qIndex = 0;
 		let optionIndex = questions[0].recommendedIndex ?? 0;
-		let phase: "options" | "note" = "options";
+		let phase: "options" | "note" | "free" = "options";
 		let cachedLines: string[] | undefined;
 		const answers: AskAnswer[] = [];
 		const editor = new Editor(tui, editorTheme(theme));
@@ -196,8 +202,29 @@ async function runAsk(
 				title: q.title,
 				selectedIndex: optionIndex,
 				label: q.options[optionIndex].label,
+				freeText: null,
 				note: note && note.length > 0 ? note : null,
 				followedRecommendation: q.recommendedIndex === undefined ? null : q.recommendedIndex === optionIndex,
+				skipped: false,
+			});
+		}
+
+		/**
+		 * The answer when no option fits. Kept separate from `skip()` on purpose: "none of these, it is
+		 * actually X" is a decision, and a caller that cannot tell it from "I don't know yet" will
+		 * re-ask a question that was already answered.
+		 */
+		function recordFreeText(value: string) {
+			const q = questions[qIndex];
+			const text = value.trim();
+			answers.push({
+				id: q.id,
+				title: q.title,
+				selectedIndex: null,
+				label: null,
+				freeText: text.length > 0 ? text : null,
+				note: null,
+				followedRecommendation: null,
 				skipped: false,
 			});
 		}
@@ -221,6 +248,7 @@ async function runAsk(
 				title: q.title,
 				selectedIndex: null,
 				label: null,
+				freeText: null,
 				note: null,
 				followedRecommendation: null,
 				skipped: true,
@@ -230,12 +258,16 @@ async function runAsk(
 
 		editor.onChange = () => refresh();
 		editor.onSubmit = (value) => {
-			record(value.trim());
+			if (phase === "free") recordFreeText(value);
+			else record(value.trim());
 			advance();
 		};
 
 		function handleInput(data: string) {
-			if (phase === "note") {
+			// Both editor phases route keystrokes to the editor. Missing `free` here was a real bug: the
+			// typed answer was parsed as option keys instead, and `o` then Enter landed back in the note
+			// phase with nothing recorded.
+			if (phase === "note" || phase === "free") {
 				if (matchesKey(data, Key.escape)) {
 					editor.setText("");
 					phase = "options";
@@ -265,6 +297,12 @@ async function runAsk(
 			}
 			if (data === "s") {
 				skip();
+				return;
+			}
+			// No option fits often enough to deserve a key rather than a note on the closest one.
+			if (data === "o") {
+				phase = "free";
+				refresh();
 				return;
 			}
 			// Number keys move focus rather than answering: every option has a consequence worth
@@ -330,12 +368,17 @@ async function runAsk(
 				for (const line of editor.render(Math.max(1, w - 1))) lines.push(` ${line}`);
 				lines.push("");
 				addPrefixed(lines, w, " ", theme.fg("dim", "Enter to record · an empty note is fine · Esc to change answer"));
+			} else if (phase === "free") {
+				addPrefixed(lines, w, " ", theme.fg("text", "None of these — your own answer:"));
+				for (const line of editor.render(Math.max(1, w - 1))) lines.push(` ${line}`);
+				lines.push("");
+				addPrefixed(lines, w, " ", theme.fg("dim", "Enter to record it as this decision · Esc back to the options"));
 			} else {
 				addPrefixed(
 					lines,
 					w,
 					" ",
-					theme.fg("dim", "↑↓ move · 1-9 focus · Enter choose · s skip (stays open) · Esc end round"),
+					theme.fg("dim", "↑↓ move · 1-9 focus · Enter choose · o none of these · s skip (stays open) · Esc end round"),
 				);
 			}
 			lines.push(theme.fg("accent", "─".repeat(w)));
@@ -361,17 +404,23 @@ async function runAsk(
 
 	const answered = result.answers.filter((a) => !a.skipped);
 	const overruled = result.answers.filter((a) => a.followedRecommendation === false).length;
+	const freeText = result.answers.filter((a) => a.freeText).length;
 	const header = result.cancelled
 		? `Decision round stopped early: ${answered.length}/${questions.length} answered.`
 		: `Decision round complete: ${answered.length}/${questions.length} answered${
 				overruled > 0 ? `, ${overruled} overruled your recommendation` : ""
-			}.`;
+			}${freeText > 0 ? `, ${freeText} answered in free text (no option fitted)` : ""}.`;
 	const report = [header];
 	for (const a of result.answers) {
 		const q = questions.find((x) => x.id === a.id);
 		const tag = q?.title ? ` (${q.title})` : "";
 		if (a.skipped) {
 			report.push(`${a.id}${tag}: skipped — still open`);
+			continue;
+		}
+		if (a.freeText) {
+			report.push(`${a.id}${tag}: NONE OF THE OPTIONS — the answer is: ${a.freeText}`);
+			report.push("    (the option set was rejected, not ignored: if you ask again, ask differently)");
 			continue;
 		}
 		let line = `${a.id}${tag}: ${a.label}`;
@@ -402,6 +451,36 @@ interface QuizAnswer {
 	selectedIndex: number | null; // null = "I don't know"
 	correct: boolean;
 	idk: boolean;
+	/** Why the user chose it. Null when they chose not to say. */
+	note: string | null;
+	/** The user disputes the grading. A widget cannot host a model turn, so this is what carries
+	 * the dispute into the conversation, where the discussion actually happens. */
+	contested: boolean;
+}
+
+/** One answer the user disputed, with the model's answer to their reasoning. */
+interface QuizReview {
+	id: string;
+	prompt: string;
+	chosen: string;
+	correct: string;
+	/** True when the user's reasoning was right and the earlier grading was wrong. */
+	accepted: boolean;
+	reason: string;
+}
+
+interface QuizReviewOutcome {
+	id: string;
+	/** The user accepts the model's revised verdict. */
+	accepted: boolean;
+	/** Set when they do not: their reply, for another round. */
+	note: string | null;
+}
+
+interface QuizReviewResult {
+	topic: string;
+	outcomes: QuizReviewOutcome[];
+	cancelled: boolean;
 }
 
 interface QuizResult {
@@ -426,13 +505,40 @@ const QuizParams = Type.Object({
 		}),
 		{ description: "Questions to ask, in order" },
 	),
+	mode: Type.Optional(
+		Type.Union([Type.Literal("ask"), Type.Literal("review")], {
+			description:
+				"ask (default): pose the questions. review: render your revised verdict on answers the user contested, and take their answer to it. Use review after a round comes back with a contested answer — and call it again if the user pushes back, so the model and the learner alternate until it is settled.",
+		}),
+	),
+	reviews: Type.Optional(
+		Type.Array(
+			Type.Object({
+				id: Type.String({ description: "The question's id, as it appeared in the round that raised it." }),
+				prompt: Type.String({ description: "The question text, repeated so the review renders standalone." }),
+				chosen: Type.String({ description: "The option the user picked, as text." }),
+				correct: Type.String({ description: "The option that round originally marked correct, as text." }),
+				accepted: Type.Boolean({
+					description:
+						"True when the user's reasoning was right and the earlier grading was wrong, so full marks are restored. False when the original verdict stands.",
+				}),
+				reason: Type.String({
+					description: "1-3 sentences answering the user's reason directly. Shown in the widget, so it is read before they reply.",
+				}),
+			}),
+			{ description: "Required when mode is 'review'. One entry per contested answer." },
+		),
+	),
 });
 
 async function runQuiz(
-	params: { topic: string; questions: QuizQuestion[] },
+	params: { topic: string; questions?: QuizQuestion[]; mode?: "ask" | "review"; reviews?: QuizReview[] },
 	ctx: ExtensionContext,
-): Promise<{ content: { type: "text"; text: string }[]; details: QuizResult }> {
-	const questions = params.questions as QuizQuestion[];
+): Promise<{ content: { type: "text"; text: string }[]; details: QuizResult | QuizReviewResult }> {
+	if (params.mode === "review") {
+		return runQuizReview({ topic: params.topic, reviews: params.reviews ?? [] }, ctx);
+	}
+	const questions = (params.questions ?? []) as QuizQuestion[];
 	const error = (message: string): { content: { type: "text"; text: string }[]; details: QuizResult } => ({
 		content: [{ type: "text", text: message }],
 		details: { topic: params.topic, answers: [], cancelled: true },
@@ -452,8 +558,11 @@ async function runQuiz(
 		let qIndex = 0;
 		let optionIndex = 0;
 		let revealed = false;
+		/** The reveal's second phase: the user is typing why they chose it. */
+		let notePhase = false;
 		let cachedLines: string[] | undefined;
 		const answers: QuizAnswer[] = [];
+		const editor = new Editor(tui, editorTheme(theme));
 
 		const IDK = "I don't know";
 
@@ -474,12 +583,30 @@ async function runQuiz(
 				selectedIndex: idk ? null : optionIndex,
 				correct: !idk && optionIndex === q.correctIndex,
 				idk,
+				note: null,
+				contested: false,
 			});
 			revealed = true;
 			refresh();
 		}
 
+		/** The answer being revealed. Every phase after the selection edits this one. */
+		function currentAnswer(): QuizAnswer | undefined {
+			return answers[answers.length - 1];
+		}
+
+		editor.onChange = () => refresh();
+		editor.onSubmit = (value) => {
+			const answer = currentAnswer();
+			if (answer) answer.note = value.trim().length > 0 ? value.trim() : null;
+			editor.setText("");
+			notePhase = false;
+			refresh();
+		};
+
 		function advance() {
+			editor.setText("");
+			notePhase = false;
 			if (qIndex < questions.length - 1) {
 				qIndex++;
 				optionIndex = 0;
@@ -491,11 +618,35 @@ async function runQuiz(
 		}
 
 		function handleInput(data: string) {
+			if (notePhase) {
+				if (matchesKey(data, Key.escape)) {
+					editor.setText("");
+					notePhase = false;
+					refresh();
+					return;
+				}
+				editor.handleInput(data);
+				refresh();
+				return;
+			}
 			if (matchesKey(data, Key.escape)) {
 				done({ topic: params.topic, answers, cancelled: true });
 				return;
 			}
 			if (revealed) {
+				// `c` marks the grading disputed, which is what the model acts on. Without it a
+				// wrong mark stands unless the learner argues in prose outside the quiz.
+				if (data === "c") {
+					const answer = currentAnswer();
+					if (answer) answer.contested = !answer.contested;
+					refresh();
+					return;
+				}
+				if (data === "n") {
+					notePhase = true;
+					refresh();
+					return;
+				}
 				if (matchesKey(data, Key.enter) || data === " ") advance();
 				return;
 			}
@@ -579,7 +730,26 @@ async function runQuiz(
 					addPrefixed(lines, w, " ", theme.fg("muted", q.explanation));
 				}
 				lines.push("");
-				addPrefixed(lines, w, " ", theme.fg("dim", "Enter/Space for next · Esc to stop"));
+				if (notePhase) {
+					addPrefixed(lines, w, " ", theme.fg("dim", "Why you chose it — Enter to save · Esc to cancel"));
+					for (const editorLine of editor.render(w)) lines.push(editorLine);
+				} else {
+					if (answer.contested) {
+						addPrefixed(lines, w, " ", theme.fg("warning", "⚑ You have contested this grading"));
+					}
+					if (answer.note) {
+						addPrefixed(
+							lines,
+							w,
+							" ",
+							theme.fg("dim", `your reason: ${answer.note.replace(/\s*\n\s*/g, " / ")}`),
+						);
+					}
+					const hint = answer.correct && !answer.contested
+						? "Enter/Space for next · n add a reason · Esc to stop"
+						: "Enter/Space for next · n add a reason · c contest · Esc to stop";
+					addPrefixed(lines, w, " ", theme.fg("dim", hint));
+				}
 			} else {
 				addPrefixed(lines, w, " ", theme.fg("dim", "↑↓ or 1-9 · Enter to answer · Esc to stop"));
 			}
@@ -601,16 +771,449 @@ async function runQuiz(
 		const q = questions.find((x) => x.id === a.id);
 		const chosen = a.idk ? "I don't know" : (q?.options[a.selectedIndex ?? 0] ?? "?");
 		const verdict = a.correct ? "CORRECT" : a.idk ? "IDK" : `INCORRECT (correct: ${q?.options[q.correctIndex]})`;
-		return `${a.id}: "${chosen}" — ${verdict}`;
+		const note = a.note ? ` — reason: ${a.note.replace(/\s*\n\s*/g, " / ")}` : "";
+		const contested = a.contested ? " — CONTESTED" : "";
+		return `${a.id}: "${chosen}" — ${verdict}${contested}${note}`;
 	});
 	const score = result.answers.filter((a) => a.correct).length;
+	const contested = result.answers.filter((a) => a.contested);
 	const header = result.cancelled
 		? `Quiz stopped early after ${result.answers.length}/${questions.length} question(s).`
 		: `Quiz complete: ${score}/${questions.length} correct.`;
+	// A contest is not a score correction — it is a claim that the grading was wrong, and it is
+	// only settled by re-examining the reasoning. So say so in the result the model reads.
+	const resolution = contested.length
+		? `\n${contested.length} answer(s) contested (${contested.map((a) => a.id).join(", ")}) — weigh the reason given against the explanation, call quiz again with mode: "review" and your revised verdict, and restore full marks if the learner was right.`
+		: "";
 	return {
-		content: [{ type: "text" as const, text: [header, ...summary].join("\n") }],
+		content: [{ type: "text" as const, text: [header, ...summary].join("\n") + resolution }],
 		details: result,
 	};
+}
+
+/* ─────────────────── quiz review: the model re-examines a contest ─────────────────── */
+
+/**
+ * Render the model's revised verdict on the answers the learner disputed, and take their answer
+ * to it.
+ *
+ * Deliberately not a discussion, because a widget cannot host a model turn: the discussion is the
+ * conversation, and this is the round-trip that carries one turn of it. The learner accepts and it
+ * is settled, or pushes back with a note and the model calls this again with a fresh verdict —
+ * which is how the two alternate until it is.
+ */
+async function runQuizReview(
+	params: { topic: string; reviews: QuizReview[] },
+	ctx: ExtensionContext,
+): Promise<{ content: { type: "text"; text: string }[]; details: QuizReviewResult }> {
+	const reviews = params.reviews;
+	const error = (message: string): { content: { type: "text"; text: string }[]; details: QuizReviewResult } => ({
+		content: [{ type: "text", text: message }],
+		details: { topic: params.topic, outcomes: [], cancelled: true },
+	});
+
+	if (ctx.mode !== "tui") {
+		return error(`${NON_TUI_ERROR} State each revised verdict in plain text instead.`);
+	}
+	if (reviews.length === 0) {
+		return error("Error: mode 'review' needs at least one entry in reviews");
+	}
+
+	const result = await ctx.ui.custom<QuizReviewResult>((tui, theme, _kb, done) => {
+		let index = 0;
+		let notePhase = false;
+		let cachedLines: string[] | undefined;
+		const outcomes: QuizReviewOutcome[] = [];
+		const editor = new Editor(tui, editorTheme(theme));
+
+		function refresh() {
+			cachedLines = undefined;
+			tui.requestRender();
+		}
+
+		function record(accepted: boolean, note: string | null) {
+			outcomes.push({ id: reviews[index].id, accepted, note: note && note.length > 0 ? note : null });
+		}
+
+		function advance() {
+			editor.setText("");
+			notePhase = false;
+			if (index < reviews.length - 1) {
+				index++;
+				refresh();
+				return;
+			}
+			done({ topic: params.topic, outcomes, cancelled: false });
+		}
+
+		editor.onChange = () => refresh();
+		editor.onSubmit = (value) => {
+			record(false, value.trim());
+			advance();
+		};
+
+		function handleInput(data: string) {
+			if (notePhase) {
+				if (matchesKey(data, Key.escape)) {
+					editor.setText("");
+					notePhase = false;
+					refresh();
+					return;
+				}
+				editor.handleInput(data);
+				refresh();
+				return;
+			}
+			if (matchesKey(data, Key.escape)) {
+				done({ topic: params.topic, outcomes, cancelled: true });
+				return;
+			}
+			if (matchesKey(data, Key.enter) || data === " ") {
+				record(true, null);
+				advance();
+				return;
+			}
+			if (data === "p") {
+				notePhase = true;
+				refresh();
+			}
+		}
+
+		function render(width: number): string[] {
+			if (cachedLines) return cachedLines;
+			const lines: string[] = [];
+			const w = Math.max(1, width);
+			const review = reviews[index];
+
+			lines.push(theme.fg("accent", "─".repeat(w)));
+			addPrefixed(
+				lines,
+				w,
+				" ",
+				theme.fg("muted", `${params.topic} · review ${index + 1}/${reviews.length}`),
+			);
+			lines.push("");
+			addPrefixed(lines, w, " ", theme.fg("text", theme.bold(review.prompt)));
+			lines.push("");
+			addPrefixed(lines, w, " ", theme.fg("dim", `you: ${review.chosen}`));
+			if (review.accepted) {
+				addPrefixed(lines, w, " ", theme.fg("success", "model now: agrees — full marks"));
+			} else {
+				addPrefixed(lines, w, " ", theme.fg("warning", `model stands by: ${review.correct}`));
+			}
+			lines.push("");
+			addPrefixed(lines, w, " ", theme.fg("muted", review.reason));
+			lines.push("");
+			if (notePhase) {
+				addPrefixed(lines, w, " ", theme.fg("dim", "Your reply — Enter to send · Esc to cancel"));
+				for (const editorLine of editor.render(w)) lines.push(editorLine);
+			} else {
+				addPrefixed(lines, w, " ", theme.fg("dim", "Enter to accept · p to push back · Esc to stop"));
+			}
+			lines.push(theme.fg("accent", "─".repeat(w)));
+			cachedLines = lines;
+			return lines;
+		}
+
+		return {
+			render,
+			invalidate: () => {
+				cachedLines = undefined;
+			},
+			handleInput,
+		};
+	});
+
+	const pushed = result.outcomes.filter((o) => !o.accepted);
+	const header = result.cancelled
+		? `Review stopped after ${result.outcomes.length}/${reviews.length}.`
+		: pushed.length > 0
+			? `Review: ${reviews.length - pushed.length}/${reviews.length} accepted, ${pushed.length} pushed back.`
+			: `Review: all ${reviews.length} accepted.`;
+	const summary = result.outcomes.map((o) => {
+		const review = reviews.find((r) => r.id === o.id);
+		const verdict = o.accepted ? "accepted" : `PUSHED BACK (model still says: ${review?.correct ?? "?"})`;
+		const note = o.note ? ` — reply: ${o.note.replace(/\s*\n\s*/g, " / ")}` : "";
+		return `${o.id}: ${verdict}${note}`;
+	});
+	// A pushback is not a rejection of the learner — it is the next turn. Say that in the result so
+	// the model answers the reply rather than closing the exchange.
+	const next = pushed.length
+		? "\nStill contested: answer the reply above in the conversation, and call quiz again with mode: 'review' if the verdict changes. Do not move on while a contest is open."
+		: "";
+	return {
+		content: [{ type: "text" as const, text: [header, ...summary].join("\n") + next }],
+		details: result,
+	};
+}
+
+/* ─────────────────── narrow: winnow a pile of candidates ─────────────────── */
+
+/**
+ * Divergence produces more than it needs; this is where the excess goes.
+ *
+ * `ask` cannot express it: that tool is single-select per question and caps at nine options, so
+ * "keep 3 of these 30" has no shape there. The interaction here is deliberately three keys — space
+ * keeps, `x` rejects and asks why, Enter finishes — because the failure mode of a long list is
+ * that nobody winnows it, and every extra keystroke per item makes that more likely.
+ */
+interface NarrowCandidate {
+	id: string;
+	oneLine: string;
+	/** Which generator produced it. Two candidates sharing one are the same idea twice. */
+	generator?: string;
+	cost?: string;
+	firstTest?: string;
+	preview?: string;
+}
+
+interface NarrowVerdict {
+	id: string;
+	kept: boolean;
+	/** Set when the candidate was rejected: why, in the user's words. */
+	why: string | null;
+}
+
+interface NarrowResult {
+	topic: string;
+	verdicts: NarrowVerdict[];
+	cancelled: boolean;
+}
+
+const NarrowParams = Type.Object({
+	topic: Type.String({ description: "What is being narrowed, e.g. 'Round 1 — how to cut session cost'" }),
+	candidates: Type.Array(
+		Type.Object({
+			id: Type.String({ description: "Short id, e.g. 'c1'." }),
+			oneLine: Type.String({ description: "The candidate in one line. This is what gets read." }),
+			generator: Type.Optional(
+				Type.String({
+					description:
+						"Which generator produced it (analogy, inversion, constraint-removal, extreme-scale, recombination). Shown beside the id so two candidates from one generator are visible as one idea twice.",
+				}),
+			),
+			cost: Type.Optional(Type.String({ description: "One line on what it costs, if that is known." })),
+			firstTest: Type.Optional(
+				Type.String({ description: "The cheapest thing that would show whether it works." }),
+			),
+			preview: Type.Optional(Type.String({ description: "Optional block shown while the candidate is highlighted." })),
+		}),
+		{ description: "Candidates to winnow. Order matters: put the strongest first." },
+	),
+});
+
+async function runNarrow(
+	params: { topic: string; candidates: NarrowCandidate[] },
+	ctx: ExtensionContext,
+): Promise<{ content: { type: "text"; text: string }[]; details: NarrowResult }> {
+	const candidates = params.candidates ?? [];
+	const error = (message: string): { content: { type: "text"; text: string }[]; details: NarrowResult } => ({
+		content: [{ type: "text", text: message }],
+		details: { topic: params.topic, verdicts: [], cancelled: true },
+	});
+
+	if (ctx.mode !== "tui") {
+		return error(`${NON_TUI_ERROR} List the candidates as plain numbered text and ask which to keep.`);
+	}
+	if (candidates.length === 0) return error("Error: no candidates provided");
+	const seen = new Set<string>();
+	for (const c of candidates) {
+		if (seen.has(c.id)) throw new Error(`Candidate ${c.id}: duplicate id`);
+		seen.add(c.id);
+	}
+
+	const result = await ctx.ui.custom<NarrowResult>((tui, theme, _kb, done) => {
+		let index = 0;
+		let cachedLines: string[] | undefined;
+		let reasonPhase = false;
+		const verdicts: NarrowVerdict[] = [];
+		const editor = new Editor(tui, editorTheme(theme));
+
+		function refresh() {
+			cachedLines = undefined;
+			tui.requestRender();
+		}
+
+		function verdictOf(id: string): NarrowVerdict | undefined {
+			return verdicts.find((v) => v.id === id);
+		}
+
+		function toggleKeep(candidate: NarrowCandidate) {
+			const existing = verdictOf(candidate.id);
+			if (!existing) {
+				verdicts.push({ id: candidate.id, kept: true, why: null });
+				return;
+			}
+			if (existing.kept) {
+				// Second press undecides, rather than flipping straight to a rejection. A rejection
+				// should cost a reason, and `x` is where that happens.
+				verdicts.splice(verdicts.indexOf(existing), 1);
+				return;
+			}
+			existing.kept = true;
+			existing.why = null;
+		}
+
+		function recordRejection(candidate: NarrowCandidate, why: string) {
+			const existing = verdictOf(candidate.id);
+			const text = why.trim();
+			if (existing) {
+				existing.kept = false;
+				existing.why = text.length > 0 ? text : null;
+				return;
+			}
+			verdicts.push({ id: candidate.id, kept: false, why: text.length > 0 ? text : null });
+		}
+
+		function move(delta: number) {
+			index = Math.max(0, Math.min(candidates.length - 1, index + delta));
+			refresh();
+		}
+
+		editor.onChange = () => refresh();
+		editor.onSubmit = (value) => {
+			recordRejection(candidates[index], value);
+			reasonPhase = false;
+			editor.setText("");
+			// Move on automatically: rejecting with a reason is the long part of the pass, and the
+			// next candidate is almost always the next thing wanted.
+			if (index < candidates.length - 1) index++;
+			refresh();
+		};
+
+		function handleInput(data: string) {
+			if (reasonPhase) {
+				if (matchesKey(data, Key.escape)) {
+					editor.setText("");
+					reasonPhase = false;
+					refresh();
+					return;
+				}
+				editor.handleInput(data);
+				refresh();
+				return;
+			}
+			if (matchesKey(data, Key.escape)) {
+				done({ topic: params.topic, verdicts, cancelled: true });
+				return;
+			}
+			if (matchesKey(data, Key.up) || data === "k") return move(-1);
+			if (matchesKey(data, Key.down) || data === "j") return move(1);
+			if (data === " ") {
+				toggleKeep(candidates[index]);
+				refresh();
+				return;
+			}
+			if (data === "x") {
+				reasonPhase = true;
+				editor.setText(verdictOf(candidates[index].id)?.why ?? "");
+				refresh();
+				return;
+			}
+			if (matchesKey(data, Key.enter)) {
+				done({ topic: params.topic, verdicts, cancelled: false });
+			}
+		}
+
+		function render(width: number): string[] {
+			if (cachedLines) return cachedLines;
+			const lines: string[] = [];
+			const w = Math.max(1, width);
+			const keptCount = verdicts.filter((v) => v.kept).length;
+			const rejectedCount = verdicts.filter((v) => !v.kept).length;
+
+			lines.push(theme.fg("accent", "─".repeat(w)));
+			addPrefixed(
+				lines,
+				w,
+				" ",
+				theme.fg(
+					"muted",
+					`${params.topic} · ${candidates.length} candidate(s) · ${keptCount} kept · ${rejectedCount} rejected · ${candidates.length - keptCount - rejectedCount} undecided`,
+				),
+			);
+			lines.push("");
+
+			for (let i = 0; i < candidates.length; i++) {
+				const c = candidates[i];
+				const focused = i === index;
+				const verdict = verdictOf(c.id);
+				const box = verdict ? (verdict.kept ? theme.fg("success", "[keep] ") : theme.fg("error", "[drop] ")) : "[    ] ";
+				let line = `${box}${theme.fg(focused ? "accent" : "text", c.oneLine)}`;
+				if (c.generator) line += "  " + theme.fg("dim", `(${c.generator})`);
+				addPrefixed(lines, w, focused ? theme.fg("accent", "> ") : "  ", line);
+				if (c.cost) addPrefixed(lines, w, "     ", theme.fg("muted", c.cost));
+				if (verdict && !verdict.kept && verdict.why) {
+					addPrefixed(lines, w, "     ", theme.fg("muted", `rejected: ${verdict.why}`));
+				}
+				if (focused) {
+					if (c.firstTest) addPrefixed(lines, w, "     ", theme.fg("dim", `first test: ${c.firstTest}`));
+					if (c.preview) {
+						for (const raw of c.preview.split("\n")) addPrefixed(lines, w, "     │ ", theme.fg("dim", raw));
+					}
+				}
+			}
+
+			lines.push("");
+			if (reasonPhase) {
+				addPrefixed(lines, w, " ", theme.fg("text", `Why drop it? (${candidates[index].id})`));
+				for (const editorLine of editor.render(Math.max(1, w - 1))) lines.push(` ${editorLine}`);
+				lines.push("");
+				addPrefixed(lines, w, " ", theme.fg("dim", "Enter to record · an empty reason is fine · Esc to cancel"));
+			} else {
+				addPrefixed(
+					lines,
+					w,
+					" ",
+					theme.fg("dim", "↑↓ move · space keep/undecide · x drop with a reason · Enter finish · Esc stop"),
+				);
+			}
+			lines.push(theme.fg("accent", "─".repeat(w)));
+			cachedLines = lines;
+			return lines;
+		}
+
+		return {
+			render,
+			invalidate: () => {
+				cachedLines = undefined;
+			},
+			handleInput,
+		};
+	});
+
+	const kept = result.verdicts.filter((v) => v.kept);
+	const rejected = result.verdicts.filter((v) => !v.kept);
+	const undecided = candidates.filter((c) => !verdictOf(result.verdicts, c.id));
+	const header = result.cancelled
+		? `Narrowing stopped early: ${kept.length} kept, ${rejected.length} rejected, ${undecided.length} not reached.`
+		: `Narrowed: ${kept.length} kept, ${rejected.length} rejected, ${undecided.length} undecided.`;
+	const lines = [header];
+	if (kept.length > 0) {
+		lines.push("Kept:");
+		for (const v of kept) {
+			const c = candidates.find((x) => x.id === v.id);
+			lines.push(`  ${v.id}: ${c?.oneLine ?? "?"}${c?.generator ? ` (${c.generator})` : ""}`);
+		}
+		lines.push("These are the options on the table. Weigh them with council, or take them to crystallize if the decision is already clear.");
+	}
+	if (rejected.length > 0) {
+		lines.push("Rejected:");
+		for (const v of rejected) {
+			const c = candidates.find((x) => x.id === v.id);
+			lines.push(`  ${v.id}: ${c?.oneLine ?? "?"}${v.why ? ` — because ${v.why}` : ""}`);
+		}
+		// The rejection table is the artifact that proves the pass happened, and the reasons are
+		// what stop the next round producing the same candidates again.
+		lines.push("Do not re-propose a rejected candidate in the next round unless the reason no longer holds.");
+	}
+	if (undecided.length > 0) lines.push(`Undecided, so not on the table: ${undecided.map((c) => c.id).join(", ")}`);
+
+	return { content: [{ type: "text" as const, text: lines.join("\n") }], details: result };
+}
+
+function verdictOf(verdicts: NarrowVerdict[], id: string): NarrowVerdict | undefined {
+	return verdicts.find((v) => v.id === id);
 }
 
 /* ────────────────────────────── registration ────────────────────────────── */
@@ -620,7 +1223,7 @@ export default function questions(pi: ExtensionAPI) {
 		name: "ask",
 		label: "Ask",
 		description:
-			"Ask the user a batched round of decision questions. Each question gets 2-4 mutually exclusive options (up to 9), a one-line consequence per option (what happens if it is chosen, including the cost), an optional preview block shown for the highlighted option (folder layout, config, data model), and your recommendation — marked ★ and focused, so Enter accepts it. The user picks one option and can attach a free-text note to that decision; `s` skips a question and leaves it open. Returns every decision with its note and whether it overruled your recommendation. Use for the forks only the user can settle; never for what you can measure yourself, and never for a question whose answer changes nothing.",
+			"Ask the user a batched round of decision questions. Each question gets 2-4 mutually exclusive options (up to 9), a one-line consequence per option (what happens if it is chosen, including the cost), an optional preview block shown for the highlighted option (folder layout, config, data model), and your recommendation — marked ★ and focused, so Enter accepts it. The user picks one option and can attach a free-text note to that decision; if none of the options fits they can answer in their own words instead, which comes back as `freeText` (not as a skip — a rejected option set is a decision, and it means ask differently if you ask again); `s` skips a question and leaves it open. Returns every decision with its note and whether it overruled your recommendation. Use for the forks only the user can settle; never for what you can measure yourself, and never for a question whose answer changes nothing.",
 		promptSnippet: "Ask the user a round of decision questions, each with options, your recommendation and a note",
 		promptGuidelines: [
 			"Use ask when a fork belongs to the user and not to you: 2-4 mutually exclusive options, a one-line consequence each, your recommendation marked and given first, and a preview when the choice has shape. The user can attach a note to each decision — those notes are their reasoning, so carry them into whatever you write next.",
@@ -654,7 +1257,12 @@ export default function questions(pi: ExtensionAPI) {
 			for (const a of details.answers) {
 				const label = a.skipped
 					? theme.fg("warning", "skipped — still open")
-					: theme.fg("text", a.label ?? "");
+					: a.freeText
+						? theme.fg(
+								"accent",
+								`none of the options: ${expanded ? a.freeText : a.freeText.replace(/\s*\n\s*/g, " / ")}`,
+							)
+						: theme.fg("text", a.label ?? "");
 				text += `\n  ${theme.fg("muted", `${a.title ?? a.id}:`)} ${label}`;
 				if (a.note) {
 					const note = expanded ? a.note : a.note.replace(/\s*\n\s*/g, " / ");
@@ -669,7 +1277,7 @@ export default function questions(pi: ExtensionAPI) {
 		name: "quiz",
 		label: "Quiz",
 		description:
-			"Ask the user graded multiple-choice questions with immediate right/wrong feedback. Use during learning sessions: to probe the edge of the user's understanding (broad → specific, binary-searching each dependency strand) and to verify understanding after each teaching step. Each question carries its correct answer and an explanation; the widget grades on selection and always offers 'I don't know'. Returns per-question results (correct / incorrect / IDK).",
+			"Ask the user graded multiple-choice questions with immediate right/wrong feedback. Use during learning sessions: to probe the edge of the user's understanding (broad → specific, binary-searching each dependency strand) and to verify understanding after each teaching step. Each question carries its correct answer and an explanation; the widget grades on selection and always offers 'I don't know'. After a wrong answer the user can add why they chose it and mark the grading contested; the result says which were contested. Settle a contest with mode: 'review' — pass the model's revised verdict and the widget renders it for the user to accept or push back on, so a disputed answer becomes a short exchange instead of a mark that stands because nobody argued. Returns per-question results (correct / incorrect / IDK, plus note and contested), or per-review outcomes in review mode.",
 		promptSnippet: "Ask graded multiple-choice questions and grade them on the spot",
 		promptGuidelines: [
 			"Use quiz to measure what a learner already holds: give every question its correct answer and a one-to-three sentence explanation, and always add the 'I don't know' escape by leaving it out of the options.",
@@ -677,7 +1285,10 @@ export default function questions(pi: ExtensionAPI) {
 		parameters: QuizParams,
 
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-			return runQuiz(params as { topic: string; questions: QuizQuestion[] }, ctx);
+			return runQuiz(
+				params as { topic: string; questions?: QuizQuestion[]; mode?: "ask" | "review"; reviews?: QuizReview[] },
+				ctx,
+			);
 		},
 
 		renderCall(args, theme, _context) {
@@ -689,17 +1300,71 @@ export default function questions(pi: ExtensionAPI) {
 		},
 
 		renderResult(result, _options, theme, _context) {
-			const details = result.details as QuizResult | undefined;
+			const details = result.details as QuizResult | QuizReviewResult | undefined;
+			if (details && "outcomes" in details) {
+				const pushed = details.outcomes.filter((o) => !o.accepted).length;
+				const status = details.cancelled ? theme.fg("warning", " (stopped early)") : "";
+				return new Text(
+					pushed === 0
+						? `${theme.fg("success", "✓")}  ${theme.fg("text", `review: ${details.outcomes.length} accepted`)}${status}`
+						: `${theme.fg("warning", "⚑")}  ${theme.fg("text", `review: ${pushed} pushed back`)}${status}`,
+					0,
+					0,
+				);
+			}
 			if (!details || details.answers.length === 0) {
 				const t = result.content[0];
 				return new Text(theme.fg("warning", t?.type === "text" ? t.text : ""), 0, 0);
 			}
 			const score = details.answers.filter((a) => a.correct).length;
 			const marks = details.answers
-				.map((a) => (a.correct ? theme.fg("success", "✓") : a.idk ? theme.fg("warning", "?") : theme.fg("error", "✗")))
+				.map((a) => {
+					const mark = a.correct ? theme.fg("success", "✓") : a.idk ? theme.fg("warning", "?") : theme.fg("error", "✗");
+					return a.contested ? `${mark}${theme.fg("warning", "⚑")}` : mark;
+				})
 				.join(" ");
 			const status = details.cancelled ? theme.fg("warning", " (stopped early)") : "";
 			return new Text(`${marks}  ${theme.fg("text", `${score}/${details.answers.length} correct`)}${status}`, 0, 0);
+		},
+	});
+
+	pi.registerTool({
+		name: "narrow",
+		label: "Winnow Candidates",
+		description:
+			"Show the user a pile of candidates and let them keep, drop or leave each one, one keystroke per candidate. Use after divergence produces more than the decision needs: `ask` cannot express this, because it is single-select per question and caps at nine options, so \"keep 3 of these 30\" has no shape there. Space keeps, `x` drops with a reason, Enter finishes. Returns the kept candidates, the rejected ones with their reasons, and however many were left undecided. The rejected list is the artifact that proves the winnowing happened — do not re-propose a rejected candidate next round unless its reason no longer holds.",
+		promptSnippet: "narrow(candidates) — let the user keep/drop a pile of candidates one keystroke at a time",
+		promptGuidelines: [
+			"Use narrow when there are more candidates than the decision can hold. Give each a different generator, no two sharing a rationale, and put the strongest first. The kept set is what council then weighs; if nothing is kept, the round produced nothing worth deciding about and saying so is the honest result.",
+		],
+		parameters: NarrowParams,
+
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+			return runNarrow(params as { topic: string; candidates: NarrowCandidate[] }, ctx);
+		},
+
+		renderCall(args, theme, _context) {
+			const count = Array.isArray(args.candidates) ? args.candidates.length : 0;
+			let text = theme.fg("toolTitle", theme.bold("narrow "));
+			text += theme.fg("muted", `${args.topic ?? ""} `);
+			text += theme.fg("dim", `(${count} candidate${count !== 1 ? "s" : ""})`);
+			return new Text(text, 0, 0);
+		},
+
+		renderResult(result, _options, theme, _context) {
+			const details = result.details as NarrowResult | undefined;
+			if (!details || details.verdicts.length === 0) {
+				const t = result.content[0];
+				return new Text(theme.fg("warning", t?.type === "text" ? t.text : ""), 0, 0);
+			}
+			const kept = details.verdicts.filter((v) => v.kept).length;
+			const dropped = details.verdicts.filter((v) => !v.kept).length;
+			const status = details.cancelled ? theme.fg("warning", " (stopped early)") : "";
+			return new Text(
+				`${theme.fg("success", `◆ ${kept} kept`)}${dropped ? theme.fg("muted", ` · ${dropped} dropped`) : ""}${status}`,
+				0,
+				0,
+			);
 		},
 	});
 }

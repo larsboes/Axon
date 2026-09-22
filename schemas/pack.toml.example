@@ -54,6 +54,25 @@ deployer     = "packs-axon"              # optional: a dedicated tool owns this 
 # tools/packs-codex merges this overlay over the shared skill while staging,
 # but refuses a Codex-specific SKILL.md so the shared workflow stays canonical.
 
+# NOTE ON A CONVENTION THAT WAS TRIED AND REMOVED (2026-09-17): a pack-level `shared/`
+# directory, merged into every skill of the pack by the deployer, existed for one day and was
+# deleted. It made the SOURCE skill incomplete — the file was absent in the repo and only
+# materialized by the deployer, so the tree a human reads and reviews did not show a
+# dependency the skill actually had, and any copy not made by this deployer broke at runtime —
+# and it went to EVERY skill of the pack, so the one thing large enough to want it could not
+# use it. Do not reintroduce it.
+#
+# The principle instead:
+#   A skill must be able to RUN from its own directory. No shared/ files, no paths into a
+#   sibling skill's tree.
+#   A skill MAY POINT at a sibling by name for material it merely READS. That degrades
+#   gracefully — the local text still says what to do — whereas a path fails hard. Copying
+#   content to satisfy "self-contained" would be worse than the dependency.
+#
+# An invariant two skills must share is therefore a GATE, not a file. See
+# tools/check-presentations-theme-contract.sh, which fails if a role one skill requires is not
+# one the other's themes define.
+#
 # tools/packs-claude (tools/packs.sh is a shim over it, kept for older call sites):
 #   status [name|--all]  -> source/install/drift state for materialized Claude skills
 #   deploy <name>        -> copy a Pack into ~/.claude/skills with ownership state

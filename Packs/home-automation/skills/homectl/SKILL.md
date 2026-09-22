@@ -1,6 +1,6 @@
 ---
 name: homectl
-description: Materializes overlay-owned Home Assistant templates and vendors overlay-owned pinned components through a public, host-neutral CLI. Use for template coverage, materialization, or reviewed component vendoring. Real devices, automations, entity IDs, component selections, and output stay in the active private overlay.
+description: Materializes overlay-owned Home Assistant templates and vendors overlay-owned pinned components through a public, host-neutral CLI. Use for template coverage, materialization, or reviewed component vendoring. Do not use for validating or reloading a deployment already placed (use ha-deploy), for querying or controlling entities (use ha-cli), or for generating dashboards (use ha-dashgen). Real devices, automations, entity IDs, component selections, and output stay in the active private overlay.
 allowed-tools: Read, Write, Edit, Bash
 ---
 

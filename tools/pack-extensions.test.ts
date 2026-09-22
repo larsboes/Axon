@@ -292,17 +292,36 @@ interface Loaded {
   factory: unknown;
   handlers: Map<string, Handler[]>;
   tools: string[];
+  /**
+   * The full tool definitions, not just their names.
+   *
+   * Names are enough to prove an extension registered something; they are not enough to drive it.
+   * The questions widgets are only testable by calling `execute` with a stub context and feeding
+   * keystrokes into the widget the extension builds, so the definition object has to survive the
+   * load. Kept alongside `tools` rather than replacing it, so every existing assertion still reads
+   * the shape it was written against.
+   */
+  toolDefs: Map<string, ToolDef>;
   commands: string[];
   providers: string[];
 }
 
+/** Only the parts the tests reach; the rendering callbacks stay untyped on purpose. */
+type ToolDef = {
+  name: string;
+  execute: (...args: unknown[]) => Promise<unknown>;
+};
+
 async function load(file: ExtensionFile, dir: string): Promise<Loaded> {
-  const loaded: Loaded = { factory: undefined, handlers: new Map(), tools: [], commands: [], providers: [] };
+  const loaded: Loaded = { factory: undefined, handlers: new Map(), tools: [], toolDefs: new Map(), commands: [], providers: [] };
   const api = {
     on: (event: string, handler: Handler) => {
       loaded.handlers.set(event, [...(loaded.handlers.get(event) ?? []), handler]);
     },
-    registerTool: (definition: { name: string }) => loaded.tools.push(definition.name),
+    registerTool: (definition: { name: string }) => {
+      loaded.tools.push(definition.name);
+      loaded.toolDefs.set(definition.name, definition as ToolDef);
+    },
     registerCommand: (name: string) => loaded.commands.push(name),
     registerProvider: (id: string) => loaded.providers.push(id),
     sendMessage: () => {},
@@ -462,6 +481,212 @@ describe.skipIf(!piConfigured)("pack extensions", () => {
       if (got !== want) mismatches.push(`${want.padEnd(5)} ${what} — got ${got}`);
     }
     expect(mismatches).toEqual([]);
+  });
+});
+
+/* ── the questions widgets ────────────────────────────────────────────────
+ *
+ * `ask`, `quiz` and `narrow` are TUI widgets, so the only way to test one is to call the registered
+ * tool's `execute` with a stub context whose `ui.custom` hands back the widget, feed keystrokes into
+ * it, and assert on what the tool returns. That is what this block does.
+ *
+ * It is not theoretical. The harness caught a real bug in the ask free-text phase the first time it
+ * ran: the `free` phase was added but the editor-routing guard still read `phase === "note"`, so a
+ * typed answer was parsed as option keys and `o` then Enter recorded nothing. Every other check this
+ * repository runs — typecheck, load-without-throwing, the handler tests above — is blind to it,
+ * because nothing throws and nothing fails to register.
+ *
+ * Each widget renders at the end of every drive, so a render-path crash fails the test too.
+ */
+describe.skipIf(!piConfigured)("pack extensions > questions widgets", () => {
+  const theme = new Proxy({}, { get: () => (s: unknown) => s });
+  const tui = { requestRender() {}, terminal: { rows: 24, cols: 80 } };
+
+  /** A stub ctx that builds the widget and then feeds it `keys`, resolving with the tool result. */
+  function drive(keys: string[]): unknown {
+    return {
+      mode: "tui",
+      ui: {
+        custom: (factory: (t: unknown, th: unknown, kb: unknown, done: (r: unknown) => void) => unknown) =>
+          new Promise((resolve) => {
+            const widget = factory(tui, theme, {}, resolve) as {
+              handleInput: (d: string) => void;
+              render: (w: number) => string[];
+            };
+            for (const k of keys) widget.handleInput(k);
+            widget.render(80);
+          }),
+      },
+    };
+  }
+
+  /** The questions extension's tools, loaded once against the fixture. */
+  let toolDefs: Map<string, ToolDef> | undefined;
+  async function questionsTools(): Promise<Map<string, ToolDef>> {
+    if (toolDefs) return toolDefs;
+    const file = packs.find((f) => f.path.endsWith("questions.ts"));
+    expect(file).toBeDefined();
+    const loaded = await load(file!, fixture());
+    expect([...loaded.toolDefs.keys()].sort()).toEqual(["ask", "narrow", "quiz"]);
+    toolDefs = loaded.toolDefs;
+    return toolDefs;
+  }
+  const run = async (tool: string, params: unknown, keys: string[], ctx?: unknown) => {
+    const defs = await questionsTools();
+    const d = defs.get(tool);
+    expect(d).toBeDefined();
+    return (await d!.execute("id", params, undefined, undefined, ctx ?? drive(keys))) as {
+      content: { type: string; text?: string }[];
+      details: any;
+    };
+  };
+  const textOf = (r: { content: { text?: string }[] }) => r.content.map((c) => c.text ?? "").join("\n");
+
+  describe("ask free text", () => {
+    const round = {
+      topic: "t",
+      questions: [
+        { id: "q1", title: "Storage", prompt: "Where?", options: [{ label: "vault" }, { label: "db" }], recommendedIndex: 0 },
+        { id: "q2", title: "Scope", prompt: "How much?", options: [{ label: "all" }, { label: "some" }], recommendedIndex: 1 },
+      ],
+    };
+
+    test("an answer in the user's own words is not a skip", async () => {
+      const r = await run("ask", round, ["o", ..."neither, use the filesystem", "\r", "\r", ..."went with some", "\r"]);
+      const a1 = r.details.answers[0];
+      expect(a1.freeText).toBe("neither, use the filesystem");
+      expect(a1.skipped).toBe(false);
+      expect(a1.selectedIndex).toBeNull();
+      expect(a1.label).toBeNull();
+      expect(textOf(r)).toMatch(/NONE OF THE OPTIONS/);
+      expect(textOf(r)).toMatch(/ask differently/);
+      // The second question still behaves normally: a choice plus a note.
+      expect(r.details.answers[1].label).toBe("some");
+      expect(r.details.answers[1].note).toBe("went with some");
+      expect(r.details.answers[1].freeText).toBeNull();
+    });
+
+    test("skip stays distinct from free text", async () => {
+      const r = await run("ask", round, ["s", "s"]);
+      expect(r.details.answers.every((a: any) => a.skipped && a.freeText === null)).toBe(true);
+      expect(textOf(r)).toMatch(/still open/);
+      expect(textOf(r)).not.toMatch(/NONE OF THE OPTIONS/);
+    });
+
+    test("Esc leaves the free-text editor and the options still answer", async () => {
+      const r = await run("ask", round, ["o", "x", "\x1b", "\r", "\r", "s"]);
+      expect(r.details.answers[0].label).toBe("vault");
+      expect(r.details.answers[0].freeText).toBeNull();
+    });
+  });
+
+  describe("quiz contest and review", () => {
+    const Q = {
+      topic: "t",
+      questions: [{ id: "q1", prompt: "Which?", options: ["A", "B"], correctIndex: 0, explanation: "A is right" }],
+    };
+
+    test("a contested answer is marked and carries its reason", async () => {
+      const r = await run("quiz", Q, ["2", "c", "n", ..."because B looked right", "\r", "\r"]);
+      const a = r.details.answers[0];
+      expect(a.contested).toBe(true);
+      expect(a.note).toBe("because B looked right");
+      // The grading itself is untouched: a contest is a claim, not a correction.
+      expect(a.correct).toBe(false);
+      expect(textOf(r)).toMatch(/CONTESTED/);
+      expect(textOf(r)).toMatch(/mode: "review"/);
+    });
+
+    test("a correct answer carries no contest and no note", async () => {
+      const r = await run("quiz", Q, ["1", "\r"]);
+      expect(r.details.answers[0].correct).toBe(true);
+      expect(r.details.answers[0].contested).toBe(false);
+      expect(r.details.answers[0].note).toBeNull();
+      expect(textOf(r)).not.toMatch(/CONTESTED/);
+    });
+
+    test("review mode renders the revised verdict and takes an acceptance", async () => {
+      const r = await run("quiz",
+        { topic: "t", mode: "review", reviews: [{ id: "q1", prompt: "Which?", chosen: "B", correct: "A", accepted: true, reason: "you were right" }] },
+        ["\r"]);
+      expect(r.details.outcomes[0].accepted).toBe(true);
+      expect(textOf(r)).toMatch(/all 1 accepted/);
+    });
+
+    test("pushing back carries the reply and forbids moving on", async () => {
+      const r = await run("quiz",
+        { topic: "t", mode: "review", reviews: [{ id: "q1", prompt: "Which?", chosen: "B", correct: "A", accepted: false, reason: "B is right because A" }] },
+        ["p", ..."no, because C", "\r"]);
+      expect(r.details.outcomes[0].accepted).toBe(false);
+      expect(r.details.outcomes[0].note).toBe("no, because C");
+      expect(textOf(r)).toMatch(/PUSHED BACK/);
+      expect(textOf(r)).toMatch(/Do not move on while a contest is open/);
+    });
+
+    test("review mode refuses an empty review list", async () => {
+      expect(textOf(await run("quiz", { topic: "t", mode: "review", reviews: [] }, []))).toMatch(/needs at least one entry/);
+    });
+  });
+
+  describe("narrow winnowing", () => {
+    const round = {
+      topic: "t",
+      candidates: [
+        { id: "c1", oneLine: "shard the store", generator: "analogy" },
+        { id: "c2", oneLine: "buy a bigger box", generator: "extreme-scale" },
+        { id: "c3", oneLine: "cache at the edge", generator: "inversion" },
+      ],
+    };
+
+    test("keep, drop-with-reason and undecided are three distinct outcomes", async () => {
+      const r = await run("narrow", round, [" ", "j", "x", ..."too costly", "\r", "\r"]);
+      const kept = r.details.verdicts.filter((v: any) => v.kept).map((v: any) => v.id);
+      const dropped = r.details.verdicts.filter((v: any) => !v.kept);
+      expect(kept).toEqual(["c1"]);
+      expect(dropped).toHaveLength(1);
+      expect(dropped[0].why).toBe("too costly");
+      // A candidate never reached must NOT be recorded as rejected.
+      expect(r.details.verdicts.some((v: any) => v.id === "c3")).toBe(false);
+      expect(textOf(r)).toMatch(/1 kept, 1 rejected, 1 undecided/);
+      expect(textOf(r)).toMatch(/Do not re-propose a rejected candidate/);
+    });
+
+    test("pressing space twice undecides rather than dropping", async () => {
+      const r = await run("narrow", round, [" ", " ", "\r"]);
+      expect(r.details.verdicts).toHaveLength(0);
+      expect(textOf(r)).toMatch(/0 kept, 0 rejected, 3 undecided/);
+    });
+
+    test("a drop with no reason records null, not an empty string", async () => {
+      const r = await run("narrow", round, [" ", "x", "\r", "\r"]);
+      const c1 = r.details.verdicts.find((v: any) => v.id === "c1");
+      expect(c1.kept).toBe(false);
+      expect(c1.why).toBeNull();
+    });
+
+    test("Esc cancels without inventing verdicts", async () => {
+      const r = await run("narrow", round, [" ", "\x1b"]);
+      expect(r.details.cancelled).toBe(true);
+      expect(textOf(r)).toMatch(/stopped early/);
+    });
+
+    test("an empty pile is refused rather than opening an empty widget", async () => {
+      expect(textOf(await run("narrow", { topic: "t", candidates: [] }, []))).toMatch(/no candidates/);
+    });
+  });
+
+  describe("every questions tool refuses to hang a non-interactive run", () => {
+    test("all three return the graceful error instead of calling ui.custom", async () => {
+      const nonTui = { mode: "json", ui: { custom() { throw new Error("ui.custom must not be called"); } } };
+      const cases: [string, unknown][] = [
+        ["ask", { topic: "t", questions: [{ id: "q", prompt: "p", options: [{ label: "a" }, { label: "b" }] }] }],
+        ["quiz", { topic: "t", questions: [{ id: "q", prompt: "p", options: ["a", "b"], correctIndex: 0 }] }],
+        ["narrow", { topic: "t", candidates: [{ id: "c", oneLine: "x" }] }],
+      ];
+      for (const [tool, params] of cases) {
+        expect(textOf(await run(tool, params, [], nonTui))).toMatch(/non-interactive/);
+      }
+    });
   });
 });
 

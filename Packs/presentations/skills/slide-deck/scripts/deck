@@ -11,8 +11,9 @@
 #
 # Dependencies are selected per verb, so `build` does not resolve the rasteriser.
 #
-# `cd -P` resolves the symlink the Pack deployer plants in ~/.claude/skills, and
-# the walk goes up from this file rather than naming a checkout location —
+# `cd -P` resolves a symlinked skill directory (a user's own checkout link, not the
+# deployer — which copies, and refuses a symlinked source), and the walk goes up from
+# this file rather than naming a checkout location —
 # Axon sits at ~/Developer/Axon on one machine and ~/Axon on another.
 set -euo pipefail
 

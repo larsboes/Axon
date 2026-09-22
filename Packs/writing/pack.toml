@@ -1,5 +1,23 @@
 # See schemas/pack.toml.example for the field reference.
+#
+# Four skills, one subject: the text and artifacts an agent produces for a human to read,
+# plus the meta-skill that authors the agent-facing skills themselves.
+#
+# Two Packs were merged in here on 2026-09-17 (academic-writing, unslop) because profiles.toml
+# already deployed all three together in every profile that held any of them. A Pack is a
+# deployment unit, not a category, so co-deployment is the test rather than resemblance. The
+# skills keep their names, so nothing changes about what loads — only the manifest count does,
+# and the per-Pack skill subsets in profiles.toml still give finer selection than the old
+# boundaries did.
+#
+# `codex/` is absent here; the merged Packs brought only skills and, from academic-writing, the
+# `agents/` directory of eight review lenses.
 name        = "writing"
-description = "Write for readers and for agents: human-voiced prose with a CI-gateable tell linter, and Claude agent skills authored to Anthropic + agentskills.io spec."
-skills      = ["writing-skills", "human-writing"]
+description = "What an agent produces for a human reader, and how the agent's own skills get authored: human-voiced prose with a CI-gateable tell linter, academic drafting and cite-checking with an adversarial multi-skeptic review pass, code and web UI stripped of AI tells, and the meta-skill that authors and audits agent skills."
+skills      = ["skill-creator", "human-writing", "academic-writing", "unslop"]
+# `skill-creator` carries `writing-skills` forward and supersedes it. A `retired_skills` entry
+# lets an adapter remove a prior installation it owns — needed because `writing-skills` was
+# already deployed to Claude Code and pi, and `sync` would otherwise leave the superseded copy
+# loaded beside its successor.
+retired_skills = ["writing-skills"]
 license     = "MIT"

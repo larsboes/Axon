@@ -1,0 +1,62 @@
+{
+  "skill_name": "skill-creator",
+  "baseline": {
+    "captured": "2026-09-17",
+    "method": "tools/skill-eval run skill-creator --case 2, the without_skill arm: a fresh `claude -p` process in a directory with no .claude/skills, given case 2 unchanged. Recorded here as the measured unaided baseline; the pre-authoring RED phase this suite was written against was not captured in this form.",
+    "failure": "The unaided audit scored 4 of 6 assertions. It missed one substantively and invented one defect. (a) SKILL.md's 'Explain your chain of thought step by step' was filed as an output-style directive in the wrong place — 'as though narrating were one' — not as the reasoning-echo refusal risk it is, which is the behaviour references/fable-5-authoring.md exists to prevent. (b) It reported that the description 'hits both forms the spec's Warning tells you to avoid, verbatim', quoting 'You can use this to...' and 'I can help you...' as present; neither string is in the fixture's description. That is a fabricated finding in an audit whose job is to find real ones.",
+    "delta": "With the skill, 6 of 6. The two assertions the skill moved are the two a text-only audit cannot see by pattern-matching: that reasoning-echo is a refusal risk rather than a style nit, and that an audit must not invent what it did not find."
+  },
+  "results": {
+    "recorded": "2026-09-17",
+    "iteration": "Packs/writing/skills/skill-creator-workspace/iteration-1/",
+    "case": "2 (audit the planted-defect fixture)",
+    "with_skill": "6/6 assertions, $0.80, 89s",
+    "without_skill": "4/6 assertions, $1.55, 204s",
+    "note": "One case only, one run per arm: this is a demonstration that the loop works and returns a real delta, not a benchmark of the skill. Case 1 and case 3 are unwritten runs."
+  },
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Create a skill for our team's changelog conventions: every merged PR adds a line under '## Unreleased' in CHANGELOG.md, format '- <area>: <imperative summary> (#<PR>)'; on release, the Unreleased block moves under a '## v<X.Y.Z> — <date>' heading. Put it in .claude/skills.",
+      "expected_output": "A complete open-spec skill directory (.claude/skills/<name>/SKILL.md, plus supporting files only if warranted) encoding the convention.",
+      "files": [],
+      "assertions": [
+        "SKILL.md frontmatter has a lowercase-hyphen name that exactly matches its directory name",
+        "The description is third person, at most 1024 chars, and contains both a 'Use when' trigger clause and a negative trigger",
+        "The description names triggers only and does not enumerate the skill's internal steps",
+        "The body is under 500 lines and any referenced supporting file sits exactly one level deep",
+        "No README, INSTALLATION, or CHANGELOG file exists inside the skill directory",
+        "The changelog line format and the release-promotion rule are both encoded verbatim-compatibly (area, imperative summary, PR number; Unreleased moving under a version heading)"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Audit the skill at evals/files/bad-skill for spec compliance and trigger quality, and list what must change.",
+      "expected_output": "An audit report that catches every planted defect and proposes concrete fixes.",
+      "files": [
+        "evals/files/bad-skill/SKILL.md",
+        "evals/files/bad-skill/references/details.md",
+        "evals/files/bad-skill/references/more/deep.md"
+      ],
+      "assertions": [
+        "Flags the name/directory mismatch and the uppercase name as spec violations",
+        "Flags the second-person description and proposes a third-person rewrite with a negative trigger",
+        "Flags that the description summarizes the workflow instead of carrying triggers",
+        "Flags the reference nested two levels deep (references/more/deep.md) as a progressive-disclosure violation",
+        "Flags the instruction telling the model to reproduce its chain of thought as a refusal risk",
+        "Does not invent defects that are not present in the fixture"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Make a skill for deployments.",
+      "expected_output": "Either one batched round of concrete-option questions resolving the material unknowns (target platform, trigger, environment), or an explicitly-assumed minimal skill with every assumption documented — never a silently invented deploy stack.",
+      "files": [],
+      "assertions": [
+        "The response either asks at most one batched round of numbered questions with enumerated concrete options, or proceeds on named defaults",
+        "If it proceeds on defaults, the output contains an explicit assumptions record",
+        "No provider-specific commands are presented as the user's actual stack without either an answer or a documented assumption backing them"
+      ]
+    }
+  ]
+}

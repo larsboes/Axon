@@ -1155,6 +1155,38 @@ const CHECKS: Check[] = [
     },
   },
 
+  // The tracked UI bunfig files own Axon's repo-level hold. This check owns only the optional
+  // laptop-wide copy: it is a warning, not a failure, because the global file affects projects
+  // outside Axon and install.sh asks before creating it. The scanner must NOT be global; Bun
+  // requires it in each project's dependency tree, which the tree-local gate checks.
+  {
+    name: "Global Bun/npm install policy",
+    async run(ctx) {
+      if (!HOME) {
+        ctx.warn("HOME is unset — cannot inspect ~/.bunfig.toml");
+        return;
+      }
+      const path = join(HOME, ".bunfig.toml");
+      if (!existsSync(path)) {
+        ctx.warn("~/.bunfig.toml is absent — run tools/install.sh and accept the optional 24h npm/Bun hold");
+        return;
+      }
+      try {
+        const config = await readToml(path);
+        const age = config?.install?.minimumReleaseAge;
+        if (age === 86400) {
+          ctx.ok("~/.bunfig.toml minimumReleaseAge = 86400 (24h)");
+        } else if (age === undefined) {
+          ctx.warn("~/.bunfig.toml has no install.minimumReleaseAge = 86400 — run tools/install.sh to add the hold");
+        } else {
+          ctx.warn(`~/.bunfig.toml minimumReleaseAge is ${String(age)}, expected 86400 — run tools/install.sh to reconcile it`);
+        }
+      } catch (error) {
+        ctx.bad(`~/.bunfig.toml is not valid TOML — ${(error as Error).message}`);
+      }
+    },
+  },
+
   // Local inference roles — delegate to tools/model-check --local, same shape as the
   // toolchain-check delegation above. Only the loopback backends: the full sweep dials
   // third-party APIs and spends quota, which nothing running on every invocation may do.

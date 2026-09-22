@@ -82,10 +82,13 @@ construction. `s.statement_reserve` exists so the arithmetic is stated once.
 
 ## Build and deploy
 
-**The skill is deployed as a symlink for some harnesses and a copy for others.** The
+**The skill is copied into a harness, never linked, and still resolves its own root.** The
 launcher resolves with `cd -P` and walks up from its own location rather than naming a
 checkout path, because Axon sits at `~/Developer/Axon` on one machine and `~/Axon` on
-another. Hard-coding either breaks the other.
+another. Hard-coding either breaks the other. `cd -P` is no longer load-bearing — the
+materializing deployer that replaced symlinks on 2026-08-09 is the only one left, and it
+refuses a symlinked source outright — but it stays, because a user who symlinks the skill
+into their own checkout would otherwise get a root one hop off.
 
 **Dependencies are pinned in the launcher, per verb.** `build` and `check` resolve
 `python-pptx` and `pillow`; only `render` adds `pymupdf`. Resolving the rasteriser on

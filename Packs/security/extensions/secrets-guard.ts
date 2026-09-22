@@ -139,7 +139,45 @@ function matchReason(path: string): string {
  */
 const ENV_NAMESPACE = /\b(?:process|import\.meta|Deno|Bun)\.env\b|\bos\.environ\b|\$env:(?=[A-Za-z_])/g;
 
-/** Heuristic: does a bash command try to read secret files? */
+/**
+ * Every secret-looking path a command mentions.
+ *
+ * Extracted generously on purpose. The rule that uses this is an inversion: rather than
+ * enumerating readers (`cat`, `head`, `awk`, `python3 -c`, `base64`, `tar`, `git show` …) and
+ * losing to whichever one nobody listed, ANY reference to a secret path is refused unless the
+ * command is one of the allowlisted shapes below. Over-extraction costs a blocked command with a
+ * reason the caller can act on; under-extraction costs the secret.
+ *
+ * Splitting on shell metacharacters is what makes the embedded cases land: in
+ * `python3 -c "open('.env').read()"` and `git show HEAD:.env` the split still yields `.env`, which
+ * isSecretPath matches on its own.
+ */
+function secretPathsIn(command: string): string[] {
+  const found = new Set<string>();
+  for (const token of command.split(/[\s'"`|;&()<>=,:\[\]{}$\\]+/)) {
+    if (token.length < 3) continue;
+    if (isSecretPath(token)) found.add(token);
+  }
+  return [...found];
+}
+
+/**
+ * Whether a command only NAMES a secret path rather than reading it.
+ *
+ * `printf 'env_file: .env\n' > compose.yml` writes a compose service that references the file; it
+ * never opens it. Refusing that would obstruct ordinary config work while protecting nothing, and
+ * the existing extension test encodes it as an allowed case.
+ *
+ * The exemption is deliberately narrow, because quoting alone proves nothing — an inline script
+ * reads a quoted path (`python3 -c "open('.env').read()"`). It needs both a quoted path AND a verb
+ * that only ever writes text, and `grep -n TOKEN .env` still blocks because there the path is bare.
+ */
+function onlyMentionsSecretPath(command: string, probe: string): boolean {
+  const firstWord = (command.trim().split(/[\s;|&(]+/)[0] ?? "").toLowerCase();
+  if (firstWord !== "printf" && firstWord !== "echo") return false;
+  return /['"][^'"]*\.(?:env|secrets?)(?:\.[A-Za-z0-9_.-]+)?[^'"]*['"]/.test(probe);
+}
+
 function isSecretReadCommand(command: string): { blocked: boolean; reason?: string } {
   // The command as it should be judged: namespaces that merely contain "env" are
   // blanked out first, so `rg process.env` is not a read of `.env`.
@@ -176,6 +214,24 @@ function isSecretReadCommand(command: string): { blocked: boolean; reason?: stri
     if (pattern.test(probe)) {
       return { blocked: true, reason: `matches secret-read pattern: ${pattern.source}` };
     }
+  }
+
+  // The inversion. The blocklist above only knows the readers somebody thought of, and shell
+  // indirection is unbounded — a pipe to base64, an inline script, a copy to a temporary file all
+  // read the file without matching any of it. So anything that names a secret path and is not one
+  // of the allowlisted shapes above is refused, whether or not a pattern recognises the reader.
+  // Run against `probe`, not `command`: `process.env` ends in `.env` and would otherwise be refused
+  // as a secret file, which is precisely the false positive ENV_NAMESPACE exists to prevent.
+  const referenced = secretPathsIn(probe);
+  if (referenced.length > 0 && !onlyMentionsSecretPath(command, probe)) {
+    return {
+      blocked: true,
+      reason:
+        `references a secret file (${referenced.join(", ")}). Known readers are blocked by name, but ` +
+        `the reader here was not recognised — so it is refused rather than allowed. ` +
+        `If this is a false positive, rephrase so the path is not named: the file's contents are ` +
+        `available through vault_exec({cmd, env_file})`,
+    };
   }
 
   return { blocked: false };
@@ -350,7 +406,7 @@ export default function (pi: ExtensionAPI) {
     name: "vault_exec",
     label: "Vault Exec",
     description:
-      "Run a shell command with an env file sourced. The env file is read directly by the extension — the LLM never sees the secret values. Captures stdout/stderr and strips leaked secrets from the output. Use for curl, API calls, or any command that needs credentials from .env / .secrets files.",
+      "Run a shell command with an env file sourced. The env file is read directly by the extension — the LLM never sees the secret values. Captures stdout/stderr and strips leaked secrets from the output. Pass `keys` to expose only the variables the command needs: without it the whole environment is inherited. Use for curl, API calls, or any command that needs credentials from .env / .secrets files.",
 
     parameters: Type.Object({
       cmd: Type.String({
@@ -359,6 +415,12 @@ export default function (pi: ExtensionAPI) {
       env_file: Type.Optional(
         Type.String({
           description: "Path to an env file to source before running the command (e.g., '.env' or 'config/secrets.env'). The file is read by the extension, never seen by the LLM.",
+        }),
+      ),
+      keys: Type.Optional(
+        Type.Array(Type.String(), {
+          description:
+            "Names of the environment variables to expose. When set, ONLY these plus PATH and HOME exist in the child environment, so the command has nothing else to leak. Omit to keep the permissive default: the whole process environment, plus every variable in env_file. Prefer setting it.",
         }),
       ),
       timeout: Type.Optional(
@@ -373,19 +435,59 @@ export default function (pi: ExtensionAPI) {
       // refused up front rather than pretending the signal is honoured mid-command.
       if (signal?.aborted) throw new Error("vault_exec: cancelled before the command started");
 
+      /**
+       * Every value this call put into the child environment.
+       *
+       * sanitizeOutput is SHAPE-based: it redacts lines that look like `KEY=value` with a
+       * secret-looking key. That misses the value printed on its own, which is exactly what
+       * `printenv API_TOKEN` produces — and this tool is the one place that knows the values, so it
+       * can strip them by value as well as by shape. Held outside the try so the error path, which
+       * is where a failing command dumps its stderr, gets the same treatment.
+       */
+      const exposedValues: string[] = [];
+      const scrub = (text: string): string => {
+        let out = sanitizeOutput(text);
+        for (const value of exposedValues) {
+          if (value.length >= 8) out = out.split(value).join("****");
+        }
+        return out;
+      };
+
       try {
-        const env = { ...process.env };
+        // Scoping. Without `keys` the child inherits the whole process environment and every
+        // variable from env_file, which makes one `printenv | base64` enough to read what this
+        // tool exists to keep out of the transcript — the output stripping is literal-only and
+        // would not catch the encoding. With `keys`, the environment is those names plus PATH and
+        // HOME, so there is nothing else to dump.
+        const wanted = params.keys && params.keys.length > 0 ? params.keys : null;
+        const env: NodeJS.ProcessEnv = wanted
+          ? { PATH: process.env.PATH, HOME: process.env.HOME }
+          : { ...process.env };
 
         if (params.env_file) {
           const loaded = loadEnvFile(params.env_file);
-          for (const [key, val] of Object.entries(loaded)) {
+          const present = wanted ? wanted.filter((key) => key in loaded) : [];
+          const absent = wanted ? wanted.filter((key) => !(key in loaded)) : [];
+          if (absent.length > 0) {
+            throw new Error(
+              `vault_exec: ${absent.join(", ")} not present in ${params.env_file}` +
+                (present.length > 0 ? ` (found: ${present.join(", ")})` : ""),
+            );
+          }
+          const entries = wanted
+            ? Object.entries(loaded).filter(([key]) => wanted.includes(key))
+            : Object.entries(loaded);
+          for (const [key, val] of entries) {
             env[key] = val;
+            exposedValues.push(val);
           }
 
           // Notify user that env file was used
           ctx.ui?.notify?.(
-            `[vault_exec] sourced ${params.env_file} (${Object.keys(loaded).length} vars)`,
-            "info",
+            `[vault_exec] sourced ${params.env_file} (${entries.length} var${entries.length === 1 ? "" : "s"}${
+              wanted ? ", scoped" : " — UNSCOPED, pass keys to limit the environment"
+            })`,
+            wanted ? "info" : "warning",
           );
         }
 
@@ -397,7 +499,7 @@ export default function (pi: ExtensionAPI) {
           timeout: (params.timeout ?? 30) * 1000,
         });
 
-        const sanitized = sanitizeOutput(result);
+        const sanitized = scrub(result);
 
         return {
           content: [{ type: "text", text: sanitized }],
@@ -409,9 +511,9 @@ export default function (pi: ExtensionAPI) {
         };
       } catch (error: unknown) {
         const err = error as Error & { stderr?: string; stdout?: string; status?: number };
-        const stderr = err.stderr ? sanitizeOutput(err.stderr) : "";
-        const stdout = err.stdout ? sanitizeOutput(err.stdout) : "";
-        const message = sanitizeOutput(err.message || String(error));
+        const stderr = err.stderr ? scrub(err.stderr) : "";
+        const stdout = err.stdout ? scrub(err.stdout) : "";
+        const message = scrub(err.message || String(error));
 
         const content: { type: "text"; text: string }[] = [{ type: "text", text: stdout || message }];
         if (stderr) content.push({ type: "text", text: `stderr: ${stderr}` });

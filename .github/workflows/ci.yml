@@ -101,6 +101,20 @@ jobs:
       - name: bun test
         run: bun test
 
+      # The vendored pi packages carry their own test runner, so they run under it rather
+      # than under `bun test` (which bunfig.toml excludes for exactly this reason). Runnable
+      # and green since 2026-09-17: 22 files, 459 tests. This is not ceremony — the accordion
+      # vendoring patches extension/accordion.ts behaviourally (the folding default and the
+      # compaction cancel), and this suite is the only thing that covers those two deltas.
+      #
+      # --frozen-lockfile --ignore-scripts are required by tools/check-bun-install-policy.sh,
+      # which also asserts these exact flags appear here.
+      - name: vendored package tests (vitest)
+        working-directory: Packs/harness/pi-packages/accordion
+        run: |
+          bun install --frozen-lockfile --ignore-scripts
+          bun run test
+
       # Every tools/*.test.sh, discovered rather than listed — a hand-list is how a committed
       # test comes to run nowhere (the Axon#116 shape, again). They all drive real scripts
       # against throwaway roots under /tmp, and this job has bun on PATH for the ones
@@ -186,7 +200,20 @@ jobs:
             echo "::group::$dir"
             # A committed lockfile proves what we resolve, not that its lifecycle hooks are safe.
             # UI checks do not need install scripts, so leave that attack surface closed in CI.
-            if (cd "$dir" && bun install --frozen-lockfile --ignore-scripts && bun run check); then
+            ok=1
+            (cd "$dir" && bun install --frozen-lockfile --ignore-scripts && bun run check) || ok=0
+
+            # Scan the committed dependency tree as a separate step. A fatal Socket advisory
+            # makes Bun return non-zero; the scanner is configured in the tree's bunfig and is a
+            # real devDependency, so a missing scanner is also a hard install error. Free mode
+            # needs no secret; SOCKET_API_KEY is optional and adds this organization's policy.
+            # The scanner is network-backed, so its availability and any API-side policy remain
+            # an explicit operational dependency rather than being mistaken for the lockfile.
+            if [ "$ok" -eq 1 ]; then
+              (cd "$dir" && bun pm scan) || ok=0
+            fi
+
+            if [ "$ok" -eq 1 ]; then
               echo "$dir: ok"
             else
               failed="$failed $dir"
@@ -234,6 +261,20 @@ jobs:
         run: tools/check-manifest-integrity.sh
       - name: No document cites its own path
         run: tools/check-doc-self-references.sh
+      - name: Every authored SKILL.md passes the metadata validator
+        run: tools/check-skill-metadata.sh
+      - name: The metadata gate fails the bad cases and passes the real tree
+        run: tools/check-skill-metadata.test.sh
+      - name: The presentations palette contract holds
+        run: tools/check-presentations-theme-contract.sh
+      - name: The palette gate fails a divergent pair and passes the real pack
+        run: tools/check-presentations-theme-contract.test.sh
+      # The SUITES, not the runs. Executing an eval costs model calls and is nondeterministic,
+      # so it can never be a gate — a gate that flakes teaches people to ignore gates. What is
+      # checkable for free is that every suite is well-formed: canonical keys, unique ids,
+      # assertions that can actually fail, fixtures that exist. See tools/skill-eval.ts.
+      - name: Skill eval suites are well-formed
+        run: tools/skill-eval check --all
       - name: Publication hygiene
         run: tools/check-publication-hygiene.sh
       - name: Bun dependency installs do not run lifecycle hooks

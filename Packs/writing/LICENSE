@@ -1,7 +1,6 @@
 This pack vendors text and code from two MIT-licensed upstreams. Both notices are reproduced
 below, as the MIT terms require. A third upstream is credited but nothing of its text was
 copied, so it carries no notice obligation here; see the note at the bottom.
-
 ===============================================================================
 1. stephenoffer/human-voice, pinned 9bcba2f (2026-06-23)
    Covers: skills/human-writing/scripts/ (the human_voice_linter package,
@@ -35,15 +34,29 @@ SOFTWARE.
 
 Local modifications to the vendored linter are marked inline in the source and
 listed in skills/human-writing/references/maintenance.md under "Local deltas
-against upstream" and "Provenance".
+against upstream" and "Provenance". There are three: the em-dash check fires on
+presence rather than upstream's density gate, additive pattern entries in
+ai_prose_patterns.json, and one user-facing path string in patterns.py corrected to
+name a file that exists (2026-09-17).
 
 ===============================================================================
 2. JCarterJohnson/vibecoded-design-tells, pinned f7c4aef (2026-06-23)
    Covers: skills/human-writing/references/tells.md (Parts A-C) and
    references/writing-with-intent.md, which came here with the former unslop-text
-   skill when it moved from Packs/unslop on 2026-07-25.
+   skill when it moved from Packs/unslop on 2026-07-25; and skills/unslop/
+   (SKILL.md, references/, scripts/), which came here whole when the unslop Pack was
+   merged into this one on 2026-09-17.
    https://github.com/JCarterJohnson/vibecoded-design-tells
 ===============================================================================
+
+One upstream, one notice, covering both halves of it. The unslop skill was adapted
+near-verbatim from the same pinned commit, so its former Pack-level LICENSE carried the
+identical grant text and is now this section — nothing was dropped in the merge. Its local
+deltas are recorded in skills/unslop/SKILL.md and in this pack's README: each description
+had a small number of second-person clauses reworded to clear the third-person discovery
+convention; references/ is renamed only (tells.md -> tells-code.md / tells-ui.md); and six
+user-facing strings in scripts/ were corrected on 2026-09-17, because the 2026-07-28 rename
+left them pointing at `references/tells.md`, a path that no longer exists.
 
 MIT License
 
@@ -89,7 +102,15 @@ copyright, so nothing here depends on that declaration holding. Revisit if upstr
 adds a proper LICENSE file.
 
 ===============================================================================
-4. writing-skills and everything else original to this pack
+4. skill-creator, and everything else original to this pack
 ===============================================================================
 
 MIT, same terms as above, per Packs/writing/pack.toml.
+
+Also here without a notice obligation, all three recorded in upstreams.toml where their
+verdicts live: `skill-creator`'s sources (Anthropic's docs and the agentskills.io spec,
+absorbed as rules rather than text, plus a third-party PDF carried idea-only);
+`academic-writing`, whose upstreams are `[research-paper-writing-skills]`,
+`[academic-writing-agents]` and `[pengsida-research-notes]`, all verdict `quarry` with no
+grant of any kind, so nothing was copied and everything taken was paraphrased; and the
+`unslop` descriptions' reworded clauses noted in section 2.

@@ -51,10 +51,18 @@ thesis whose figures share one plotting palette. Its provenance line says so.
 }
 ```
 
-Hex without `#`. Nine roles are required (`REQUIRED_ROLES` in `theme.py`); the three
-optional ones, `accent_mid`, `muted_neutral`, `hairline`, default to a sane
-derivation if omitted. `type` and `grid` merge over the defaults, so a theme only
-states what it changes.
+Hex without `#`. The roles this skill requires are the `REQUIRED_ROLES` tuple in
+`scripts/deckkit/theme.py`, and they must cover everything `diagramkit` needs — that is a
+gate, `tools/check-presentations-theme-contract.sh`, not a shared file. A theme must supply
+ten roles. `accent_mid`, `muted_neutral` and `hairline` carry fallbacks and may be omitted.
+`type` and `grid` merge over the defaults, so a theme only states what it changes.
+
+**`paper` is required here on purpose.** It was diagram-only until 2026-09-17, and that made
+the two requirement sets disagree: a theme could omit it, build a deck happily, and then fail
+the moment a diagram was rendered from the same palette. Both shipped themes defined it, so
+the divergence only ever bit a theme derived by hand — which is exactly what this file tells
+you to do. It now fails at `deck build`, naming the role. Add one near-white with a trace of
+the accent's warmth and the theme is valid everywhere.
 
 ## Choosing the colours
 
@@ -66,6 +74,8 @@ states what it changes.
 | `accent_light` | `accent` mixed 90% toward white | must be distinguishable from white on a projector |
 | `secondary` | the source palette's second hue | needs the same contrast discipline as `accent` |
 | `caution` | a warm, muted tone | never a bright red, a limit is not an alarm |
+| `caution_light` | `caution` mixed 90% toward white | the caution panel fill |
+| `paper` | a near-white with a trace of the accent's warmth | required by `core`, so a theme cannot be deck-valid and diagram-invalid; a cluster sits on it, and pure `white` makes the cluster boundary invisible |
 | `emphasis_on_dark` | a light warm tone | it must read on a **filled** `accent`, not on white |
 | `hairline` | `ink` mixed 85% toward white | if visible from three metres it is too strong |
 

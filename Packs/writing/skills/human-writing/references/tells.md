@@ -21,6 +21,12 @@ leftover assistant boilerplate (entry 7). For everything else, weight by how thi
 clusters, and remember the scanner reports a lexical surface only. The Part B tells, which the
 audited pass ranked above most of Part A, are where the real reading happens.
 
+**This file is the only place a tell is defined.** Where a genre needs a different *fix* rather
+than a different definition, that lives with the genre skill: `academic-writing`'s
+`references/ai-cadence-tells.md` records the academic handling of entries 1 (the em dash), 2
+(the antithesis cadence) and 18 (the rule of three), and defines nothing of its own that is
+listed here. If you change a tell's definition, that file is the one that has to follow.
+
 ## Contents
 
 Part A, the tells the scanner catches:

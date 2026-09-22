@@ -1,9 +1,17 @@
 # See schemas/pack.toml.example for the field reference.
-# The harness maintains the work; this Pack maintains the harness. It decides what
-# should exist (suggest-skills), what should stop being loaded (trim), and whether
-# every harness still matches the Packs that feed it (harness-sync). Authoring the
-# skill itself is Packs/writing (writing-skills) — see README.md#the-boundary.
+#
+# The harness maintains the work; this Pack maintains the harness AND the repository that holds
+# it. It answers four questions: what should exist (suggest-skills), what should stop loading
+# every session (trim), whether every harness still matches the Packs that feed it (harness-sync),
+# and how to operate or change Axon itself (axon).
+#
+# `axon` was merged in here on 2026-09-17. It was a one-skill Pack whose jobs were already
+# deployed alongside these three in every profile that held either, and both are the same
+# subject: the agent system looking at itself. Authoring the content of a skill stays
+# Packs/writing (skill-creator) — see README.md#the-boundary.
+#
+# The vendored pi packages under pi-packages/ and their licences are unrelated to the merge.
 name        = "harness"
-description = "Keep the agent harness itself in shape: propose the skills the recorded work actually needs, shrink what loads into every session, and keep every harness in step with the Packs that feed it."
-skills      = ["suggest-skills", "trim", "harness-sync"]
+description = "Keep the agent system and its repository in shape: operate and change Axon, propose the skills the recorded work actually needs, shrink what loads into every session, and keep every harness in step with the Packs that feed it."
+skills      = ["axon", "suggest-skills", "trim", "harness-sync"]
 license     = "MIT"

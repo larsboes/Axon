@@ -20,7 +20,7 @@ def load_patterns(path: str = PATTERNS_FILE) -> dict:
         sys.stderr.write(
             "error: pattern file not found: %s\n"
             "The linter cannot run without it. Fall back to pure judgment "
-            "using references/ai-tells.md.\n" % path)
+            "using references/tells.md.\n" % path)
         sys.exit(2)
     except IsADirectoryError:
         sys.stderr.write("error: pattern path is a directory, not a file: %s\n" % path)

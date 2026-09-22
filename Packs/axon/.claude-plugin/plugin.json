@@ -1,9 +1,0 @@
-{
-  "name": "axon",
-  "description": "Operate and work on Axon itself: capability discovery, service and feed operations, architecture placement, focused change.",
-  "author": {
-    "name": "Lars Boes",
-    "url": "https://github.com/larsboes/Axon"
-  },
-  "license": "MIT"
-}

@@ -1,6 +1,6 @@
 {
   "name": "writing",
-  "description": "Write for readers and for agents: human-voiced prose with a CI-gateable tell linter, and Claude agent skills authored to Anthropic + agentskills.io spec.",
+  "description": "What an agent produces for a human reader, and how the agent's own skills get authored: human-voiced prose with a CI-gateable tell linter, academic drafting and cite-checking with an adversarial multi-skeptic review pass, code and web UI stripped of AI tells, and the meta-skill that authors and audits agent skills.",
   "author": {
     "name": "Lars Boes",
     "url": "https://github.com/larsboes/Axon"

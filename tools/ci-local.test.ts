@@ -53,6 +53,34 @@ describe("parseJobs", () => {
     expect(jobs[0].steps[0].script).toContain("echo done");
   });
 
+  // working-directory was dropped here until 2026-09-17, so ci-local ran such a step from
+  // the checkout root and reported a failure CI would never produce — a step that looked
+  // broken rather than mis-run. Carrying it is what makes the replay faithful.
+  test("a step's working-directory is carried, not dropped", () => {
+    const jobs = parseJobs(
+      workflow(`  bun-tests:
+    steps:
+      - name: vendored package tests
+        working-directory: Packs/harness/pi-packages/accordion
+        run: bun run test
+`),
+    );
+    expect(jobs[0].steps[0].workingDirectory).toBe("Packs/harness/pi-packages/accordion");
+  });
+
+  test("a step without one carries no workingDirectory, rather than the empty string", () => {
+    const jobs = parseJobs(
+      workflow(`  repo-gates:
+    steps:
+      - name: Publication hygiene
+        run: tools/check-publication-hygiene.sh
+`),
+    );
+    // Absent, not "": runStep branches on truthiness, and "" would join to the root anyway —
+    // but an absent field is what the type says and what a reader should find.
+    expect("workingDirectory" in jobs[0].steps[0]).toBe(false);
+  });
+
   test("a workflow with no jobs throws rather than reporting an empty set", () => {
     expect(() => parseJobs("name: CI\non: [push]\n")).toThrow("declares no jobs");
   });

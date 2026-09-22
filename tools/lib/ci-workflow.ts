@@ -13,6 +13,17 @@
 export interface WorkflowStep {
   name: string;
   script: string;
+  /**
+   * The step's `working-directory:`, relative to the checkout, when it declares one.
+   *
+   * Carried because dropping it is not a harmless simplification: a step that declares it
+   * runs somewhere else in CI, so replaying that script from the checkout root runs
+   * something CI never runs. That is the same class of lie this tool exists to remove, and
+   * it bit for real on 2026-09-17 — a `bun install` step scoped to a vendored package
+   * failed locally with "could not find a package.json file" while CI would have been
+   * green, and the step looked broken rather than mis-run.
+   */
+  workingDirectory?: string;
 }
 
 export interface WorkflowJob {
@@ -69,7 +80,13 @@ export const UNCLASSIFIED =
  */
 export function parseJobs(yamlText: string): WorkflowJob[] {
   const doc = Bun.YAML.parse(yamlText) as {
-    jobs?: Record<string, { name?: string; steps?: Array<{ name?: string; run?: string; uses?: string }> }>;
+    jobs?: Record<
+      string,
+      {
+        name?: string;
+        steps?: Array<{ name?: string; run?: string; uses?: string; "working-directory"?: string }>;
+      }
+    >;
   };
   const jobs = doc?.jobs;
   if (!jobs || typeof jobs !== "object") throw new Error("workflow declares no jobs");
@@ -77,7 +94,12 @@ export function parseJobs(yamlText: string): WorkflowJob[] {
     const steps: WorkflowStep[] = [];
     for (const [i, step] of (job?.steps ?? []).entries()) {
       if (typeof step?.run === "string") {
-        steps.push({ name: step.name ?? step.run.split("\n")[0], script: step.run });
+        const workingDirectory = step["working-directory"];
+        steps.push({
+          name: step.name ?? step.run.split("\n")[0],
+          script: step.run,
+          ...(typeof workingDirectory === "string" ? { workingDirectory } : {}),
+        });
       } else if (typeof step?.uses !== "string") {
         throw new Error(`${id}: step ${i + 1} has neither run: nor uses:`);
       }

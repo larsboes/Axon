@@ -32,8 +32,9 @@ from .theme import Theme
 from .timing import report as timing_report
 
 # cli.py lives at <skill>/scripts/deckkit/cli.py, so the skill root is three levels up.
-# resolve() first: the Pack deployer symlinks the skill into a harness, and the
-# assets have to come from the real checkout, not from the link's directory.
+# resolve() first: the Pack deployer materializes a copy into a harness, and a user may
+# symlink the skill into their own tree, so the assets have to come from the real
+# directory rather than from however the file was reached.
 SKILL_ROOT = Path(__file__).resolve().parents[2]
 THEMES_DIR = SKILL_ROOT / "assets" / "themes"
 TEMPLATE = SKILL_ROOT / "assets" / "deck.template.py"

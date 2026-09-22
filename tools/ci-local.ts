@@ -21,7 +21,7 @@
 // Exit 0 = every step passed. 1 = a step failed. 2 = usage, or a refused job.
 
 import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
 import { parseJobs, type WorkflowJob, type WorkflowStep } from "./lib/ci-workflow.ts";
 
 const HELP = `tools/ci-local — run a CI job's steps on this machine, read from ci.yml.
@@ -54,9 +54,15 @@ interface Result {
  */
 function runStep(step: WorkflowStep, cwd: string): Result {
   const started = Bun.nanoseconds();
+  // A step that declares working-directory: runs there in CI, so it must run there here,
+  // or the command differs between the two. GitHub resolves it against the checkout root,
+  // which is what `cwd` is. join() is the right operator rather than resolve(): an absolute
+  // working-directory is legal in a workflow and resolve() would honour it, but joining also
+  // keeps a leading "./" and any ".." honest without silently escaping the checkout.
+  const stepCwd = step.workingDirectory ? join(cwd, step.workingDirectory) : cwd;
   const proc = Bun.spawnSync({
     cmd: ["bash", "--noprofile", "--norc", "-e", "-c", step.script],
-    cwd,
+    cwd: stepCwd,
     stdout: "inherit",
     stderr: "inherit",
     stdin: "ignore",

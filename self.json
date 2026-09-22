@@ -11,27 +11,11 @@
       }
     },
     {
-      "name": "academic-writing",
-      "kind": "pack",
-      "code": {
-        "files": 22,
-        "nodes": 127
-      }
-    },
-    {
       "name": "agentbox",
       "kind": "capability",
       "code": {
         "files": 3,
         "nodes": 40
-      }
-    },
-    {
-      "name": "axon",
-      "kind": "pack",
-      "code": {
-        "files": 13,
-        "nodes": 46
       }
     },
     {
@@ -124,8 +108,8 @@
       "name": "cognitive-load",
       "kind": "pack",
       "code": {
-        "files": 4,
-        "nodes": 23
+        "files": 9,
+        "nodes": 71
       }
     },
     {
@@ -181,15 +165,15 @@
       },
       "code": {
         "files": 160,
-        "nodes": 1001
+        "nodes": 1003
       }
     },
     {
       "name": "deliberation",
       "kind": "pack",
       "code": {
-        "files": 31,
-        "nodes": 203
+        "files": 33,
+        "nodes": 214
       }
     },
     {
@@ -254,8 +238,8 @@
       "name": "harness",
       "kind": "pack",
       "code": {
-        "files": 9,
-        "nodes": 89
+        "files": 244,
+        "nodes": 4875
       }
     },
     {
@@ -345,7 +329,7 @@
       "kind": "pack",
       "code": {
         "files": 11,
-        "nodes": 186
+        "nodes": 213
       }
     },
     {
@@ -456,8 +440,8 @@
       "name": "presentations",
       "kind": "pack",
       "code": {
-        "files": 32,
-        "nodes": 387
+        "files": 41,
+        "nodes": 444
       }
     },
     {
@@ -515,7 +499,7 @@
       "kind": "pack",
       "code": {
         "files": 3,
-        "nodes": 31
+        "nodes": 33
       }
     },
     {
@@ -536,7 +520,7 @@
       },
       "code": {
         "files": 19,
-        "nodes": 287
+        "nodes": 289
       }
     },
     {
@@ -582,8 +566,8 @@
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 183,
-        "nodes": 1479
+        "files": 202,
+        "nodes": 1595
       }
     },
     {
@@ -621,14 +605,6 @@
       }
     },
     {
-      "name": "unslop",
-      "kind": "pack",
-      "code": {
-        "files": 8,
-        "nodes": 87
-      }
-    },
-    {
       "name": "vault",
       "kind": "capability",
       "service": {
@@ -658,8 +634,8 @@
       "name": "writing",
       "kind": "pack",
       "code": {
-        "files": 40,
-        "nodes": 384
+        "files": 73,
+        "nodes": 627
       }
     }
   ],
@@ -1535,6 +1511,10 @@
       "verdict": "quarry"
     },
     {
+      "name": "accordion",
+      "verdict": "adopt"
+    },
+    {
       "name": "apfel",
       "verdict": "adopt"
     },
@@ -1587,11 +1567,19 @@
       "verdict": "adopt"
     },
     {
+      "name": "bun-security-scanner",
+      "verdict": "adopt"
+    },
+    {
       "name": "colibri",
       "verdict": "inspiration"
     },
     {
       "name": "debian",
+      "verdict": "adopt"
+    },
+    {
+      "name": "defuddle",
       "verdict": "adopt"
     },
     {
@@ -1649,6 +1637,10 @@
     {
       "name": "human-voice",
       "verdict": "adopt"
+    },
+    {
+      "name": "i-have-adhd",
+      "verdict": "adapt"
     },
     {
       "name": "iai-personal-memory-engine",
@@ -1760,6 +1752,14 @@
     },
     {
       "name": "pi-coding-agent",
+      "verdict": "adopt"
+    },
+    {
+      "name": "pi-subagents",
+      "verdict": "adopt"
+    },
+    {
+      "name": "pi-web-access",
       "verdict": "adopt"
     },
     {
@@ -1921,9 +1921,18 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 14940,
-    "external": 11,
-    "stale": [],
+    "nodes": 20261,
+    "external": 24,
+    "stale": [
+      "Packs/harness/pi-packages/accordion/app/src/lib/engine/parse.ts",
+      "Packs/harness/pi-packages/accordion/conductors/ws/triptych/app/src/lib/engine/parse.ts",
+      "Packs/harness/pi-packages/accordion/conductors/ws/triptych/core/ops.ts",
+      "Packs/harness/pi-packages/accordion/conductors/ws/triptych/core/protocol.ts",
+      "Packs/harness/pi-packages/accordion/conductors/ws/triptych/core/replica.ts",
+      "Packs/harness/pi-packages/accordion/conductors/ws/triptych/core/truth.ts",
+      "Packs/harness/pi-packages/accordion/conductors/ws/triptych/core/wire.ts",
+      "Packs/harness/pi-packages/core/conductor/remote.ts"
+    ],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",
       ".github/ISSUE_TEMPLATE/feature_request.md",

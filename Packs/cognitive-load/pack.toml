@@ -1,5 +1,13 @@
 # See schemas/pack.toml.example for the field reference.
+#
+# Two skills that shape output for a reader under a constraint, and they are a matched pair:
+# `attention-control` owns the SHAPE (lead with the action, restate state, cap lists) for a
+# reader with ADHD; `asd-ste100` owns the LANGUAGE (one word one meaning, sentence caps, no
+# phrasal verbs) for a reader with no human in the loop. They used to live in two Packs, with
+# attention-control restating STE's numbers a second time, and a cross-Pack dependency that
+# could not hold in public. Merged 2026-09-17: the two are deployed together in every profile
+# that holds either, and the duplicate rule set is now delegated rather than copied.
 name        = "cognitive-load"
-description = "Shape agent output for lower cognitive load and focused execution."
-skills      = ["attention-control"]
+description = "Shape agent output for a constrained reader: the ADHD output style, which leads with the next action and restates state every turn, and ASD-STE100 controlled language for strings an agent must parse without ambiguity."
+skills      = ["attention-control", "asd-ste100"]
 license     = "MIT"

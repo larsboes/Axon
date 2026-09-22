@@ -12,8 +12,7 @@ recommendation and the position that lost.
 
 Council weighs options against each other. To attack a single proposal, use `red-team`.
 
-Adapted from the Council skill in LifeOS by Daniel Miessler
-(https://github.com/danielmiessler/LifeOS), MIT.
+Adapted from the LifeOS Council skill by Daniel Miessler (github.com/danielmiessler/LifeOS), MIT.
 
 ## Procedure
 
@@ -23,14 +22,18 @@ Copy this checklist and track progress:
 - [ ] 1. State the decision in one sentence
 - [ ] 2. Pick DEBATE or QUICK
 - [ ] 3. Pick a preset, or compose a council
-- [ ] 4. Collect the evidence the members need
-- [ ] 5. Run the rounds
-- [ ] 6. Check every round with the clerk
-- [ ] 7. Write the synthesis
+- [ ] 4. Check every option has an advocate
+- [ ] 5. Collect the evidence the members need
+- [ ] 6. Run the rounds
+- [ ] 7. Check every round with the clerk
+- [ ] 8. Write the synthesis
 ```
 
 **1 — State the decision.** Write the question the council answers and the options on the table.
-A question with one factual answer is not a council topic. Answer it directly and stop.
+A question with one factual answer is not a council topic. Answer it directly and stop. When the
+caller gives a topic rather than a decision, confirm your restatement with `ask` before composing
+anyone: it is the one judgement here that you cannot check yourself, and a wrong restatement wastes
+the whole run (`references/compose.md`).
 
 **2 — Pick the mode.**
 
@@ -56,21 +59,28 @@ the members, use those names and skip this step.
 
 Never launch the same brief twice. Identical members agree, and agreement carries no information.
 
-**4 — Collect the evidence.** Each preset names what its members demand. Gather it before round 1
-and put it in every member prompt. A member that has to guess produces an unverified claim, and
-step 6 discards it.
+**4 — Check every option has an advocate.** Print the option-to-advocate table in the header; an
+option with nobody arguing for it loses for the wrong reason. Add a fifth member who holds it
+(`references/compose.md`), or take the option off the table. Step 8 reports `recompose` when a run
+reaches here without one.
 
-**5 — Run the rounds.** Read `references/rounds.md` for the per-round prompts and the subagent
+**5 — Collect the evidence.** Each preset names what its members demand. Gather it before round 1
+and put it in every member prompt. A member that has to guess produces an unverified claim, and
+step 7 discards it.
+
+**6 — Run the rounds.** Read `references/rounds.md` for the per-round prompts and the subagent
 type each member runs as. Launch every member of one round in a single message, one Agent call
 each. Print each round before the next round starts.
 
-**6 — Check every round with the clerk.** Launch `council-clerk` on the round text as soon as the
+**7 — Check every round with the clerk.** Launch `council-clerk` on the round text as soon as the
 round is printed. It resolves every citation the members wrote and reports the claims the evidence
 does not support. Apply its verdicts to the transcript before the next round runs, so round 2
 challenges a corrected round 1. `references/rounds.md` carries the clerk prompt.
 
-**7 — Write the synthesis.** Read `references/output-format.md`. The synthesis ends with one
-recommendation and the minority position, named and attributed to the member who holds it.
+**8 — Write the synthesis.** Read `references/output-format.md`. The synthesis ends with one
+recommendation and the minority position, named and attributed to the member who holds it. When the
+recommendation turns on an `[unverified]` claim, `ask` once: settle it now, or leave it open and say
+so.
 
 ## Evidence rule
 
@@ -84,23 +94,27 @@ A council member states a position. The evidence rule decides which of its claim
 - Keep the marked claim. Do not delete it and do not repair it. A load-bearing claim that nobody
   can check is itself a finding, and the synthesis reports it as one.
 - A member marks its own claims, so a member that wants to win simply does not mark them. The
-  `council-clerk` agent in step 6 is what makes the rule real: it re-reads every pointer and
-  returns `resolves`, `narrower`, `contradicted`, `missing` or `uncited` per claim. The clerk's
-  verdict overrides the member's own mark, in both directions.
+  `council-clerk` in step 7 makes the rule real: it re-reads every pointer, returns one verdict per
+  claim, and overrides the member's own mark in both directions.
 
 ## Error handling
 
 - **Every member agrees in round 1.** Say so, stop, and report the agreement. A debate with no
-  disagreement is a receipt, not a deliberation.
-- **A member cites a file that does not exist.** The clerk returns `missing`. Drop the claim, and
-  name the member and the path in the synthesis.
-- **The clerk returns `narrower` or `contradicted`.** Keep the claim, annotate it in the transcript
-  with what the source actually says, and let the next round argue against the corrected version.
-  A member whose evidence says less than it claimed is a finding the synthesis reports.
-- **The harness has no `council-*` subagent types.** They ship in this Pack's `agents/` directory
-  and only a harness with native subagents installs them. Fall back to `general-purpose` for every
-  member and for the clerk, and paste the read-only contract into each prompt: read only, never
-  edit, cite or mark, return the round text alone.
+  disagreement is a receipt, not a deliberation. The verdict is `recompose`, not a recommendation.
+- **An option has no advocate, noticed after round 1.** Stop and report `recompose`. Do not report a
+  recommendation: that option lost because nobody argued for it, and a transcript that reads as a
+  decision would hide the reason.
+- **The clerk returns anything but `resolves`.** Apply the verdict per the table in
+  `references/rounds.md`: the transcript keeps the claim alongside what the source actually says, and
+  the synthesis reports it. A member whose evidence says less than it claimed is a finding.
+- **The harness has no `council-*` subagent types.** They ship in this Pack's `agents/` directory,
+  and a harness installs them only if it has native subagents (Claude Code) or the `pi-subagents`
+  extension plus `tools/packs-pi deploy deliberation` (pi). Without them, fall back to
+  `general-purpose` for every member and for the clerk, and paste the read-only contract into each
+  prompt: read only, never edit, cite or mark, return the round text alone.
+- **The run is on pi.** The member types exist, but their files carry no `model:` pin and inherit the
+  session model, so every member runs on one tier. Say so in the header: a sceptic on the same model
+  as the members it judges is still worth convening, and it is not the instrument the README describes.
 - **A member argues a position it was not given.** Keep the argument and record the drift. Do not
   re-run the member to make it stay in role.
 - **The caller wants an attack, not a comparison.** Stop and use `red-team`.

@@ -24,6 +24,15 @@ from .errors import DeckError
 
 #: Every palette role a theme must define. `light` variants are panel fills;
 #: the base role is the text/border/action colour and a filled surface.
+#:
+#: `paper` is here rather than in the diagram skill's own needs on purpose. It was
+#: diagram-only once, which let a theme omit it, build a deck happily, and then fail the
+#: moment a diagram was rendered from the same palette. Requiring it here means a theme
+#: is valid for the whole Pack or rejected, with the role named, at `deck build`.
+#:
+#: This list and diagramkit's `NEEDED` must agree — everything diagramkit requires has to
+#: be something this list defines. That is a gate, not a shared file:
+#: tools/presentations-theme-contract.test.sh fails if the two drift apart.
 REQUIRED_ROLES = (
     "ink",
     "white",
@@ -32,6 +41,7 @@ REQUIRED_ROLES = (
     "secondary",
     "secondary_light",
     "caution",
+    "paper",
     "caution_light",
     "emphasis_on_dark",
 )

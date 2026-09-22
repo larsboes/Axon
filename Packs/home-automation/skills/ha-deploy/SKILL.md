@@ -1,6 +1,6 @@
 ---
 name: ha-deploy
-description: Validates, reloads, and verifies an existing Home Assistant deployment through its API. Use after overlay-owned configuration has been placed on the owning host. Container lifecycle and file deployment remain outside this skill.
+description: Validates, reloads, and verifies an existing Home Assistant deployment through its API. Use when a deployment's configuration has already been placed on the owning host and needs validating, reloading or verifying. Do not use for placing that configuration (use homectl) or for managing the container and its files, which stay outside this skill. Do not use for querying entity state (use ha-cli).
 allowed-tools: Bash
 ---
 

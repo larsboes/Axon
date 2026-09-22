@@ -86,7 +86,9 @@ cd capabilities/soundscape/ui
 bun install --frozen-lockfile --ignore-scripts
 ```
 
-`--ignore-scripts` is not optional here — see `tools/check-bun-install-policy.sh`.
+`--ignore-scripts` is not optional here — see `tools/check-bun-install-policy.sh`. The local
+`bunfig.toml` also holds fresh npm resolutions for 24 hours and runs Socket's scanner; inspect
+the committed tree with `bun pm scan`.
 
 `vite dev` is untouched and is still how you work on the UI. `panel_build` owns the
 served bundle, not the edit loop.

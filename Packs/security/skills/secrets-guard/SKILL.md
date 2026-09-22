@@ -1,6 +1,6 @@
 ---
 name: secrets-guard
-description: Safe handling of secrets and credentials in a Claude Code session — how to use API keys, tokens, and .env / .secrets values for a task without ever pulling them into the model context, working WITH Axon's managed-settings deny policy instead of around it. Use when a task needs a credential (an authenticated API call, a deploy, a login), when you are about to read a .env / .secrets / credentials / .pem / .key file, or when a command was blocked by the security policy and you need the safe equivalent. Do not use for pi sessions (the secrets-guard extension enforces this there) or for creating/storing a new secret (that is tools/setup-secret.sh, run by the human).
+description: Safe handling of secrets and credentials in a Claude Code session — how to use API keys, tokens, and .env / .secrets values for a task without ever pulling them into the model context, working WITH Axon's managed-settings deny policy instead of around it. Use when a task needs a credential (an authenticated API call, a deploy, a login), before reading a .env / .secrets / credentials / .pem / .key file, or when a command was blocked by the security policy and the safe equivalent is needed. Do not use for pi sessions (the secrets-guard extension enforces this there) or for creating/storing a new secret (that is tools/setup-secret.sh, run by the human).
 allowed-tools: Bash
 ---
 
