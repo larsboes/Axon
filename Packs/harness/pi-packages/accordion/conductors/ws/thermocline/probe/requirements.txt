@@ -3,8 +3,10 @@
 #
 # torch is the CUDA 12.6 build. Install it FIRST from the cu126 wheel index, e.g.:
 #   pip install torch==2.13.0+cu126 --index-url https://download.pytorch.org/whl/cu126
+# Keep the public version unqualified: pip's cu126 index selects its +cu126 wheel while
+# osv-scanner can resolve the same release from PyPI.
 # then `pip install -r requirements.txt` for the rest (which come from PyPI).
-torch==2.13.0+cu126
+torch==2.13.0
 
 # Model loading / attention extraction.
 transformers==5.11.0
@@ -25,6 +27,8 @@ PyYAML==6.0.3
 filelock==3.29.0
 packaging==26.2
 requests
+anyio==4.14.2
+idna==3.15
 tqdm==4.68.2
-sympy==1.13.1
+sympy==1.13.3
 networkx==3.4.2
