@@ -1,0 +1,20 @@
+# traveler — the traveller profile: hard constraints a search must obey, the
+# ranking weights that are the traveller's rather than the repo's, interests, and
+# a provenance entry per field.
+kind        = "process"
+name        = "traveler"
+command     = ["target/release/traveler-server"]
+build       = ["cargo", "build", "--locked", "--release", "--bin", "traveler-server"]
+port        = "8096"
+health_path = "/health"
+ready_path  = "/ready"   # availability is judged on this, not on liveness (#126)
+
+# `/traveler/api/…` is the dashboard's same-origin proxy path, which is why this
+# capability needs no permissive CORS (server.rs states the reason).
+proxy_api_only = "true"
+
+# No `requires`: the profile lives in the shared Axon database file this process
+# opens itself, so there is no service to wait for (PRD Q45). It is deliberately
+# NOT `requires = ["trips"]` — the profile is read by a search that must keep
+# working when nothing has been stated, so a dependency here would turn "no
+# profile yet" into "search is down".

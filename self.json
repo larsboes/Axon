@@ -165,7 +165,7 @@
       },
       "code": {
         "files": 160,
-        "nodes": 1003
+        "nodes": 1004
       }
     },
     {
@@ -520,7 +520,7 @@
       },
       "code": {
         "files": 19,
-        "nodes": 289
+        "nodes": 290
       }
     },
     {
@@ -589,6 +589,19 @@
       "code": {
         "files": 4,
         "nodes": 39
+      }
+    },
+    {
+      "name": "traveler",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [],
+        "port": "8096"
+      },
+      "code": {
+        "files": 8,
+        "nodes": 108
       }
     },
     {
@@ -1371,6 +1384,46 @@
       ]
     },
     {
+      "from": "traveler",
+      "to": "axon-config",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/traveler/Cargo.toml"
+      ]
+    },
+    {
+      "from": "traveler",
+      "to": "axon-server",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/traveler/Cargo.toml"
+      ]
+    },
+    {
+      "from": "traveler",
+      "to": "axon-store",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/traveler/Cargo.toml"
+      ]
+    },
+    {
+      "from": "traveler",
+      "to": "route-manifest",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/traveler/Cargo.toml"
+      ]
+    },
+    {
       "from": "trips",
       "to": "axon-config",
       "kinds": [
@@ -1921,7 +1974,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 20261,
+    "nodes": 20407,
     "external": 24,
     "stale": [
       "Packs/harness/pi-packages/accordion/app/src/lib/engine/parse.ts",
