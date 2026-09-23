@@ -20,9 +20,9 @@ Meanwhile the personal signal was being captured and not read:
 
 | Signal | Where it was | What read it |
 | --- | --- | --- |
-| `plan.interests` — "canoe/kayak, via ferrata, alpine hut hiking" | a column on every plan | the page that displayed it |
+| `plan.interests` — free text on every plan | a column on every plan | the page that displayed it |
 | The options offered and the one chosen | `option_set` plan items | nothing |
-| Thirteen real trips — dates, destinations, companions | imported from the vault | nothing |
+| Real trips — dates, destinations, companions | imported from the vault | nothing |
 | Retrospectives | endpoint, form, published formula | zero rows |
 
 Nothing here is a search-engine problem. What was missing was a place for "who is
@@ -68,7 +68,7 @@ A read-only projection over `trips`' own tables, the same shape
 `capabilities/places/src/layers.rs` uses for its travel layer and for the same
 reason: the rows belong to `trips`, and a second copy would be a second thing to
 keep true. It answers what the stored history actually shows, which nothing did
-before — thirteen plans, their dates, companions and interests were all captured
+before — the stored plans, their dates, companions and interests were all captured
 and all unread.
 
 Three limits ride in the response as `notes`, because the counts cannot say them
@@ -79,8 +79,8 @@ themselves:
 - **Lead time.** Measured only over plans whose row was created *before* the trip
   started. The vault import stamps `created_at` with the import date, so an
   imported trip's row age is how long ago the import ran. The first live run
-  published a median of **-173 days** before this restriction existed — a
-  negative number rendered as a measurement.
+  published a **negative** median before this restriction existed — the row's age
+  rendered as a measurement.
 - **Destination identity.** Destinations are as stored, so one city typed two
   ways counts as two and a multi-stop plan is a single name.
 
@@ -138,8 +138,8 @@ Stated here rather than left to be discovered:
   store yet.
 - **The derived baseline is built, and nothing reads it.** It publishes what the
   history shows; no ranking consumes it. The offered-versus-chosen half is not in
-  it either — twenty-eight `option_set` items exist on one plan, and comparing
-  them to what was picked needs the same treatment.
+  it either — the offered options sit on one plan, and comparing them to what was
+  picked needs the same treatment.
 - **Companion patterns are not built**, and `places_person_places` holds rows all
   in state `proposed`, with the person's name in a plain column rather than only
   in the id. `GET /api/plans` still serves `travelers`.

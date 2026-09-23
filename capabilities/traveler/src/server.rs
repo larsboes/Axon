@@ -336,7 +336,9 @@ mod http_tests {
         let client = reqwest::Client::new();
         let mut input = ProfileInput::unstated();
         input.hard.earliest_departure = Some("07:00".into());
-        input.interests = vec!["via ferrata".into(), "alpine hiking".into()];
+        // Invented, not a real interest list: this repository is public and a
+        // person's stated interests are not test data.
+        input.interests = vec!["synthetic interest".into(), "second interest".into()];
         input.basis.insert(
             "hard.earliest_departure".into(),
             traveler::Provenance::Stated,

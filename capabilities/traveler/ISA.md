@@ -107,23 +107,23 @@ identically and must not read the same.
 
 ### F3 · The baseline comes from the rows, not from a guess
 
-Why: thirteen plans, their dates, companions and interests were captured and
+Why: the stored plans, their dates, companions and interests were captured and
 read by nothing. The read is pure arithmetic over typed columns.
 
 - [x] TRV-8 — the projection publishes what it counted and what it cannot say.
   Evidence: `notes` carries three limits and `basis` carries every plan id used,
   asserted by `the_baseline_counts_plans_and_a_not_taken_one_out`; the live
-  response reports 12 plans considered, 1 excluded, and 12 plan ids. Falsifier: a
-  count with no `basis`, or a `notes` list shorter than the limits the fields
-  have.
+  response was checked against `<overlay>/data/traveler/evidence-2026-09-23.md`.
+  Falsifier: a count with no `basis`, or a `notes` list shorter than the limits
+  the fields have.
 - [x] TRV-9 — lead time is measured only over plans whose row predates the trip.
-  The first live run over a vault-imported history published
-  `lead_time_days: {min: -276, median: -173}` — the row's age, not a booking lead
-  time, rendered as a measurement. Evidence:
+  The first live run over a vault-imported history published a **negative**
+  median — the row's age, not a booking lead time, rendered as a measurement.
+  Evidence:
   `an_imported_trip_is_left_out_of_the_lead_time_rather_than_counted_negative`
-  and `a_history_with_no_bookings_has_no_lead_time_rather_than_a_negative_one`.
-  Live after the fix: 2 plans measured, 10 skipped, spread 69–78 days. Falsifier:
-  a negative figure in `lead_time_days`.
+  and `a_history_with_no_bookings_has_no_lead_time_rather_than_a_negative_one`;
+  the figures are in `<overlay>/data/traveler/evidence-2026-09-23.md`.
+  Falsifier: a negative figure in `lead_time_days`.
 - [x] TRV-10 — a machine where `trips` has never run answers with absences rather
   than 500. Evidence:
   `a_machine_where_trips_has_never_run_reads_as_empty_rather_than_failing`,
@@ -201,11 +201,12 @@ In scope, too dim to state as a claim yet.
 ## Decisions
 
 - **2026-09-23 — the stated half, and why it declines every hard limit.** The
-  operator set the five weights (budget_fit .30, feasibility .25, season .15,
-  events .20, retrospective .10) and declined `earliest_departure`,
+  operator set all five weights and declined `earliest_departure`,
   `latest_arrival`, `max_changes` and `min_transfer_buffer_min` — recorded as
   `stated` with a null value, not left `default`, because "no limit" is a
-  decision and must not read as a field nobody has looked at.
+  decision and must not read as a field nobody has looked at. The values
+  themselves are personal and live in the overlay; the figures from that write are
+  in `<overlay>/data/traveler/evidence-2026-09-23.md`.
 
   The reasoning matters more than the values. On changes and transfer time: *it
   depends on the trip, predicted delays should be taken into account, and
@@ -253,8 +254,8 @@ In scope, too dim to state as a claim yet.
   added the same day; the first live run over the real history published a
   negative lead time and two counts that under-report, both now stated in the
   response rather than discovered later. The attendance ground truth came from a
-  session that narrowed the eleven past plans: nine taken, one already recorded
-  `not_taken`, one left undecided and therefore excluded from nothing.
+  narrowing pass over the past plans; the counts are in
+  `<overlay>/data/traveler/evidence-2026-09-23.md`.
 - 2026-09-23 · Scaffolded from the design conversation that settled the four
   rulings in Decisions. F1 and F2 shipped with 25 passing tests; F3–F6 recorded
   as not yet specified.

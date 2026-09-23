@@ -15,11 +15,12 @@
 //! that it did — so the response says so rather than implying a precision it
 //! does not have.
 //!
-//! **Anything inferred from free text.** `plan.interests` is prose. Turning
-//! "canoe/kayak, via ferrata, alpine hut hiking" into an anchor kind is a guess
-//! that would read as a measurement, which is the failure `plan_search.rs`
-//! refuses by returning `None` rather than a zero. The counts here are all
-//! arithmetic over typed columns.
+//! **Anything inferred from free text.** `plan.interests` is prose. Turning a
+//! sentence about what someone likes into an anchor kind is a guess that would
+//! read as a measurement, which is the failure `plan_search.rs` refuses by
+//! returning `None` rather than a zero. The counts here are all arithmetic over
+//! typed columns. That is also why the tests below use invented interests: a real
+//! one is a personal fact and this repository is public.
 //!
 //! **Names.** Company is counted as a shape — solo, pair, group — never listed.
 //! `travelers` holds real names and is already served by `GET /api/plans`, which
@@ -237,8 +238,10 @@ pub fn derive(store: &TravelerStore, trips_prefix: &str) -> Fallible<DerivedTrav
             lengths.push(end - start + 1);
             // A row created after the trip started is not a booking lead time,
             // it is the import date. Counting it would publish a negative number
-            // as a measurement, which is what the first live run did: a median of
-            // -173 days over a history that was imported, not booked.
+            // as a measurement, which is what the first live run did — a negative
+            // median over a history that was imported, not booked. The figures are
+            // in `<overlay>/data/traveler/evidence-2026-09-23.md` rather than here,
+            // because this repository is public.
             match epoch_day(&row.created_at) {
                 Some(created) if start >= created => leads.push(start - created),
                 Some(_) => lead_time_skipped += 1,
@@ -694,11 +697,11 @@ mod tests {
 
     #[test]
     fn an_imported_trip_is_left_out_of_the_lead_time_rather_than_counted_negative() {
-        // The first live run over a vault-imported history published
-        // `lead_time_days: {min: -276, median: -173}` — the row's age, not a
-        // booking lead time, rendered as a measurement. A plan whose row was
-        // created after the trip started must be skipped and counted, never
-        // averaged in.
+        // The first live run over a vault-imported history published a negative
+        // median — the row's age, not a booking lead time, rendered as a
+        // measurement. A plan whose row was created after the trip started must
+        // be skipped and counted, never averaged in. The figures are in
+        // `<overlay>/data/traveler/evidence-2026-09-23.md`.
         let (store, dir) = scratch_with_trips("imported");
         let berlin = r#"[{"id":"place:berlin","name":"Berlin"}]"#;
         // Trip in March, imported in September: created_at after date_start.
