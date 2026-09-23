@@ -236,6 +236,27 @@ In scope, too dim to state as a claim yet.
 - **Obsidian export.** Gated on there being something machine-derived worth exporting,
   which is still L1.
 
+- **An open segment has no home in the plan model.** Found 2026-09-23 while planning
+  a trip whose end is genuinely undecided: the operator is open to working remotely
+  for some days after Berlin and continuing somewhere else, with a fixed event on
+  16 October as the only anchor. Nothing in `trips` can say that. A **stage** names a
+  destination and a date, an **item** names a day, and the plan **status** is
+  draft/saved/archived — three shapes that all assert, and none that says "this part
+  is undecided, and here are the branches". The workaround was a `note`, which is
+  honest but unqueryable: no view can list the open questions, and nothing can warn
+  when a fixed anchor makes a branch impossible.
+
+  Not built, and the shape is not obvious. The candidates are a stage status that
+  means *open* rather than planning, a plan-level `open[]` carrying branches, or
+  letting a stage's destination be a set. `option_set` is the tempting fourth and the
+  wrong one: its declared payload requires a `from`/`to` search query, so reusing it
+  for an itinerary branch would give one shared type two meanings — the failure the
+  schema's own description argues against.
+
+  What would settle it: a second trip planned this way. One instance is a note; two
+  are a shape.
+
+
 ## Test Strategy
 
 | isc | type | check | threshold | tool | anchors_to |
@@ -309,6 +330,9 @@ In scope, too dim to state as a claim yet.
 
 ## Log
 
+- 2026-09-23 · Berlin planning turned up a model gap rather than a feature request:
+  a trip whose end is undecided has nowhere to live. Recorded in "Not yet specified"
+  with the candidates and the one to avoid.
 - 2026-09-23 · F4 added. A live pending retrospective turned out to be for a trip
 the operator was not on, and the model had no way to say so; `not_taken` was
 added with the migration a widened `CHECK` actually needs on a deployed file.
