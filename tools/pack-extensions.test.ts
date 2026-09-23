@@ -642,16 +642,35 @@ describe.skipIf(!piConfigured)("pack extensions > questions widgets", () => {
       // The 2026-09-23 regression, as a test: space used to toggle in place, so keeping
       // three candidates cost six keystrokes and a second press on one retracted it. A
       // session over eleven candidates ended `0 kept, 0 rejected, 11 undecided`.
-      const r = await run("narrow", round, [" ", " ", " ", "\r"]);
+      const r = await run("narrow", round, [" ", " ", " ", "d"]);
       const kept = r.details.verdicts.filter((v: any) => v.kept).map((v: any) => v.id);
       expect(kept).toEqual(["c1", "c2", "c3"]);
       expect(textOf(r)).toMatch(/3 kept, 0 rejected, 0 undecided/);
     });
 
+    test("enter keeps like space, so the ask reflex cannot end a pass", async () => {
+      // The second 2026-09-23 regression, and the one a real session hit. `ask` accepts
+      // its focused option on Enter, so the reflex a user arrives with is to press Enter
+      // to keep a candidate. While Enter finished the pass instead, that reflex ended it:
+      // a round over eleven candidates came back `0 kept, 0 rejected, 11 undecided` and
+      // the user could only ever make one choice. Finishing is `d` now, so no accept
+      // gesture can end a pass.
+      const r = await run("narrow", round, ["\r", "\r", "\r", "d"]);
+      const kept = r.details.verdicts.filter((v: any) => v.kept).map((v: any) => v.id);
+      expect(kept).toEqual(["c1", "c2", "c3"]);
+      expect(textOf(r)).toMatch(/3 kept, 0 rejected, 0 undecided/);
+    });
+
+    test("finishing is its own key, so it is never an accident", async () => {
+      const r = await run("narrow", round, [" ", "d"]);
+      expect(r.details.cancelled).toBe(false);
+      expect(textOf(r)).toMatch(/1 kept, 0 rejected, 2 undecided/);
+    });
+
     test("keep, drop-with-reason and undecided are three distinct outcomes", async () => {
       // space keeps c1 and moves to c2; `s` skips c2 and moves to c3; `x` drops c3 with a
       // reason. One keystroke per candidate, no arrow keys.
-      const r = await run("narrow", round, [" ", "s", "x", ..."too costly", "\r", "\r"]);
+      const r = await run("narrow", round, [" ", "s", "x", ..."too costly", "\r", "d"]);
       const kept = r.details.verdicts.filter((v: any) => v.kept).map((v: any) => v.id);
       const dropped = r.details.verdicts.filter((v: any) => !v.kept);
       expect(kept).toEqual(["c1"]);
@@ -667,7 +686,7 @@ describe.skipIf(!piConfigured)("pack extensions > questions widgets", () => {
     test("a scattered pick is reachable, which is why space advancing needs a skip", async () => {
       // Without `s`, a space that advances could only ever keep a prefix: keeping c1 and c3
       // would mean pressing space twice and keeping c2 as well.
-      const r = await run("narrow", round, [" ", "s", " ", "\r"]);
+      const r = await run("narrow", round, [" ", "s", " ", "d"]);
       const kept = r.details.verdicts.filter((v: any) => v.kept).map((v: any) => v.id);
       expect(kept).toEqual(["c1", "c3"]);
       expect(textOf(r)).toMatch(/2 kept, 0 rejected, 1 undecided/);
@@ -676,13 +695,13 @@ describe.skipIf(!piConfigured)("pack extensions > questions widgets", () => {
     test("u retracts a verdict rather than space undoing itself", async () => {
       // Space advances, so retracting what it just kept takes a move back: keep c1, `k` to
       // c1, then `u`. This is the key that used to be a second press of space.
-      const r = await run("narrow", round, [" ", "k", "u", "\r"]);
+      const r = await run("narrow", round, [" ", "k", "u", "d"]);
       expect(r.details.verdicts).toHaveLength(0);
       expect(textOf(r)).toMatch(/0 kept, 0 rejected, 3 undecided/);
     });
 
     test("a drop with no reason records null, not an empty string", async () => {
-      const r = await run("narrow", round, ["x", "\r", "\r"]);
+      const r = await run("narrow", round, ["x", "\r", "d"]);
       const c1 = r.details.verdicts.find((v: any) => v.id === "c1");
       expect(c1.kept).toBe(false);
       expect(c1.why).toBeNull();

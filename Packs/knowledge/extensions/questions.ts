@@ -960,15 +960,18 @@ async function runQuizReview(
  * "keep 3 of these 30" has no shape there.
  *
  * The gesture set is built for a linear pass, because the failure mode of a long list is that
- * nobody winnows it and every extra keystroke per item makes that more likely: space keeps the
- * focused candidate and advances, `s` skips it and advances, `x` rejects it with a reason and
- * advances, and Enter finishes. Arrow keys move without deciding, and `u` retracts a verdict.
+ * nobody winnows it and every extra keystroke per item makes that more likely: space or Enter
+ * keeps the focused candidate and advances, `s` skips it and advances, `x` rejects it with a
+ * reason and advances, and `d` finishes. Arrow keys move without deciding, and `u` retracts a
+ * verdict.
  *
- * Space advancing is the part that was wrong until 2026-09-23. It used to toggle in place, so a
- * pass over eleven candidates cost two keystrokes each and pressing space twice on one candidate
- * undecided it — which is what a session's `Narrowed: 0 kept, 0 rejected, 11 undecided` was.
- * `tools/pack-extensions.test.ts` drives the widget with keystrokes and is what stops that
- * returning; its `space keeps and advances` case is the regression written down.
+ * Two things were wrong until 2026-09-23, and both produced the same empty result. Space used to
+ * toggle in place, so a pass over eleven candidates cost two keystrokes each and pressing space
+ * twice on one candidate undecided it. And Enter finished the pass — so the reflex `ask` trains,
+ * where Enter accepts the focused option, ended the whole thing instead. The finish key is now
+ * `d`, so no accept gesture can end a pass. `tools/pack-extensions.test.ts` drives the widget
+ * with keystrokes and is what stops either returning; its `enter keeps like space` and
+ * `space keeps and advances` cases are the regressions written down.
  */
 interface NarrowCandidate {
 	id: string;
@@ -1148,7 +1151,13 @@ async function runNarrow(
 			// pairs the two, and this one used to check only `data === " "` — which is how a pass
 			// over eleven candidates recorded nothing at all. pi's own space-invaders example
 			// hedges the same way, so the raw comparison alone is not a reliable detector.
-			if (matchesKey(data, Key.space) || data === " ") {
+			//
+			// Enter is the same gesture as space, deliberately. `ask` accepts its focused option
+			// on Enter, so the reflex a user arrives with is to press Enter to keep a candidate —
+			// and while Enter finished the pass instead, that reflex recorded one verdict at most
+			// and usually none. The finish key is `d`, which is why no accept gesture can end a
+			// pass any more.
+			if (matchesKey(data, Key.space) || data === " " || matchesKey(data, Key.enter)) {
 				keepAndAdvance();
 				return;
 			}
@@ -1167,7 +1176,7 @@ async function runNarrow(
 				refresh();
 				return;
 			}
-			if (matchesKey(data, Key.enter)) {
+			if (data === "d") {
 				done({ topic: params.topic, verdicts, cancelled: false });
 			}
 		}
@@ -1222,7 +1231,7 @@ async function runNarrow(
 					lines,
 					w,
 					" ",
-					theme.fg("dim", "↑↓ move · space keep → · s skip → · x drop → · u undecide · Enter finish · Esc stop"),
+					theme.fg("dim", "↑↓ move · space/Enter keep → · s skip → · x drop → · u undecide · d finish · Esc stop"),
 				);
 			}
 			lines.push(theme.fg("accent", "─".repeat(w)));
