@@ -217,6 +217,44 @@ The sort is stable, so two journeys the weights cannot separate keep the backend
 own relative order. That is the difference between ranking as a refinement and
 ranking as a reshuffle.
 
+### One weight set is not enough, so a trip can override it
+
+The profile's journey weights are the *usual* setting. The operator's own point is
+that it depends on the trip, so `/api/search` takes two optional overrides and they
+resolve in one place (`transit::ranking::resolve_weights`) so a button and a CLI
+cannot disagree about what `cheapest` means:
+
+| Parameter | Form |
+| --- | --- |
+| `priority` | `cheapest`, `fastest`, `fewest_changes`, `reliable`, `balanced` |
+| `weights` | `price:0.5,duration:0.2,changes:0.1,reliability:0.2`, all four, summing to 1.0 |
+
+Passing both is a **400** rather than a precedence rule: a request saying two
+different things is a caller bug, and guessing which it meant is how a UI and an API
+start disagreeing. Saying neither means the profile applies, and `ranking.source`
+reports `profile` or `request` so a reader can tell which produced the order in front
+of them.
+
+### The origin and the fare come from the profile too
+
+`from` is optional: omitted, the first of the profile's `home_stations` is the
+origin. `bc` and `d_ticket` default from the cards the profile says the traveller
+holds — an explicit parameter always wins, because a caller naming a BahnCard is
+asking about that card. Measured 2026-09-23 on one route: the same search cost
+`47.99 / 52.49 / 67.49` with the cards held and `76.99 / 84.99 / 98.47` without.
+Every fare the solver priced before this was a second-class single-adult fare with
+no discount, because nothing carried them.
+
+### A station name is resolved, or refused
+
+HAFAS takes an EVA id and returns **nothing at all** for a name — an empty journey
+list with HTTP 200, which reads exactly like "no trains that day". So a name is
+resolved through the same suggest surface the UI uses, and a name that does not
+match is a **400 naming it** rather than an empty answer. The check is strict on
+purpose: HAFAS's suggest returns `Hannover Karl-Wiechert-Allee` as the first hit for
+`Nowhere At All`, and a wrong destination the caller cannot detect is worse than a
+refusal. An all-digit input skips the lookup entirely.
+
 ## What a split-ticket chain does and does not promise
 
 <!-- human-voice: ignore em_dash -->

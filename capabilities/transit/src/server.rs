@@ -30,10 +30,16 @@ const ROUTES: &[route_manifest::Route] = &[
     r(
         "GET",
         "/api/search",
-        "Fare search between two stations on a date. Query: from, to (EVA), time \
-         (YYYY-MM-DDTHH:MM:SS, seconds optional; anything else is a 400); optional \
-         bc (25|50), first_class, d_ticket carry the fare context, so returned prices \
-         are discount-correct.",
+        "Fare search between two stations on a date. Query: to (EVA) and time \
+         (YYYY-MM-DDTHH:MM:SS, seconds optional; anything else is a 400); from (EVA) is \
+         optional and defaults to the profile's first home station. Optional bc (25|50), \
+         first_class, d_ticket carry the fare context and default from the cards the \
+         profile says the traveller holds, so returned prices are discount-correct. \
+         Optional priority (cheapest|fastest|fewest_changes|reliable|balanced) or weights \
+         (price:0.5,duration:0.2,changes:0.1,reliability:0.2, summing to 1.0) override the \
+         profile's journey weights for this one search; passing both is a 400. When the \
+         profile states journey weights, each journey gains a `ranking` with a score, its \
+         rank, the weights and where they came from, and a factor per reason.",
     ),
     r(
         "GET",
@@ -78,7 +84,11 @@ struct SuggestQuery {
 
 #[derive(Deserialize)]
 struct RouteQuery {
-    from: String,
+    /// Optional. Omitted, the profile's first home station is the origin — which
+    /// is the point of the operator naming three: a search should not have to be
+    /// told where they live.
+    #[serde(default)]
+    from: Option<String>,
     to: String,
     time: String,
     /// 25 or 50; the payload builder rejects anything else loudly.
@@ -88,15 +98,39 @@ struct RouteQuery {
     first_class: bool,
     #[serde(default)]
     d_ticket: bool,
+    /// A preset: cheapest, fastest, fewest_changes, reliable, balanced.
+    #[serde(default)]
+    priority: Option<String>,
+    /// The explicit form: `price:0.5,duration:0.2,changes:0.1,reliability:0.2`.
+    #[serde(default)]
+    weights: Option<String>,
 }
 
 impl RouteQuery {
-    fn fare(&self) -> transit::hafas::FareOptions {
+    /// The fare options, with the traveller's own cards filling what the caller
+    /// left out.
+    ///
+    /// An explicit parameter always wins: a caller naming a BahnCard is asking a
+    /// question about that card, not about the profile. Absent both, this is
+    /// exactly what it was before the profile existed — which is why every fare
+    /// priced until now was a second-class single-adult fare with no discount.
+    fn fare(
+        &self,
+        snapshot: Option<&transit::ranking::ProfileSnapshot>,
+    ) -> transit::hafas::FareOptions {
+        let cards = snapshot.cloned().unwrap_or_default();
         transit::hafas::FareOptions {
-            bahncard: self.bc,
+            bahncard: self.bc.or_else(|| cards.bahncard()),
             first_class: self.first_class,
-            deutschland_ticket: self.d_ticket,
+            deutschland_ticket: self.d_ticket || cards.holds_deutschlandticket(),
         }
+    }
+
+    /// The origin: the query's, else the first home station.
+    fn origin(&self, snapshot: Option<&transit::ranking::ProfileSnapshot>) -> Option<String> {
+        self.from
+            .clone()
+            .or_else(|| snapshot.and_then(|snapshot| snapshot.home_stations.first().cloned()))
     }
 }
 
@@ -146,31 +180,112 @@ async fn handle_suggest(
     }
 }
 
+/// An EVA id, or a name resolved to one.
+///
+/// HAFAS takes an EVA id and returns **nothing at all** for a name — an empty
+/// journey list with HTTP 200, which is indistinguishable from "no trains on that
+/// day". A confident empty answer for a well-formed query is the worst failure an
+/// API has, and it is why a station name is resolved through the same suggest
+/// surface the UI uses rather than passed through.
+///
+/// An all-digit input is taken as an EVA and not looked up: that is what the
+/// caller asked for, and a suggest on `8000207` would be a round trip to be told
+/// what was already given.
+///
+/// A name that resolves to nothing is a 400 naming it, never an empty answer.
+fn resolve_station(
+    client: &transit::hafas::HafasClient,
+    input: &str,
+) -> Result<String, (axum::http::StatusCode, String)> {
+    let trimmed = input.trim();
+    if !trimmed.is_empty() && trimmed.bytes().all(|b| b.is_ascii_digit()) {
+        return Ok(trimmed.to_string());
+    }
+    match client.suggest_stations(trimmed) {
+        // Every hit is examined, not just the first: a fuzzy top hit must not hide
+        // a correct second one.
+        Ok(stations) => stations
+            .iter()
+            .find(|station| matches_query(trimmed, &station.name))
+            .map(|station| station.id.clone())
+            .ok_or_else(|| {
+                (
+                    axum::http::StatusCode::BAD_REQUEST,
+                    format!("no station matches {trimmed:?}; pass an EVA id to skip resolution"),
+                )
+            }),
+        Err(error) => Err(hafas_fail(error)),
+    }
+}
+
+/// Whether a suggest hit actually answers what was asked.
+///
+/// HAFAS's suggest is very fuzzy. Measured 2026-09-23: `Nowhere At All` returns
+/// `Hannover Karl-Wiechert-Allee` as its first hit, because `Alle` matches
+/// `Allee`, and a search built on it goes to the wrong city with HTTP 200. A wrong
+/// destination the caller cannot detect is worse than an empty answer, so a hit is
+/// accepted only when every significant word of the query appears in the station
+/// name — a check anyone can run by eye, and one that fails towards a named 400
+/// rather than towards a plausible guess.
+///
+/// Deliberately strict, and the cost is stated: a query spelled without an umlaut
+/// (`Munchen`) will not match `München` and is refused. That is recoverable and
+/// visible; the other direction is neither.
+fn matches_query(query: &str, station_name: &str) -> bool {
+    let name = station_name.to_lowercase();
+    let words: Vec<String> = query
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_string)
+        .collect();
+    !words.is_empty() && words.iter().all(|word| name.contains(word.as_str()))
+}
+
 async fn handle_search(
     State(state): State<AppState>,
     Query(params): Query<RouteQuery>,
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
+    // Resolved before the blocking task because it is pure, and because a bad
+    // weight set is a caller error that should not cost a search.
+    let override_weights =
+        transit::ranking::resolve_weights(params.priority.as_deref(), params.weights.as_deref())
+            .map_err(|reason| (axum::http::StatusCode::BAD_REQUEST, reason))?;
+
     let client = state.hafas_client;
-    // Enrichment runs inside the same blocking task as the search: it is a blocking HTTP
-    // call, and punctuality::enrich leaves the journeys untouched when the statistics
-    // service is unreachable, so a search never fails for want of a delay figure.
-    match tokio::task::spawn_blocking(move || {
-        client
-            .search_connections(&params.from, &params.to, &params.time, &params.fare())
-            .map(|mut journeys| {
-                transit::punctuality::enrich(&mut journeys);
-                // After enrichment, because reliability is one of the ranking's
-                // factors and it is the only one that is not relative to the
-                // rest of the set. Absent a stated profile this does nothing at
-                // all and the array keeps the backend's own order.
-                transit::ranking::rank_journeys(&mut journeys);
-                journeys
-            })
-    })
-    .await
-    {
+    // Everything blocking happens inside one task: the search, the punctuality
+    // enrichment and the single profile read, which is itself a blocking HTTP
+    // call. `punctuality::enrich` leaves the journeys untouched when the
+    // statistics service is unreachable and the ranking does nothing when
+    // nothing has been stated, so a search never fails for want of either.
+    let outcome = tokio::task::spawn_blocking(
+        move || -> Result<Vec<transit::travel::Journey>, (axum::http::StatusCode, String)> {
+            let snapshot = transit::ranking::read_profile();
+            let Some(from) = params.origin(snapshot.as_ref()) else {
+                return Err((
+                    axum::http::StatusCode::BAD_REQUEST,
+                    "no origin: pass from=, or set hard.home_stations on the profile".to_string(),
+                ));
+            };
+            let fare = params.fare(snapshot.as_ref());
+            let origin = resolve_station(&client, &from)?;
+            let destination = resolve_station(&client, &params.to)?;
+            let mut journeys = client
+                .search_connections(&origin, &destination, &params.time, &fare)
+                .map_err(hafas_fail)?;
+            transit::punctuality::enrich(&mut journeys);
+            // After enrichment, because reliability is one of the ranking's
+            // factors and the only one that is not relative to the rest of the
+            // set.
+            transit::ranking::rank_journeys(&mut journeys, override_weights);
+            Ok(journeys)
+        },
+    )
+    .await;
+
+    match outcome {
         Ok(Ok(journeys)) => Ok(Json(serde_json::to_value(journeys).unwrap_or_default())),
-        Ok(Err(e)) => Err(hafas_fail(e)),
+        Ok(Err(failure)) => Err(failure),
         Err(e) => Err(fail(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e)),
     }
 }
@@ -180,18 +295,32 @@ async fn handle_split(
     Query(params): Query<RouteQuery>,
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
     let client = state.hafas_client;
-    match tokio::task::spawn_blocking(move || {
-        client
-            .search_split_tickets(&params.from, &params.to, &params.time, &params.fare())
-            .map(|mut result| {
-                transit::punctuality::enrich_split(&mut result);
-                result
-            })
-    })
-    .await
-    {
+    // Same two profile facts as a plain search, and no ranking: a split chain is
+    // one answer, not a set to order.
+    let outcome = tokio::task::spawn_blocking(
+        move || -> Result<transit::travel::SplitResult, (axum::http::StatusCode, String)> {
+            let snapshot = transit::ranking::read_profile();
+            let Some(from) = params.origin(snapshot.as_ref()) else {
+                return Err((
+                    axum::http::StatusCode::BAD_REQUEST,
+                    "no origin: pass from=, or set hard.home_stations on the profile".to_string(),
+                ));
+            };
+            let fare = params.fare(snapshot.as_ref());
+            let origin = resolve_station(&client, &from)?;
+            let destination = resolve_station(&client, &params.to)?;
+            let mut result = client
+                .search_split_tickets(&origin, &destination, &params.time, &fare)
+                .map_err(hafas_fail)?;
+            transit::punctuality::enrich_split(&mut result);
+            Ok(result)
+        },
+    )
+    .await;
+
+    match outcome {
         Ok(Ok(result)) => Ok(Json(serde_json::to_value(result).unwrap_or_default())),
-        Ok(Err(e)) => Err(hafas_fail(e)),
+        Ok(Err(failure)) => Err(failure),
         Err(e) => Err(fail(axum::http::StatusCode::INTERNAL_SERVER_ERROR, e)),
     }
 }
@@ -524,5 +653,59 @@ mod origin_tests {
                 "400 came from somewhere other than the handler: {body}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod station_resolution_tests {
+    use super::matches_query;
+
+    #[test]
+    fn a_real_name_matches_its_station() {
+        assert!(matches_query("Berlin Hbf", "Berlin Hbf"));
+        assert!(matches_query("berlin hbf", "Berlin Hbf"));
+        assert!(matches_query("Frankfurt(Main)Hbf", "Frankfurt(Main)Hbf"));
+        assert!(matches_query("Köln Hbf", "Köln Hbf"));
+    }
+
+    #[test]
+    fn the_fuzzy_hit_that_motivated_this_is_refused() {
+        // Measured 2026-09-23: HAFAS returns this as the FIRST hit for that query,
+        // because "Alle" matches "Allee". Taking it sends the search to the wrong
+        // city with HTTP 200, which the caller cannot detect.
+        assert!(!matches_query(
+            "Nowhere At All",
+            "Hannover Karl-Wiechert-Allee"
+        ));
+        assert!(!matches_query(
+            "Nowhere At All",
+            "Therese-Giehse-Allee, München"
+        ));
+        assert!(!matches_query(
+            "Nowhere At All",
+            "Großbeeren Märkische Allee Süd"
+        ));
+    }
+
+    #[test]
+    fn every_significant_word_must_appear() {
+        assert!(!matches_query("Berlin Hbf", "Berlin Südkreuz"));
+        assert!(!matches_query("Berlin Gesundbrunnen", "Berlin Hbf"));
+        assert!(matches_query("Berlin", "Berlin Hbf"));
+    }
+
+    #[test]
+    fn a_query_with_no_words_matches_nothing() {
+        assert!(!matches_query("", "Berlin Hbf"));
+        assert!(!matches_query("   ", "Berlin Hbf"));
+        assert!(!matches_query("...", "Berlin Hbf"));
+    }
+
+    #[test]
+    fn the_strictness_is_stated_rather_than_hidden() {
+        // A query without an umlaut is refused. Recoverable and visible, which is
+        // the direction this check is built to fail in.
+        assert!(!matches_query("Munchen", "München Hbf"));
+        assert!(matches_query("München", "München Hbf"));
     }
 }

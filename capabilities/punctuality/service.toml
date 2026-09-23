@@ -21,13 +21,21 @@ health_path = "/health"
 # silently never happens. A hard `requires` on transit's side is the wrong third one — it
 # would turn a degradable dependency into a startup failure, which is the trade transit's
 # own module documents refusing.
-# false since 2026-08-29 (PRD B20). Measured before demoting, in both capabilities: no
-# `tokio::spawn` of a timer, no `interval`, no ticker. The only `sleep` is a download retry
-# backoff, and every `spawn_blocking` is per-request work moved off the async thread. So nothing
-# here observes anything between visits, and a process that is up only because it was up at boot
-# is R3's definition of a cost with no purpose.
 #
-# Starting it is not manual: axon-status owns capability lifecycle and the shell routes start
-# requests through it (`capabilities/axon-status/src/status/lifecycle.rs`), so the page that needs
-# this capability is what brings it up.
-autostart   = "false"
+# Was `false` from 2026-08-29 (PRD B20) on a measurement: no timer, no interval, no ticker,
+# so nothing here observes anything between visits and a process up only because it was up
+# at boot is R3's definition of a cost with no purpose. That measurement still holds and is
+# still the reason this is a small process rather than a daemon.
+#
+# **Back to `true` on 2026-09-23, because the consumer is synchronous.** `transit`'s journey
+# ranking reads `reliability` inside the search request, against a three-second budget, and
+# the same is true of `punctuality::enrich` before it. A process start cannot be paid for
+# out of that budget, so "bring it up on demand" was never available for this consumer — it
+# is not a page that can wait, and nothing else asks either. The result was that the highest
+# weighted term in a ranked search silently disappeared, which the response showed only by
+# the factor's absence.
+#
+# So the choice the old comment named — always-on, or enrichment never happens — is settled
+# the first way, and `axon-status`' lifecycle route stays the thing that stops and starts it
+# by hand (`capabilities/axon-status/src/status/lifecycle.rs`).
+autostart   = "true"

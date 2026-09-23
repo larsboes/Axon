@@ -42,8 +42,8 @@ pub const BASIS_KEYS: &[&str] = &[
     "hard.min_transfer_buffer_min",
     "hard.modes",
     "hard.avoid_overnight_travel",
-    "hard.home_station",
-    "hard.home_airport",
+    "hard.home_stations",
+    "hard.home_airports",
     "hard.cards",
     "soft.budget_fit",
     "soft.feasibility",
@@ -98,10 +98,18 @@ pub struct HardConstraints {
     pub modes: Vec<String>,
     /// Overnight travel is refused rather than merely penalised.
     pub avoid_overnight_travel: bool,
-    /// The station a search defaults its origin to.
-    pub home_station: Option<String>,
-    /// The airport a flight search defaults its origin to.
-    pub home_airport: Option<String>,
+    /// The stations a search may default its origin to, best first.
+    ///
+    /// A list rather than one station because a home is not one platform: the
+    /// operator named three, and a single value would have silently dropped two
+    /// of them. The FIRST is the default origin; the rest are the alternates a
+    /// caller may ask for by name. Order is the operator's, and nothing here
+    /// re-ranks it.
+    pub home_stations: Vec<String>,
+    /// The airports a flight search may default its origin to, best first. Same
+    /// shape and the same reason: the operator named a second airport that is
+    /// easy for them, and a `Option<String>` cannot hold it.
+    pub home_airports: Vec<String>,
     /// Discount cards the fare lookups must price against, e.g.
     /// `bahncard_25`, `deutschlandticket`.
     pub cards: Vec<String>,
@@ -119,8 +127,8 @@ impl Default for HardConstraints {
             // what an unconfigured profile should claim.
             modes: vec!["rail".into(), "flight".into()],
             avoid_overnight_travel: false,
-            home_station: None,
-            home_airport: None,
+            home_stations: Vec::new(),
+            home_airports: Vec::new(),
             cards: Vec::new(),
         }
     }
@@ -329,6 +337,13 @@ impl TravelProfile {
     /// live: the journey column arrived on an existing row and every write of
     /// that profile was then rejected.
     pub fn with_complete_basis(mut self) -> Self {
+        // A key that is no longer declared is dropped. Renaming a field leaves its
+        // old name behind in every stored row, and `validate` refuses an unknown
+        // key, so a row written before a rename would be readable and not
+        // writable — the same failure the journey block caused from the other
+        // direction, which is why both are handled here rather than one.
+        self.basis
+            .retain(|key, _| BASIS_KEYS.contains(&key.as_str()));
         for key in BASIS_KEYS {
             self.basis
                 .entry((*key).to_string())
@@ -533,6 +548,39 @@ mod tests {
         );
 
         // And it now survives the round trip that used to be refused.
+        let input = ProfileInput {
+            hard: completed.hard,
+            soft: completed.soft,
+            journey: completed.journey,
+            interests: completed.interests,
+            pace: completed.pace,
+            anchors: completed.anchors,
+            basis: completed.basis,
+        };
+        input.validate().unwrap();
+    }
+
+    #[test]
+    fn a_renamed_field_leaves_no_unknown_key_behind() {
+        // A row written before `home_station` became `home_stations` carries the
+        // old name, and an unknown basis key is refused by `validate`. Without the
+        // retain above, that row reads fine and cannot be written back at all.
+        let mut profile = TravelProfile::unstated();
+        profile
+            .basis
+            .insert("hard.home_station".into(), Provenance::Stated);
+        profile
+            .basis
+            .insert("hard.home_airport".into(), Provenance::Stated);
+
+        let completed = profile.with_complete_basis();
+        assert!(
+            !completed.basis.contains_key("hard.home_station"),
+            "the old name must not survive into a body that validate will refuse"
+        );
+        assert!(completed.basis.contains_key("hard.home_stations"));
+        assert!(completed.basis.contains_key("hard.home_airports"));
+
         let input = ProfileInput {
             hard: completed.hard,
             soft: completed.soft,

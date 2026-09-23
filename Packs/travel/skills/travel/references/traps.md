@@ -1,6 +1,6 @@
 # Travel traps
 
-Six failures that return an empty or plausible answer rather than an error. Each names the file
+Seven failures that return an empty or plausible answer rather than an error. Each names the file
 it was verified against.
 
 ## An EVA number joined across transit and punctuality matches nothing
@@ -21,6 +21,26 @@ answers a bare `8000044`; a journey search answers
 `A=1@O=Bonn Hbf@X=…@Y=…@U=80@L=8000044@i=…@`, where the EVA is the `L=` field. Reading `id` as an
 EVA works for one of those and silently finds nothing for the other.
 `transit::punctuality::eva_of` is the parser that handles both.
+
+## A station name returns zero journeys with HTTP 200
+
+`transit`'s search used to pass its `from`/`to` straight to HAFAS, which accepts an EVA id and
+returns **nothing at all** for a name — an empty array with HTTP 200, indistinguishable from "no
+trains that day". So `?from=Köln Hbf&to=Berlin Hbf` was a confident empty answer for a
+well-formed query, and the first sign of it was a ranked search that had nothing to rank.
+
+Since 2026-09-23 the server resolves a name through the same suggest surface the UI uses, and
+refuses one that does not match rather than guessing. Two things still worth knowing:
+
+- **The resolution is deliberately strict.** Every significant word of the query must appear in
+  the resolved station's name. HAFAS's suggest is very fuzzy — `Nowhere At All` returns
+  `Hannover Karl-Wiechert-Allee` as its *first* hit, because `Alle` matches `Allee` — and a wrong
+  destination the caller cannot detect is worse than a refusal. The cost is that a query spelled
+  without an umlaut (`Munchen`) is refused.
+- **A raw EVA id still skips the lookup entirely**, which is what to do when the resolution
+  refuses something real.
+
+(`capabilities/transit/src/server.rs`, `resolve_station` and `matches_query`.)
 
 ## `travel_candidate` is a value, not a route and not a filter
 

@@ -394,31 +394,29 @@ mod tests {
     fn two_profiles_do_not_see_each_other() {
         let (store, dir) = scratch("two");
         let mut one = ProfileInput::unstated();
-        one.hard.home_station = Some("Bonn Hbf".into());
+        // An invented station. The first version of this test used a real one,
+        // which is the easiest way for a personal fact to sit in a public repo
+        // unnoticed — a fixture reads as arbitrary even when it is not.
+        one.hard.home_stations = vec!["Example City Hbf".into()];
         one.basis
-            .insert("hard.home_station".into(), Provenance::Stated);
+            .insert("hard.home_stations".into(), Provenance::Stated);
         store.put("default", &one, None).unwrap();
         store
             .put("second", &ProfileInput::unstated(), None)
             .unwrap();
 
+        let default = store.get("default").unwrap().unwrap();
         assert_eq!(
-            store
-                .get("default")
-                .unwrap()
-                .unwrap()
-                .hard
-                .home_station
-                .as_deref(),
-            Some("Bonn Hbf")
+            default.hard.home_stations,
+            vec!["Example City Hbf".to_string()]
         );
         assert!(store
             .get("second")
             .unwrap()
             .unwrap()
             .hard
-            .home_station
-            .is_none());
+            .home_stations
+            .is_empty());
         assert_eq!(
             store.ids().unwrap(),
             vec!["default".to_string(), "second".to_string()]

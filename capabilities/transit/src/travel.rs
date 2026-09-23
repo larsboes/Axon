@@ -146,6 +146,12 @@ pub struct JourneyRanking {
     /// The weights this score was computed with, echoed so a stored score can be
     /// told apart from one computed under different preferences.
     pub weights: crate::ranking::JourneyWeights,
+    /// `profile` or `request` — where those four numbers came from.
+    ///
+    /// The operator's own point is that the usual setting and this trip's setting
+    /// are different things, so a reader has to be able to tell which one produced
+    /// the order in front of them.
+    pub source: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

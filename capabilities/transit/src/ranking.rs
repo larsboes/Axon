@@ -63,6 +63,7 @@ struct ProfileEnvelope {
 
 #[derive(Debug, Deserialize)]
 struct ProfileBody {
+    hard: HardBody,
     journey: JourneyWeights,
     /// Field path to provenance. Read only to answer "has anything been stated",
     /// which is the seam that keeps an unstated profile from changing a search.
@@ -70,12 +71,58 @@ struct ProfileBody {
     basis: BTreeMap<String, String>,
 }
 
-/// The traveller's journey weights, or `None` when nothing has been stated or the
-/// service could not be reached.
+#[derive(Debug, Deserialize)]
+struct HardBody {
+    #[serde(default)]
+    cards: Vec<String>,
+    /// Best first. The first is the default origin.
+    #[serde(default)]
+    home_stations: Vec<String>,
+}
+
+/// Everything one search reads off the profile, in one round trip.
 ///
-/// `None` is not a failure state to report: it is the answer "rank nothing", and
-/// every caller treats it that way.
-pub fn stated_journey_weights() -> Option<JourneyWeights> {
+/// One read rather than three, because a search is synchronous and each of these
+/// is on its critical path: a second HTTP call to the same localhost service is
+/// pure latency.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ProfileSnapshot {
+    /// `None` when nothing has been stated, which is the seam. Not the same as
+    /// `Some(default)`, and the caller must be able to tell them apart.
+    pub journey_weights: Option<JourneyWeights>,
+    /// `bahncard_25`, `bahncard_50`, `deutschlandticket`. Every fare the solver
+    /// priced before this existed was a second-class single-adult fare with no
+    /// discount, because nothing carried the cards a traveller already holds.
+    pub cards: Vec<String>,
+    pub home_stations: Vec<String>,
+}
+
+impl ProfileSnapshot {
+    /// The BahnCard a fare should be priced against, when the caller did not say.
+    ///
+    /// 50 before 25 when both are present: holding both is possible, and the
+    /// better discount is the one the traveller would present.
+    pub fn bahncard(&self) -> Option<u8> {
+        if self.cards.iter().any(|card| card == "bahncard_50") {
+            return Some(50);
+        }
+        if self.cards.iter().any(|card| card == "bahncard_25") {
+            return Some(25);
+        }
+        None
+    }
+
+    pub fn holds_deutschlandticket(&self) -> bool {
+        self.cards.iter().any(|card| card == "deutschlandticket")
+    }
+}
+
+/// Read the traveller's profile, or `None` when it cannot be read at all.
+///
+/// `None` is not a failure to report: it is the answer "nothing to apply", and
+/// every caller treats it that way. An unstated profile is `Some` with
+/// `journey_weights: None`, which is a different fact.
+pub fn read_profile() -> Option<ProfileSnapshot> {
     // Short, like the punctuality lookup: this is an enhancement on a localhost
     // service and waiting on it would make a search slower than not ranking.
     let client = axon_http::client(
@@ -97,7 +144,145 @@ pub fn stated_journey_weights() -> Option<JourneyWeights> {
         .basis
         .get("journey.price")
         .is_some_and(|provenance| provenance != "default");
-    stated.then_some(envelope.profile.journey)
+    Some(ProfileSnapshot {
+        journey_weights: stated.then_some(envelope.profile.journey),
+        cards: envelope.profile.hard.cards,
+        home_stations: envelope.profile.hard.home_stations,
+    })
+}
+
+/// The presets a UI hangs buttons on.
+///
+/// Every one sums to 1.0, and they are here rather than in the dashboard so an
+/// agent and a browser resolve `cheapest` to the same four numbers. A preset
+/// defined twice is the drift the resolution function exists to prevent.
+pub const PRIORITIES: &[(&str, JourneyWeights)] = &[
+    (
+        "cheapest",
+        JourneyWeights {
+            price: 0.55,
+            duration: 0.15,
+            changes: 0.10,
+            reliability: 0.20,
+        },
+    ),
+    (
+        "fastest",
+        JourneyWeights {
+            price: 0.15,
+            duration: 0.55,
+            changes: 0.10,
+            reliability: 0.20,
+        },
+    ),
+    (
+        "fewest_changes",
+        JourneyWeights {
+            price: 0.15,
+            duration: 0.15,
+            changes: 0.50,
+            reliability: 0.20,
+        },
+    ),
+    (
+        "reliable",
+        JourneyWeights {
+            price: 0.20,
+            duration: 0.15,
+            changes: 0.15,
+            reliability: 0.50,
+        },
+    ),
+    (
+        "balanced",
+        JourneyWeights {
+            price: 0.25,
+            duration: 0.25,
+            changes: 0.25,
+            reliability: 0.25,
+        },
+    ),
+];
+
+/// What one trip asked for, resolved to four numbers.
+///
+/// `priority` is sugar for a preset; `weights` is the explicit form. Both at once
+/// is refused rather than resolved by precedence — a request saying two different
+/// things is a caller bug, and guessing which it meant is how a UI and an API
+/// start disagreeing about what was asked for.
+///
+/// `Ok(None)` means the caller said nothing and the profile's own weights apply.
+pub fn resolve_weights(
+    priority: Option<&str>,
+    weights: Option<&str>,
+) -> Result<Option<JourneyWeights>, String> {
+    match (priority, weights) {
+        (Some(_), Some(_)) => Err("pass priority or weights, not both".into()),
+        (Some(name), None) => PRIORITIES
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, preset)| Some(*preset))
+            .ok_or_else(|| {
+                let known: Vec<&str> = PRIORITIES.iter().map(|(key, _)| *key).collect();
+                format!("unknown priority {name:?}; known: {}", known.join(", "))
+            }),
+        (None, Some(spec)) => parse_weights(spec).map(Some),
+        (None, None) => Ok(None),
+    }
+}
+
+/// `price:0.5,duration:0.2,changes:0.1,reliability:0.2`, all four, summing to 1.0.
+///
+/// Every refusal names what was wrong and what the vocabulary is: a caller that
+/// has to guess which four keys exist will guess wrong, and the sum is the one
+/// thing about a weight set that cannot be inferred from the others.
+fn parse_weights(spec: &str) -> Result<JourneyWeights, String> {
+    let mut weights = JourneyWeights {
+        price: 0.0,
+        duration: 0.0,
+        changes: 0.0,
+        reliability: 0.0,
+    };
+    let mut named = 0_usize;
+    for pair in spec.split(',') {
+        let Some((key, value)) = pair.split_once(':') else {
+            return Err(format!(
+                "weights are key:value pairs separated by commas, got {pair:?}"
+            ));
+        };
+        let value: f64 = value
+            .trim()
+            .parse()
+            .map_err(|_| format!("{:?} is not a number", value.trim()))?;
+        if !(0.0..=1.0).contains(&value) {
+            return Err(format!("{key} must be between 0 and 1, got {value}"));
+        }
+        match key.trim() {
+            "price" => weights.price = value,
+            "duration" => weights.duration = value,
+            "changes" => weights.changes = value,
+            "reliability" => weights.reliability = value,
+            other => {
+                return Err(format!(
+                    "unknown weight {other:?}; known: price, duration, changes, reliability"
+                ))
+            }
+        }
+        named += 1;
+    }
+    if named != 4 {
+        return Err(format!("weights must name all four keys, got {named}"));
+    }
+    if (weights.sum() - 1.0).abs() > 1e-6 {
+        return Err(format!("weights must sum to 1.0, got {:.6}", weights.sum()));
+    }
+    Ok(weights)
+}
+
+impl JourneyWeights {
+    pub fn sum(&self) -> f64 {
+        self.price + self.duration + self.changes + self.reliability
+    }
 }
 
 /// The four quantities a ranking reads, pulled off a journey.
@@ -204,6 +389,9 @@ pub fn score(inputs: &[ScoreInput], weights: JourneyWeights) -> Vec<JourneyRanki
                 rank: 0,
                 factors,
                 weights,
+                // Filled by `rank_journeys`, which is what knows whether the
+                // numbers came from the request or the profile.
+                source: String::new(),
             }
         })
         .collect()
@@ -254,13 +442,27 @@ fn relative(value: f64, set: &[f64]) -> f64 {
 /// The sort is stable, so two journeys the weights cannot separate keep the
 /// backend's own relative order rather than an arbitrary one — which is the
 /// difference between ranking as a refinement and ranking as a reshuffle.
-pub fn rank_journeys(journeys: &mut [Journey]) -> bool {
-    let Some(weights) = stated_journey_weights() else {
-        return false;
+pub fn rank_journeys(journeys: &mut [Journey], override_weights: Option<JourneyWeights>) -> bool {
+    let (weights, source) = match override_weights {
+        Some(weights) => (weights, "request"),
+        // The profile is read only when the request did not decide, so a trip that
+        // carries its own weights costs no round trip at all.
+        None => {
+            let Some(snapshot) = read_profile() else {
+                return false;
+            };
+            let Some(weights) = snapshot.journey_weights else {
+                return false;
+            };
+            (weights, "profile")
+        }
     };
     let inputs: Vec<ScoreInput> = journeys.iter().map(ScoreInput::of).collect();
     for (journey, ranking) in journeys.iter_mut().zip(score(&inputs, weights)) {
-        journey.ranking = Some(ranking);
+        journey.ranking = Some(JourneyRanking {
+            source: source.to_string(),
+            ..ranking
+        });
     }
     journeys.sort_by(|a, b| {
         let left = a.ranking.as_ref().map_or(f64::NEG_INFINITY, |r| r.score);
@@ -404,6 +606,115 @@ mod tests {
         assert_eq!(by_key("changes"), "1 change");
         assert!(by_key("reliability").contains("87%"));
         assert!(by_key("price").contains("cheapest"));
+    }
+
+    #[test]
+    fn every_preset_sums_to_one() {
+        // A preset that does not is a weight set the profile would refuse, handed
+        // to a caller by a button.
+        for (name, weights) in PRIORITIES {
+            assert!(
+                (weights.sum() - 1.0).abs() < 1e-9,
+                "preset {name} sums to {}",
+                weights.sum()
+            );
+        }
+    }
+
+    #[test]
+    fn a_preset_resolves_to_numbers_and_an_unknown_one_names_the_known_ones() {
+        let cheapest = resolve_weights(Some("cheapest"), None).unwrap().unwrap();
+        assert_eq!(cheapest.price, 0.55);
+        let refusal = resolve_weights(Some("cheepest"), None).unwrap_err();
+        assert!(
+            refusal.contains("cheapest") && refusal.contains("balanced"),
+            "the refusal must name the vocabulary, got: {refusal}"
+        );
+    }
+
+    #[test]
+    fn the_explicit_form_parses_and_every_refusal_names_what_was_wrong() {
+        let parsed = resolve_weights(
+            None,
+            Some("price:0.5,duration:0.2,changes:0.1,reliability:0.2"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(parsed.price, 0.5);
+        assert_eq!(parsed.reliability, 0.2);
+
+        // Missing a key.
+        let missing = resolve_weights(None, Some("price:0.5,duration:0.5")).unwrap_err();
+        assert!(missing.contains("all four keys"), "got: {missing}");
+        // Not summing to one.
+        let sum = resolve_weights(
+            None,
+            Some("price:0.5,duration:0.5,changes:0.5,reliability:0.5"),
+        )
+        .unwrap_err();
+        assert!(sum.contains("sum to 1.0"), "got: {sum}");
+        // An unknown key names the vocabulary.
+        let unknown =
+            resolve_weights(None, Some("price:1,duration:0,changes:0,vibes:0")).unwrap_err();
+        assert!(
+            unknown.contains("price, duration, changes, reliability"),
+            "got: {unknown}"
+        );
+        // A malformed pair, and a value out of range.
+        assert!(resolve_weights(None, Some("price"))
+            .unwrap_err()
+            .contains("key:value"));
+        assert!(
+            resolve_weights(None, Some("price:2,duration:0,changes:0,reliability:0"))
+                .unwrap_err()
+                .contains("between 0 and 1")
+        );
+    }
+
+    #[test]
+    fn passing_both_forms_is_refused_rather_than_resolved_by_precedence() {
+        // A request saying two different things is a caller bug, and guessing which
+        // it meant is how a UI and an API start disagreeing about what was asked.
+        let refusal = resolve_weights(
+            Some("cheapest"),
+            Some("price:0.25,duration:0.25,changes:0.25,reliability:0.25"),
+        )
+        .unwrap_err();
+        assert!(refusal.contains("not both"), "got: {refusal}");
+    }
+
+    #[test]
+    fn saying_nothing_resolves_to_nothing_so_the_profile_applies() {
+        assert_eq!(resolve_weights(None, None).unwrap(), None);
+    }
+
+    #[test]
+    fn the_better_bahncard_wins_when_both_are_held() {
+        let both = ProfileSnapshot {
+            cards: vec!["bahncard_25".into(), "bahncard_50".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            both.bahncard(),
+            Some(50),
+            "the better discount is the one presented"
+        );
+        let only25 = ProfileSnapshot {
+            cards: vec!["bahncard_25".into()],
+            ..Default::default()
+        };
+        assert_eq!(only25.bahncard(), Some(25));
+        assert_eq!(ProfileSnapshot::default().bahncard(), None);
+    }
+
+    #[test]
+    fn the_deutschlandticket_is_read_from_the_cards() {
+        let held = ProfileSnapshot {
+            cards: vec!["bahncard_50".into(), "deutschlandticket".into()],
+            ..Default::default()
+        };
+        assert!(held.holds_deutschlandticket());
+        assert!(!ProfileSnapshot::default().holds_deutschlandticket());
     }
 
     #[test]

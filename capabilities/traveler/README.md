@@ -34,7 +34,9 @@ Six parts, and every field carries its provenance:
 
 - **`hard`** — limits, not trade-offs. `earliest_departure`, `latest_arrival`,
   `max_changes`, `min_transfer_buffer_min`, `modes`, `avoid_overnight_travel`,
-  `home_station`, `home_airport`, `cards`.
+  `home_stations`, `home_airports`, `cards`. The two `home_*` fields are lists,
+  best first, because a home is not one platform: the operator named three stations
+  and a second airport, and a single value would have silently dropped them.
 - **`soft`** — the *destination* ranking weights, keyed **exactly** as
   `plan_search`'s factors are: `budget_fit`, `feasibility`, `season`, `events`,
   `retrospective`. They must sum to 1.0 and a write that does not is refused

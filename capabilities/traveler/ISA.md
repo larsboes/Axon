@@ -2,7 +2,7 @@
 project: axon-traveler
 type: isa
 phase: climbing
-progress: 80
+progress: 90
 principal_stated_goal: "Upgrade the Axon travel systems into a real hyper-personalised travel planning system, usable both by me directly and with an agent."
 ---
 
@@ -192,6 +192,20 @@ is asking.
   block unstated returns no `ranking` field and the backend's own order.
   Falsifier: a `ranking` on an unstated profile.
 
+- [x] TRV-19 — a renamed field leaves no unknown key behind. Renaming
+  `home_station` to `home_stations` put the old name in every stored row, and
+  `validate` refuses an unknown basis key — so the row read fine and could not be
+  written back at all. `with_complete_basis` now drops undeclared keys as well as
+  filling missing ones, because the two failures are one mechanism. Evidence:
+  `a_renamed_field_leaves_no_unknown_key_behind`, and the live row read back with
+  the stale keys gone. Falsifier: a `400` on a body that came from
+  `GET /api/profile` after a rename.
+- [x] TRV-20 — a home is a set, not a station. `home_stations` and `home_airports`
+  are lists, best first, because the operator named three stations and two airports
+  and an `Option<String>` would have dropped all but one. Evidence: the fields and
+  `two_profiles_do_not_see_each_other`. Falsifier: a second home station that
+  cannot be stored.
+
 ## Not yet specified
 
 In scope, too dim to state as a claim yet.
@@ -254,6 +268,8 @@ In scope, too dim to state as a claim yet.
 | TRV-16 | command | `cargo test -p transit ranking::`; a live `/api/search` | ranked order with factors | cargo + curl | F5 |
 | TRV-17 | command | rank with `punctuality` down | the reliability factor absent, rest re-normalised | curl | F5 |
 | TRV-18 | command | search with the journey block unstated | no `ranking` field, backend order | curl | F5 |
+| TRV-19 | command | rename a declared field, then GET and PUT | 2xx, stale basis key gone | cargo + curl | F4 |
+| TRV-20 | command | store three home stations | all three read back in order | cargo + curl | F4 |
 
 ## Anti-claims
 
@@ -353,6 +369,10 @@ In scope, too dim to state as a claim yet.
 
 ## Log
 
+- 2026-09-23 · The facts written, and the model widened to hold them: three home
+  stations and two home airports are lists now, and a rename that leaves an
+  undeclared basis key behind is survivable. `transit` reads the cards so fares
+  are priced against the BahnCard the operator actually holds.
 - 2026-09-23 · The journey weights stated (price and reliability first) and
   punctuality started, so the ranking runs on four factors rather than three.
   Recorded in Decisions: the operator's first response to a single weight set was
