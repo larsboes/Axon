@@ -12,5 +12,6 @@ pub mod plan_search;
 pub mod projection;
 pub mod retrospective;
 pub mod store;
+pub mod traveler_client;
 pub mod upstream;
 pub mod windows;

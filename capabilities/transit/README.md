@@ -235,6 +235,21 @@ start disagreeing. Saying neither means the profile applies, and `ranking.source
 reports `profile` or `request` so a reader can tell which produced the order in front
 of them.
 
+A phrase is resolved by a **deterministic vocabulary** rather than a model
+(`PHRASE_WORDS`), because the mapping is checkable by eye and the repo's rule is that
+if the answer can be written down, write it down. German is in the vocabulary because
+the operator's own sentences are German at least as often as English, and one that
+speaks only English silently matches nothing in half of them. A phrase naming two
+priorities averages the presets, which is what *cheap and reliable* asked for; a
+phrase naming nothing known is refused **with the vocabulary**, because a silent
+fallback would look exactly like the sentence having been understood.
+
+The dashboard surfaces all three: a **rank-by** bar of preset buttons, a sentence
+field beside it, and `Ranked` as the default order in the journey list. That last one
+mattered — the page sorted journeys by price unconditionally, which silently threw
+away the ranking the server had just computed from the traveller's own weights. The
+page was making a decision it could not explain on top of one it could.
+
 ### The origin and the fare come from the profile too
 
 `from` is optional: omitted, the first of the profile's `home_stations` is the

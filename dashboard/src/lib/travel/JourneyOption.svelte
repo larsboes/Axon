@@ -97,6 +97,14 @@
   </button>
 
   <div class="journey-action">
+    {#if journey.ranking}
+      <span
+        class="rank"
+        title={`ranked by your ${journey.ranking.source === "request" ? "request" : "profile"} weights`}
+      >
+        #{journey.ranking.rank}
+      </span>
+    {/if}
     <strong>
       {journey.total_price === null ? "price unknown" : `${journey.total_price.toFixed(2)} €`}
     </strong>
@@ -115,6 +123,26 @@
 
   {#if expanded}
     <div class="detail">
+      {#if journey.ranking}
+        <h4>Why it ranked here</h4>
+        <ul class="rank-factors">
+          {#each journey.ranking.factors as factor (factor.key)}
+            <li>
+              <span class="factor-label">{factor.label}</span>
+              <span class="factor-bar" aria-hidden="true">
+                <span style={`width: ${Math.round(factor.score * 100)}%`}></span>
+              </span>
+              <span class="factor-why">{factor.rationale}</span>
+              <span class="factor-weight">{Math.round(factor.weight * 100)}%</span>
+            </li>
+          {/each}
+        </ul>
+        <p class="rank-note">
+          {journey.ranking.factors.length === 4
+            ? "All four terms were measured."
+            : `${4 - journey.ranking.factors.length} term(s) could not be measured and were dropped, not scored zero -- the rest were re-normalised.`}
+        </p>
+      {/if}
       <h4>Itinerary</h4>
       <ol class="leg-list">
         {#each journey.legs as leg, index (`${journey.id}:${index}`)}
@@ -283,6 +311,66 @@
   }
 
   .dot,
+  .rank {
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    color: var(--text-tertiary);
+    letter-spacing: 0.02em;
+  }
+
+  .rank-factors {
+    list-style: none;
+    margin: 0 0 0.5rem;
+    padding: 0;
+    display: grid;
+    gap: 0.25rem;
+  }
+
+  .rank-factors li {
+    display: grid;
+    grid-template-columns: 7.5rem 4rem 1fr 2.5rem;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: var(--text-xs);
+  }
+
+  .factor-label {
+    color: var(--text-tertiary);
+  }
+
+  /* The bar shows the score the factor earned, not its weight: the weight is the
+     number on the right, and drawing the two the same way made a heavily weighted
+     factor that scored badly look like a good one. */
+  .factor-bar {
+    display: block;
+    height: 0.4rem;
+    border-radius: 999px;
+    background: var(--card-border);
+    overflow: hidden;
+  }
+
+  .factor-bar > span {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+  }
+
+  .factor-why {
+    color: var(--text-primary);
+  }
+
+  .factor-weight {
+    text-align: right;
+    color: var(--text-tertiary);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .rank-note {
+    margin: 0 0 0.75rem;
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
+  }
+
   .risk {
     display: inline !important;
     margin-left: 0.25rem;

@@ -215,10 +215,17 @@ pub const PRIORITIES: &[(&str, JourneyWeights)] = &[
 pub fn resolve_weights(
     priority: Option<&str>,
     weights: Option<&str>,
+    phrase: Option<&str>,
 ) -> Result<Option<JourneyWeights>, String> {
-    match (priority, weights) {
-        (Some(_), Some(_)) => Err("pass priority or weights, not both".into()),
-        (Some(name), None) => PRIORITIES
+    let given = [priority, weights, phrase]
+        .iter()
+        .filter(|given| given.is_some())
+        .count();
+    if given > 1 {
+        return Err("pass one of priority, weights or phrase — not more than one".into());
+    }
+    match (priority, weights, phrase) {
+        (Some(name), _, _) => PRIORITIES
             .iter()
             .find(|(key, _)| *key == name)
             .map(|(_, preset)| Some(*preset))
@@ -226,9 +233,102 @@ pub fn resolve_weights(
                 let known: Vec<&str> = PRIORITIES.iter().map(|(key, _)| *key).collect();
                 format!("unknown priority {name:?}; known: {}", known.join(", "))
             }),
-        (None, Some(spec)) => parse_weights(spec).map(Some),
-        (None, None) => Ok(None),
+        (_, Some(spec), _) => parse_weights(spec).map(Some),
+        (_, _, Some(sentence)) => resolve_phrase(sentence).map(Some),
+        (None, None, None) => Ok(None),
     }
+}
+
+/// The words a sentence uses to name a priority, and the preset each means.
+///
+/// A deterministic table rather than a model. The mapping is checkable by eye,
+/// which is the test the repo applies to anything a model would otherwise do: if
+/// the answer can be written down, write it down. German is here because the
+/// operator's own sentences are German at least as often as English, and a
+/// vocabulary that speaks only one of the two silently matches nothing in half of
+/// them.
+pub const PHRASE_WORDS: &[(&str, &str)] = &[
+    ("cheap", "cheapest"),
+    ("cheapest", "cheapest"),
+    ("price", "cheapest"),
+    ("cost", "cheapest"),
+    ("budget", "cheapest"),
+    ("billig", "cheapest"),
+    ("günstig", "cheapest"),
+    ("preis", "cheapest"),
+    ("fast", "fastest"),
+    ("fastest", "fastest"),
+    ("quick", "fastest"),
+    ("quickest", "fastest"),
+    ("shortest", "fastest"),
+    ("schnell", "fastest"),
+    ("dauer", "fastest"),
+    ("direct", "fewest_changes"),
+    ("few changes", "fewest_changes"),
+    ("no changes", "fewest_changes"),
+    ("umstieg", "fewest_changes"),
+    ("reliable", "reliable"),
+    ("reliability", "reliable"),
+    ("punctual", "reliable"),
+    ("on time", "reliable"),
+    ("zuverlässig", "reliable"),
+    ("pünktlich", "reliable"),
+    ("balanced", "balanced"),
+    ("ausgewogen", "balanced"),
+];
+
+/// A sentence, resolved to four numbers.
+///
+/// A phrase may name more than one priority — *cheap and reliable* is a normal
+/// thing to say — and the matched presets are averaged component-wise. That is
+/// deterministic and explainable, and it is better than the other honest option:
+/// refusing an ambiguity that is ordinary, in a sentence the operator would
+/// reasonably expect to work.
+///
+/// A phrase naming nothing known is refused **with the vocabulary**. A silent
+/// fallback to the profile's weights would look exactly like the sentence having
+/// been understood, which is the failure this whole file is built to avoid.
+pub fn resolve_phrase(phrase: &str) -> Result<JourneyWeights, String> {
+    let lowered = phrase.to_lowercase();
+    let mut matched: Vec<JourneyWeights> = Vec::new();
+    for (word, preset) in PHRASE_WORDS {
+        if !lowered.contains(word) {
+            continue;
+        }
+        let Some((_, weights)) = PRIORITIES.iter().find(|(name, _)| name == preset) else {
+            continue;
+        };
+        // One preset counts once however many of its words appear: "cheap" and
+        // "cheapest" in one sentence is one opinion, not two.
+        if !matched.iter().any(|seen| seen == weights) {
+            matched.push(*weights);
+        }
+    }
+    if matched.is_empty() {
+        let vocabulary: Vec<&str> = PRIORITIES.iter().map(|(name, _)| *name).collect();
+        return Err(format!(
+            "nothing in {phrase:?} names a priority; known: {}",
+            vocabulary.join(", ")
+        ));
+    }
+    let count = matched.len() as f64;
+    let averaged = JourneyWeights {
+        price: matched.iter().map(|w| w.price).sum::<f64>() / count,
+        duration: matched.iter().map(|w| w.duration).sum::<f64>() / count,
+        changes: matched.iter().map(|w| w.changes).sum::<f64>() / count,
+        reliability: matched.iter().map(|w| w.reliability).sum::<f64>() / count,
+    };
+    // Averaging weight vectors that each sum to 1.0 gives one that sums to 1.0, so
+    // this is a guard against a future preset that does not rather than a
+    // re-scaling. The sum check downstream would otherwise refuse the result of a
+    // perfectly good sentence.
+    let total = averaged.sum();
+    Ok(JourneyWeights {
+        price: averaged.price / total,
+        duration: averaged.duration / total,
+        changes: averaged.changes / total,
+        reliability: averaged.reliability / total,
+    })
 }
 
 /// `price:0.5,duration:0.2,changes:0.1,reliability:0.2`, all four, summing to 1.0.
@@ -623,9 +723,11 @@ mod tests {
 
     #[test]
     fn a_preset_resolves_to_numbers_and_an_unknown_one_names_the_known_ones() {
-        let cheapest = resolve_weights(Some("cheapest"), None).unwrap().unwrap();
+        let cheapest = resolve_weights(Some("cheapest"), None, None)
+            .unwrap()
+            .unwrap();
         assert_eq!(cheapest.price, 0.55);
-        let refusal = resolve_weights(Some("cheepest"), None).unwrap_err();
+        let refusal = resolve_weights(Some("cheepest"), None, None).unwrap_err();
         assert!(
             refusal.contains("cheapest") && refusal.contains("balanced"),
             "the refusal must name the vocabulary, got: {refusal}"
@@ -637,6 +739,7 @@ mod tests {
         let parsed = resolve_weights(
             None,
             Some("price:0.5,duration:0.2,changes:0.1,reliability:0.2"),
+            None,
         )
         .unwrap()
         .unwrap();
@@ -644,31 +747,34 @@ mod tests {
         assert_eq!(parsed.reliability, 0.2);
 
         // Missing a key.
-        let missing = resolve_weights(None, Some("price:0.5,duration:0.5")).unwrap_err();
+        let missing = resolve_weights(None, Some("price:0.5,duration:0.5"), None).unwrap_err();
         assert!(missing.contains("all four keys"), "got: {missing}");
         // Not summing to one.
         let sum = resolve_weights(
             None,
             Some("price:0.5,duration:0.5,changes:0.5,reliability:0.5"),
+            None,
         )
         .unwrap_err();
         assert!(sum.contains("sum to 1.0"), "got: {sum}");
         // An unknown key names the vocabulary.
         let unknown =
-            resolve_weights(None, Some("price:1,duration:0,changes:0,vibes:0")).unwrap_err();
+            resolve_weights(None, Some("price:1,duration:0,changes:0,vibes:0"), None).unwrap_err();
         assert!(
             unknown.contains("price, duration, changes, reliability"),
             "got: {unknown}"
         );
         // A malformed pair, and a value out of range.
-        assert!(resolve_weights(None, Some("price"))
+        assert!(resolve_weights(None, Some("price"), None)
             .unwrap_err()
             .contains("key:value"));
-        assert!(
-            resolve_weights(None, Some("price:2,duration:0,changes:0,reliability:0"))
-                .unwrap_err()
-                .contains("between 0 and 1")
-        );
+        assert!(resolve_weights(
+            None,
+            Some("price:2,duration:0,changes:0,reliability:0"),
+            None
+        )
+        .unwrap_err()
+        .contains("between 0 and 1"));
     }
 
     #[test]
@@ -678,14 +784,85 @@ mod tests {
         let refusal = resolve_weights(
             Some("cheapest"),
             Some("price:0.25,duration:0.25,changes:0.25,reliability:0.25"),
+            None,
         )
         .unwrap_err();
-        assert!(refusal.contains("not both"), "got: {refusal}");
+        assert!(refusal.contains("not more than one"), "got: {refusal}");
+    }
+
+    #[test]
+    fn a_sentence_naming_one_priority_resolves_to_that_preset() {
+        let cheapest = resolve_phrase("cheapest possible please").unwrap();
+        assert_eq!(cheapest.price, 0.55);
+        // German is in the vocabulary because the operator's own sentences are
+        // German at least as often as English, and a vocabulary that speaks one of
+        // the two silently matches nothing in half of them.
+        let schnell = resolve_phrase("so schnell wie möglich").unwrap();
+        assert_eq!(schnell.duration, 0.55);
+        assert!(resolve_phrase("pünktlich bitte").unwrap().reliability > 0.4);
+    }
+
+    #[test]
+    fn a_sentence_naming_two_priorities_averages_them() {
+        // "cheap and reliable" is a normal thing to say. Refusing the ambiguity
+        // would be the other honest option and a worse one.
+        let both = resolve_phrase("cheap and reliable").unwrap();
+        let cheapest = resolve_phrase("cheap").unwrap();
+        let reliable = resolve_phrase("reliable").unwrap();
+        assert!((both.price - (cheapest.price + reliable.price) / 2.0).abs() < 1e-9);
+        assert!(
+            (both.reliability - (cheapest.reliability + reliable.reliability) / 2.0).abs() < 1e-9
+        );
+        assert!(
+            (both.sum() - 1.0).abs() < 1e-9,
+            "the average must still sum to 1.0"
+        );
+    }
+
+    #[test]
+    fn two_words_for_one_priority_count_once() {
+        // "cheap" and "cheapest" in one sentence is one opinion, not two, and
+        // counting it twice would let a repeated word outvote a second priority.
+        let once = resolve_phrase("cheap").unwrap();
+        let twice = resolve_phrase("cheap, cheapest, budget").unwrap();
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn a_sentence_naming_nothing_known_is_refused_with_the_vocabulary() {
+        // A silent fallback to the profile's weights would look exactly like the
+        // sentence having been understood.
+        let refusal = resolve_phrase("take me somewhere nice").unwrap_err();
+        for preset in [
+            "cheapest",
+            "fastest",
+            "fewest_changes",
+            "reliable",
+            "balanced",
+        ] {
+            assert!(
+                refusal.contains(preset),
+                "the refusal must list {preset}: {refusal}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_phrase_and_a_preset_together_are_refused() {
+        let refusal = resolve_weights(Some("cheapest"), None, Some("fastest")).unwrap_err();
+        assert!(refusal.contains("not more than one"), "got: {refusal}");
+        let all_three = resolve_weights(
+            Some("cheapest"),
+            Some("price:1,duration:0,changes:0,reliability:0"),
+            Some("fastest"),
+        )
+        .unwrap_err();
+        assert!(all_three.contains("not more than one"), "got: {all_three}");
     }
 
     #[test]
     fn saying_nothing_resolves_to_nothing_so_the_profile_applies() {
-        assert_eq!(resolve_weights(None, None).unwrap(), None);
+        assert_eq!(resolve_weights(None, None, None).unwrap(), None);
     }
 
     #[test]

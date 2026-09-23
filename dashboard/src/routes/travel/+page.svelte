@@ -53,6 +53,8 @@
     scouting,
     transit,
     trips,
+    JOURNEY_PRIORITIES,
+    type JourneyOverride,
     type PersonPlaceProposal,
     type CalendarEntry,
     type CalendarCandidateVerdict,
@@ -122,7 +124,14 @@
   let deletingPlan = $state(false);
   let planFilter = $state<"upcoming" | "past" | "all">("upcoming");
   let highlightedPlanId = $state<string | null>(null);
-  let journeySort = $state<"price" | "duration" | "departure">("price");
+  // Ranked is the default because the server has the traveller's own weights and
+  // the page does not. The other three stay as manual overrides: a reader who wants
+  // cheapest-first for one glance should not have to change a preference to get it.
+  let journeySort = $state<"ranked" | "price" | "duration" | "departure">("ranked");
+  /// A preset id, or "" for the profile's usual weights.
+  let journeyPriority = $state("");
+  /// A sentence. Beats the preset, because it is the more specific thing to say.
+  let journeyPhrase = $state("");
   let expandedJourneyId = $state<string | null>(null);
   let obsidianCandidates = $state<ObsidianTripCandidate[]>([]);
   let obsidianScanning = $state(false);
@@ -548,6 +557,15 @@
     return plan.stages.find((stage) => stage.destination.id === place.id);
   }
 
+  /// Exactly one override, because the server refuses more than one and the
+  /// refusal would arrive as a failed search rather than as a UI mistake.
+  function journeyOverride(): JourneyOverride | undefined {
+    const phrase = journeyPhrase.trim();
+    if (phrase) return { phrase };
+    if (journeyPriority) return { priority: journeyPriority };
+    return undefined;
+  }
+
   async function exploreDestination(place: PlaceRef): Promise<void> {
     const plan = activePlan;
     if (!plan) return;
@@ -564,7 +582,7 @@
     const [journeyResult, imageResult, activityResult, ...eventResults] =
       await Promise.allSettled([
         canSearchTrain
-          ? transit.search(routeOrigin.id, place.id, departure)
+          ? transit.search(routeOrigin.id, place.id, departure, journeyOverride())
           : Promise.resolve<Journey[]>([]),
         loadPlaceImage(place),
         loadNearbyPlaces(place),
@@ -578,16 +596,12 @@
     ]);
 
     const notices = [...(resultForPlace?.notices ?? [])];
+    // Sliced in the order the server returned. This used to sort by price here
+    // unconditionally, which silently threw away the ranking the server had just
+    // computed from the traveller's own weights -- the page making a decision it
+    // could not explain on top of one it could.
     const journeys =
-      journeyResult.status === "fulfilled"
-        ? journeyResult.value
-            .sort(
-              (a, b) =>
-                (a.total_price ?? Number.POSITIVE_INFINITY) -
-                (b.total_price ?? Number.POSITIVE_INFINITY),
-            )
-            .slice(0, 6)
-        : [];
+      journeyResult.status === "fulfilled" ? journeyResult.value.slice(0, 6) : [];
     if (journeyResult.status === "rejected") notices.push("Connections unavailable");
     if (stageModes.includes("train") && !canSearchTrain) {
       notices.push("Select the origin and destination as stations for rail options");
@@ -1153,6 +1167,15 @@
 
   function orderedJourneys(journeys: Journey[]): Journey[] {
     return [...journeys].sort((a, b) => {
+      if (journeySort === "ranked") {
+        // The server's order, carried through. Unranked journeys sort last rather
+        // than being dropped: "the weights could not separate this" is not a
+        // reason to hide it.
+        return (
+          (a.ranking?.rank ?? Number.POSITIVE_INFINITY) -
+          (b.ranking?.rank ?? Number.POSITIVE_INFINITY)
+        );
+      }
       if (journeySort === "duration") {
         return a.total_duration_minutes - b.total_duration_minutes;
       }
@@ -1941,6 +1964,13 @@
                 <h3>Outbound journey</h3>
                 <div class="journey-sort" aria-label="Sort connections">
                   <button
+                    class:active={journeySort === "ranked"}
+                    type="button"
+                    onclick={() => (journeySort = "ranked")}
+                  >
+                    Ranked
+                  </button>
+                  <button
                     class:active={journeySort === "price"}
                     type="button"
                     onclick={() => (journeySort = "price")}
@@ -1963,6 +1993,42 @@
                   </button>
                 </div>
               </div>
+              <div class="priority-bar">
+                <span class="priority-label">Rank by</span>
+                <div class="sort-options">
+                  <button
+                    class:active={!journeyPriority && !journeyPhrase.trim()}
+                    type="button"
+                    title="the weights stored on your profile"
+                    onclick={() => {
+                      journeyPriority = "";
+                      journeyPhrase = "";
+                    }}
+                  >
+                    My usual
+                  </button>
+                  {#each JOURNEY_PRIORITIES as preset (preset.id)}
+                    <button
+                      class:active={journeyPriority === preset.id && !journeyPhrase.trim()}
+                      type="button"
+                      title={preset.hint}
+                      onclick={() => {
+                        journeyPriority = preset.id;
+                        journeyPhrase = "";
+                      }}
+                    >
+                      {preset.label}
+                    </button>
+                  {/each}
+                </div>
+                <input
+                  class="input priority-phrase"
+                  bind:value={journeyPhrase}
+                  aria-label="Rank journeys by a sentence"
+                  placeholder="or say it: cheapest, direct, schnell und zuverlässig"
+                />
+              </div>
+
               {#if selected.journeys.length === 0}
                 <p class="empty">
                   No suitable connection received.
@@ -3391,6 +3457,29 @@
 
   .result-column {
     min-width: 0;
+  }
+
+  /* The rank-by bar: the presets as buttons, then a sentence for anything they do
+     not cover. It sits above the sort control on purpose -- this decides what the
+     server ranks by, and the sort control only decides how the answer is read. */
+  .priority-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .priority-label {
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .priority-phrase {
+    flex: 1 1 16rem;
+    min-width: 12rem;
   }
 
   .journey-list,

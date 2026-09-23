@@ -35,9 +35,11 @@ const ROUTES: &[route_manifest::Route] = &[
          optional and defaults to the profile's first home station. Optional bc (25|50), \
          first_class, d_ticket carry the fare context and default from the cards the \
          profile says the traveller holds, so returned prices are discount-correct. \
-         Optional priority (cheapest|fastest|fewest_changes|reliable|balanced) or weights \
-         (price:0.5,duration:0.2,changes:0.1,reliability:0.2, summing to 1.0) override the \
-         profile's journey weights for this one search; passing both is a 400. When the \
+         Optional priority (cheapest|fastest|fewest_changes|reliable|balanced), weights \
+         (price:0.5,duration:0.2,changes:0.1,reliability:0.2, summing to 1.0) or phrase (a \
+         sentence: cheapest, direct, schnell und zuverlaessig) override the profile's journey \
+         weights for this one search; passing more than one is a 400, and a phrase naming \
+         nothing known is a 400 naming the vocabulary. When the \
          profile states journey weights, each journey gains a `ranking` with a score, its \
          rank, the weights and where they came from, and a factor per reason.",
     ),
@@ -104,6 +106,13 @@ struct RouteQuery {
     /// The explicit form: `price:0.5,duration:0.2,changes:0.1,reliability:0.2`.
     #[serde(default)]
     weights: Option<String>,
+    /// A sentence: `cheapest`, `schnell und zuverlaessig`, `direct`.
+    ///
+    /// Resolved by a deterministic vocabulary rather than a model, and refused
+    /// with that vocabulary when nothing matches. A silent fallback to the
+    /// profile's weights would look exactly like the sentence being understood.
+    #[serde(default)]
+    phrase: Option<String>,
 }
 
 impl RouteQuery {
@@ -248,9 +257,12 @@ async fn handle_search(
 ) -> Result<Json<Value>, (axum::http::StatusCode, String)> {
     // Resolved before the blocking task because it is pure, and because a bad
     // weight set is a caller error that should not cost a search.
-    let override_weights =
-        transit::ranking::resolve_weights(params.priority.as_deref(), params.weights.as_deref())
-            .map_err(|reason| (axum::http::StatusCode::BAD_REQUEST, reason))?;
+    let override_weights = transit::ranking::resolve_weights(
+        params.priority.as_deref(),
+        params.weights.as_deref(),
+        params.phrase.as_deref(),
+    )
+    .map_err(|reason| (axum::http::StatusCode::BAD_REQUEST, reason))?;
 
     let client = state.hafas_client;
     // Everything blocking happens inside one task: the search, the punctuality

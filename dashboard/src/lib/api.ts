@@ -295,15 +295,51 @@ export interface AxonStatusHealth {
   capabilities: Record<string, { up: boolean; url: string }>;
 }
 
+/**
+ * What one search asked for instead of the profile's usual weights.
+ *
+ * The server refuses more than one of these, so exactly one is sent: a phrase the
+ * traveller typed beats a preset they pressed, because it is the more specific
+ * thing to say. The names and the numbers behind them live in
+ * `capabilities/transit/src/ranking.rs` -- the UI owns the labels, the server owns
+ * the arithmetic, and a preset defined twice is how the two start disagreeing.
+ */
+export interface JourneyOverride {
+  priority?: string;
+  phrase?: string;
+}
+
+function overrideQuery(override?: JourneyOverride): string {
+  if (!override) return '';
+  if (override.phrase) return `&phrase=${encodeURIComponent(override.phrase)}`;
+  if (override.priority) return `&priority=${encodeURIComponent(override.priority)}`;
+  return '';
+}
+
+/**
+ * The presets the server knows, with the labels the page shows.
+ *
+ * `id` is the contract (`transit::ranking::PRIORITIES`); `label` is presentation.
+ * Deliberately no numbers here: the weights are the server's, and a copy of them
+ * would be a second home for the same fact.
+ */
+export const JOURNEY_PRIORITIES: { id: string; label: string; hint: string }[] = [
+  { id: 'balanced', label: 'Balanced', hint: 'no term dominates' },
+  { id: 'cheapest', label: 'Cheapest', hint: 'fare first' },
+  { id: 'fastest', label: 'Fastest', hint: 'door to door' },
+  { id: 'fewest_changes', label: 'Fewest changes', hint: 'direct where possible' },
+  { id: 'reliable', label: 'Most reliable', hint: 'measured, not fitted' },
+];
+
 export const transit = {
   suggest: (q: string) => request<Station[]>(`/api/suggest?q=${encodeURIComponent(q)}`),
   // Journey, not a narrower shape of its own: /api/search and /api/split's segments are
   // the same serialized type on the server, start_station and end_station included. The
   // old client declared a second interface without those two fields, so a caller could
   // not name where a journey actually started.
-  search: (from: string, to: string, time: string) =>
+  search: (from: string, to: string, time: string, override?: JourneyOverride) =>
     request<Journey[]>(
-      `/api/search?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&time=${encodeURIComponent(time)}`,
+      `/api/search?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&time=${encodeURIComponent(time)}${overrideQuery(override)}`,
     ),
   split: (from: string, to: string, time: string) =>
     request<SplitResult>(
@@ -482,6 +518,55 @@ export interface Journey {
   /** `arrival_punctuality.share_late_6`, flattened. Prefer the cell: it carries `n`. */
   delay_risk_score: number | null;
   arrival_punctuality?: ArrivalPunctuality | null;
+  /**
+   * How likely the whole journey holds together, from the same measured history.
+   * Absent whenever any term is unknown -- a product with a guessed factor in it
+   * is not a measurement, and rendering absence as a low risk invents one.
+   */
+  reliability?: JourneyReliability | null;
+  /**
+   * Where this journey placed against the traveller's own weights, and why.
+   *
+   * Absent when nothing has been stated on the profile, when traveler is
+   * unreachable, or when the caller overrode nothing and there is nothing to
+   * apply. Absence means the order is the backend's own -- which is why the page
+   * must not re-sort when this is present.
+   */
+  ranking?: JourneyRanking | null;
+}
+
+export interface JourneyReliability {
+  probability: number;
+  threshold_minutes: number;
+  final_leg_on_time: number;
+  min_sample: number;
+}
+
+/**
+ * The envelope is deliberately the same `{key, label, score, weight, rationale}`
+ * shape `plan_search` publishes, so a reader meets one vocabulary for "why is this
+ * ranked here" at both grains.
+ */
+export interface JourneyRanking {
+  score: number;
+  rank: number;
+  factors: RankFactor[];
+  weights: {
+    price: number;
+    duration: number;
+    changes: number;
+    reliability: number;
+  };
+  /** `profile` or `request` -- where those four numbers came from. */
+  source: string;
+}
+
+export interface RankFactor {
+  key: string;
+  label: string;
+  score: number;
+  weight: number;
+  rationale: string;
 }
 
 export interface ConnectionLeg {

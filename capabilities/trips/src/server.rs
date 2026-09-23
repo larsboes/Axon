@@ -1255,10 +1255,17 @@ async fn flight_pivot(
     Query(params): Query<FlightPivotParams>,
 ) -> ApiResponse {
     let travel = state.travel.clone();
-    let Some(from) = params.from.or_else(|| travel.home_airport.clone()) else {
+    // The origin is the traveller's, so it comes from the profile. This used to
+    // read `travel.home_airport` from this capability's own overlay config, which
+    // made it the second home for one fact and left the airports the operator
+    // named invisible to every flight route.
+    let Some(from) = params
+        .from
+        .or_else(trips::traveler_client::first_home_airport)
+    else {
         return response(
             StatusCode::BAD_REQUEST,
-            json!({"error": "no origin: pass from= or configure travel.home_airport"}),
+            json!({"error": "no origin: pass from=, or set hard.home_airports on the profile"}),
         );
     };
     if travel.pivots.is_empty() {
