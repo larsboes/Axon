@@ -159,6 +159,11 @@ async fn handle_search(
             .search_connections(&params.from, &params.to, &params.time, &params.fare())
             .map(|mut journeys| {
                 transit::punctuality::enrich(&mut journeys);
+                // After enrichment, because reliability is one of the ranking's
+                // factors and it is the only one that is not relative to the
+                // rest of the set. Absent a stated profile this does nothing at
+                // all and the array keeps the backend's own order.
+                transit::ranking::rank_journeys(&mut journeys);
                 journeys
             })
     })

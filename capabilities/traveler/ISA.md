@@ -2,7 +2,7 @@
 project: axon-traveler
 type: isa
 phase: climbing
-progress: 65
+progress: 80
 principal_stated_goal: "Upgrade the Axon travel systems into a real hyper-personalised travel planning system, usable both by me directly and with an agent."
 ---
 
@@ -168,6 +168,30 @@ its own block.
   the existing row reads every `journey.*` provenance as `default`. Falsifier: a
   consumer that ranks while `stated_journey_weights()` returns `None`.
 
+### F5 · The journey block has a reader
+
+Why: a weight block nothing reads is a schema. `capabilities/transit` orders its
+search by it, which is the first search result in this system that depends on who
+is asking.
+
+- [x] TRV-16 — transit ranks journeys by the stated journey weights and says why,
+  over HTTP and without linking this crate. Evidence: `cargo test -p transit
+  ranking::` (9 cases), and a live search that put the cheapest *and* direct
+  journey first where the backend had it third, with a factor per reason.
+  Falsifier: a ranked order with no `factors`, or a rank that is not the array
+  order.
+- [x] TRV-17 — a factor that could not be computed is dropped and the rest are
+  re-normalised, never zeroed. Evidence:
+  `an_unknown_reliability_is_dropped_and_the_rest_are_renormalised`,
+  `dropping_a_factor_does_not_lower_every_score`, and
+  `a_missing_price_drops_the_fare_factor_rather_than_scoring_it_as_free`. Seen
+  live: with `punctuality` down, every journey came back with three factors and
+  the reliability weight absent. Falsifier: a zero score for an unmeasured term.
+- [x] TRV-18 — an unstated journey block changes nothing, so the feature is off
+  until the operator makes the weights theirs. Evidence: a live search with the
+  block unstated returns no `ranking` field and the backend's own order.
+  Falsifier: a `ranking` on an unstated profile.
+
 ## Not yet specified
 
 In scope, too dim to state as a claim yet.
@@ -185,9 +209,12 @@ In scope, too dim to state as a claim yet.
   was picked is the sharpest personal signal in the store and needs no new input
   — but one plan is one observation, and a preference inferred from a single
   choice is a guess wearing a number.
-- **F5 · `plan-search-v2` reads the profile.** The consumer. Without it this
-  capability is a store with a contract and no reader, which is why it was the
-  first item in the design conversation and not the last.
+- **The destination half has no reader.** `plan-search-v2` would read the `soft`
+  block the way `transit` now reads the `journey` block: weights from the profile,
+  the reserved `FACTOR_RETROSPECTIVE` finally computed, and the revision bumped.
+  The journey half shipped first because the operator's trips are anchored — an
+  event or a person decides the city — so "which connection" is the question asked
+  far more often than "which city".
 - **F6 · Companion patterns, pseudonymously.** `places_person_places` holds
   nineteen rows, all in state `proposed`, with the person's name in a plain
   column and the same individual appearing under two spellings. The chosen shape
@@ -218,6 +245,9 @@ In scope, too dim to state as a claim yet.
 | TRV-13 | red-then-green | add the column to a hand-built old-shape table | row preserved, defaults readable | cargo | F4 |
 | TRV-14 | command | GET `/api/profile` then PUT the same body back | 2xx, not 400 | curl | F4 |
 | TRV-15 | command | read a row whose journey basis is absent | `stated_journey_weights()` is `None` | cargo | F4 |
+| TRV-16 | command | `cargo test -p transit ranking::`; a live `/api/search` | ranked order with factors | cargo + curl | F5 |
+| TRV-17 | command | rank with `punctuality` down | the reliability factor absent, rest re-normalised | curl | F5 |
+| TRV-18 | command | search with the journey block unstated | no `ranking` field, backend order | curl | F5 |
 
 ## Anti-claims
 
@@ -264,6 +294,16 @@ In scope, too dim to state as a claim yet.
   refuses nothing and the ranking carries the preference instead. That is the
   intended behaviour, not an unfinished profile.
 
+- **2026-09-23 — the journey ranking publishes the same factor envelope as
+  `plan_search`, declared twice rather than extracted to a lib.** The
+  `{key, label, score, weight, rationale}` shape is a published contract, so a
+  consumer reads one vocabulary for "why is this ranked here" at both grains. The
+  *factors* genuinely differ — a destination has a season and an event count, a
+  connection has a fare and a reliability — so a lib holding only the envelope
+  would be a shared type with two meanings and no behaviour. A third publisher is
+  when the extraction earns its keep; recorded here so the duplication is a
+  decision rather than a drift nobody noticed.
+
 - **2026-09-23 — the capability is `traveler`, and it owns the profile rather
   than the plans.** The four readers are `trips`, `transit`, `scouting` and
   `calendar`; a table in `trips` would give three of them a dependency on a peer,
@@ -284,6 +324,10 @@ In scope, too dim to state as a claim yet.
 
 ## Log
 
+- 2026-09-23 · F5 added. `capabilities/transit` orders its search by the journey
+  block, which makes it the first search result in this system that depends on who
+  is asking. The weights are the operator's to state; left unstated, the feature
+  is off and the backend's order stands.
 - 2026-09-23 · F4 added. The journey weight block, at a second grain from the
   destination weights, with the `ADD COLUMN` migration SQLite allows. The
   migration exposed a gap the tests then closed: a profile written before a block

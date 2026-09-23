@@ -157,6 +157,8 @@ Stated here rather than left to be discovered:
 - **Companion patterns are not built**, and `places_person_places` holds rows all
   in state `proposed`, with the person's name in a plain column rather than only
   in the id. `GET /api/plans` still serves `travelers`.
-- **No consumer reads the profile yet.** `plan_search` is still
-  `plan-search-v1` with its constants. Until `plan-search-v2` lands, this
-  capability is a store with a contract and no reader.
+- **One consumer reads the profile, and it is the journey half.**
+  `capabilities/transit/src/ranking.rs` reads the `journey` block over HTTP and
+  orders `/api/search` by it, dropping any factor it could not compute. The
+  *destination* half still has no reader: `plan_search` is `plan-search-v1` with
+  its constants, which is what `plan-search-v2` would change.

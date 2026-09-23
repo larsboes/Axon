@@ -747,6 +747,7 @@ mod tests {
             arrival_punctuality: None,
             reliability: None,
             unscored_legs: Vec::new(),
+            ranking: None,
         }];
 
         enrich(&mut journeys);

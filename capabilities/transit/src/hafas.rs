@@ -1236,6 +1236,7 @@ pub fn parse_journeys_from_response(body: &Value) -> Vec<Journey> {
                 // Filled by punctuality::enrich when that capability answers.
                 reliability: None,
                 unscored_legs: Vec::new(),
+                ranking: None,
                 // The real bahn.de response field is "tripId", not "id" --
                 // found via live verification while wiring this adapter into
                 // scouting (capabilities/store/README.md, Phase 2): every journey in a
@@ -1377,6 +1378,7 @@ pub fn parse_dbnav_journeys(body: &Value) -> Vec<Journey> {
             // Filled by punctuality::enrich when that capability answers.
             reliability: None,
             unscored_legs: Vec::new(),
+            ranking: None,
             id: str_field(v, "checksum"),
             start_station: first_leg.origin.clone(),
             end_station: last_leg.destination.clone(),
@@ -2069,6 +2071,7 @@ mod tests {
             journey: Journey {
                 reliability: None,
                 unscored_legs: Vec::new(),
+                ranking: None,
                 id: "j".into(),
                 start_station: station("From"),
                 end_station: station("Boundary"),
@@ -2281,6 +2284,7 @@ mod tests {
         Journey {
             reliability: None,
             unscored_legs: Vec::new(),
+            ranking: None,
             id: "j".into(),
             start_station: station("A"),
             end_station: station("B"),

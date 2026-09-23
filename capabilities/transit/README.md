@@ -178,6 +178,45 @@ their bare number (`"28510"`), so there is no label to read — the journey come
 That separates three states a bare null used to flatten: punctuality is down, punctuality
 has no cell, and nobody asked.
 
+## Ordering by the traveller's own trade-off
+
+`GET /api/search` returns the backend's own order by default, and that order is a
+judgement nobody can inspect. When `capabilities/traveler` carries a *stated*
+journey weight block, every journey gains a `ranking`: a 0..1 score, its rank, the
+weights that produced it, and one factor per reason.
+
+| Factor | Scored against |
+| --- | --- |
+| `price` | the cheapest in the same answer |
+| `duration` | the shortest in the same answer |
+| `changes` | the fewest in the same answer |
+| `reliability` | `reliability.probability`, absolute |
+
+The first three are **relative** because there is no absolute good fare: a good
+price is one that is good compared to the alternatives on this route on this day.
+The consequence is that a score is not comparable between two searches, which is
+why `weights` rides along with it rather than leaving a bare number.
+
+Reliability is **absolute** because it is already a probability, and re-scaling it
+against the set would turn "these are all reliable" into "one of these is best".
+
+**A factor that could not be computed is dropped and the rest are re-normalised.**
+A journey whose reliability is unknown does not score zero on it — "nobody measured
+this" and "this is unreliable" are different answers, and zeroing the term would
+bury a good journey for a missing measurement. The live effect is visible: with
+`punctuality` down, every journey comes back carrying three factors instead of
+four.
+
+Absence degrades, and here it degrades by doing nothing. With nothing stated on the
+profile, or `traveler` unreachable, or its body unparseable, the journeys are
+returned in the backend's own order exactly as they were before this module
+existed. A search never fails, and never slows to a crawl, for want of a
+preference.
+
+The sort is stable, so two journeys the weights cannot separate keep the backend's
+own relative order. That is the difference between ranking as a refinement and
+ranking as a reshuffle.
+
 ## What a split-ticket chain does and does not promise
 
 <!-- human-voice: ignore em_dash -->

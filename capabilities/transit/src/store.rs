@@ -842,6 +842,7 @@ mod db_tests {
         Journey {
             reliability: None,
             unscored_legs: Vec::new(),
+            ranking: None,
             id: id.into(),
             start_station: bonn.clone(),
             end_station: berlin.clone(),
@@ -999,6 +1000,7 @@ mod db_tests {
         Journey {
             reliability: None,
             unscored_legs: Vec::new(),
+            ranking: None,
             id: id.into(),
             start_station: bonn.clone(),
             end_station: dest.clone(),

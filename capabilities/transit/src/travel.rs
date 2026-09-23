@@ -111,6 +111,50 @@ pub struct Journey {
     /// query had simply never been built.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unscored_legs: Vec<UnscoredLeg>,
+    /// How this journey scored against the traveller's own weights, and why.
+    ///
+    /// Absent when nothing has been stated on the profile, when the traveller
+    /// capability is unreachable, or when its body did not parse. Those are three
+    /// states and they mean one thing to a reader: this array's order is the
+    /// backend's, which is what it was before this field existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ranking: Option<JourneyRanking>,
+}
+
+/// One journey's score against the traveller's weights, with the reasons.
+///
+/// The `{key, label, score, weight, rationale}` envelope is deliberately the same
+/// one `capabilities/trips/src/plan_search.rs` publishes, so a consumer reads one
+/// vocabulary for "why is this ranked here" across both grains. The envelope is a
+/// published contract rather than a shared fact, which is why it is declared in
+/// both places: the *factors* genuinely differ (a destination has a season and an
+/// event count; a connection has a fare and a reliability), and a lib holding only
+/// the envelope would be a shared type with two meanings. The day a third
+/// capability publishes factors is when that extraction is worth making.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JourneyRanking {
+    /// 0..1, a weighted mean over the factors that could be computed.
+    ///
+    /// Relative to the OTHER journeys in the same answer — the best of the set
+    /// scores 1.0 on each relative factor — so it is not comparable between two
+    /// searches. `weights` rides along so a reader can see the trade-off that
+    /// produced it.
+    pub score: f64,
+    /// 1 is best, and it is the order the array is returned in.
+    pub rank: usize,
+    pub factors: Vec<RankFactor>,
+    /// The weights this score was computed with, echoed so a stored score can be
+    /// told apart from one computed under different preferences.
+    pub weights: crate::ranking::JourneyWeights,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RankFactor {
+    pub key: String,
+    pub label: String,
+    pub score: f64,
+    pub weight: f64,
+    pub rationale: String,
 }
 
 /// One leg that carries no train type punctuality can be keyed on.
