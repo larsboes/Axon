@@ -209,6 +209,12 @@ In scope, too dim to state as a claim yet.
   was picked is the sharpest personal signal in the store and needs no new input
   — but one plan is one observation, and a preference inferred from a single
   choice is a guess wearing a number.
+- **Per-trip weight overrides.** The profile's journey weights are the *usual*
+  setting; a trip needs its own, settable three ways — preset buttons, a
+  per-request override on `/api/search`, and a sentence. All three resolve to the
+  same four numbers, so the resolution belongs in one place. The sentence half is
+  the `intent.rs` shape: a model proposes four numbers, a deterministic check
+  decides whether they sum to 1.0 and are in range.
 - **The destination half has no reader.** `plan-search-v2` would read the `soft`
   block the way `transit` now reads the `journey` block: weights from the profile,
   the reserved `FACTOR_RETROSPECTIVE` finally computed, and the revision bumped.
@@ -294,6 +300,29 @@ In scope, too dim to state as a claim yet.
   refuses nothing and the ranking carries the preference instead. That is the
   intended behaviour, not an unfinished profile.
 
+- **2026-09-23 — the profile holds the *usual* weights; a trip overrides them.**
+  The operator's words: *it depends on the trip, so usual settings with buttons
+  for options to choose as advanced settings in the ui to change priorities or
+  through a free text / speech input field for the trip or on the go if something
+  goes unplanned.* Three consequences, and they agree with a ruling already
+  recorded above (a constraint that depends on the trip cannot live on the
+  profile).
+
+  1. **A stored weight set is a default, not a decision about this trip.** The
+     profile answers "how do I usually travel", and a search must be able to
+     answer a different question without rewriting it. That is a per-request
+     override, not a second profile.
+  2. **Three surfaces, one contract.** Preset buttons, a per-request override, and
+     a sentence — all three have to resolve to the same four numbers, so the
+     resolution belongs in one place and the surfaces are three ways to fill it.
+  3. **A sentence is the model's job and the arithmetic is the check's.** Free text
+     to four numbers is exactly the `intent.rs` shape: the model proposes, a
+     deterministic check decides what survives — here, that they sum to 1.0 and
+     that each is in range. Nothing about it needs a model at the scoring end.
+
+  Not built. Recorded because the ranking shipped with one weight set and the
+  operator's first response to it was that one set is not enough.
+
 - **2026-09-23 — the journey ranking publishes the same factor envelope as
   `plan_search`, declared twice rather than extracted to a lib.** The
   `{key, label, score, weight, rationale}` shape is a published contract, so a
@@ -324,6 +353,10 @@ In scope, too dim to state as a claim yet.
 
 ## Log
 
+- 2026-09-23 · The journey weights stated (price and reliability first) and
+  punctuality started, so the ranking runs on four factors rather than three.
+  Recorded in Decisions: the operator's first response to a single weight set was
+  that one set is not enough — it depends on the trip.
 - 2026-09-23 · F5 added. `capabilities/transit` orders its search by the journey
   block, which makes it the first search result in this system that depends on who
   is asking. The weights are the operator's to state; left unstated, the feature

@@ -579,8 +579,8 @@
         "port": "3000"
       },
       "code": {
-        "files": 12,
-        "nodes": 335
+        "files": 13,
+        "nodes": 359
       }
     },
     {
@@ -1984,7 +1984,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 20494,
+    "nodes": 20517,
     "external": 24,
     "stale": [
       "Packs/harness/pi-packages/accordion/app/src/lib/engine/parse.ts",
