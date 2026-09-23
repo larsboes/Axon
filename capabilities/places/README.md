@@ -275,6 +275,29 @@ and reports counts.
   Quiet") stay in the export, on the same reasoning the first version applied to
   everything: nothing reads them yet, and a column with no reader is the decay
   this repo deletes rather than keeps.
+
+  **It reads the Timeline too** (2026-09-23), and that is the half that makes a
+  place history useful for planning rather than a list of places that merely exist.
+  `Semantic Location History/<year>/<year>_<MONTH>.json` holds `placeVisit` objects
+  with coordinates, a name, an address, Google's place id and a duration;
+  `activitySegment` is skipped, because a journey between two places is not a
+  place. Idempotent by place id, so a re-import adds no second visit.
+
+  **Built to the documented schema, not to a live file.** No Timeline export has
+  been staged on this machine, so every field name comes from
+  locationhistoryformat.com's reference, read 2026-09-23, and none of it has been
+  seen in the wild. The tests pin that shape so a divergence fails loudly rather
+  than importing nothing — and one thing a summary of this format gets wrong is
+  worth naming: the timestamps are ISO strings (`startTimestamp`), not the
+  `startTimestampMs` integers that search results describe.
+
+  **Two layout facts it no longer assumes.** Google moves these files between
+  exports — `Reviews.json` used to sit at the root and now sits under
+  `Maps (your places)/` — so every named file is found by walking the export, and
+  the Timeline tree is found by shape rather than by a constructed path. And
+  whatever the export holds that this does not read is **printed by name** at the
+  end of a run, because the complaint that produced this work was that a Takeout
+  can carry more than the importer reads and the run reported success either way.
 - `backfill travelers` — write `proposed` register rows from the travelers
   named on non-archived `trips.plans`, one per traveler × plan (PRD §8.2;
   proposals only, the human confirms every row per D4).

@@ -1394,6 +1394,14 @@ pub struct TakeoutReport {
     /// second visit, so `visits_existing` is the expected outcome on a re-run.
     pub visits_written: usize,
     pub visits_existing: usize,
+    /// Timeline files read, and place visits found inside them.
+    pub timeline_files: usize,
+    pub timeline_visits: usize,
+    /// Files present in the export that this importer does not read, by name.
+    ///
+    /// Named rather than counted: the whole complaint that produced this field is
+    /// that a Takeout can hold more than the importer reads and nothing said so.
+    pub files_held: Vec<String>,
 }
 
 /// The person a Maps label names, or `None` for the user's own anchors. Google
@@ -1569,13 +1577,203 @@ fn takeout_reviews(
     Ok(())
 }
 
+/// Find a named file anywhere within `depth` levels of the export root.
+///
+/// Google has moved these files between exports: `Reviews.json` used to sit at the
+/// export root and now sits under `Maps (your places)/`. Reading only the root
+/// meant an export whose layout had changed imported nothing and reported success,
+/// which is the failure this function exists to end. Bounded rather than
+/// unbounded so a huge Timeline tree cannot turn one import into a full walk.
+fn find_export_file(root: &Path, name: &str, depth: usize) -> Option<PathBuf> {
+    let direct = root.join(name);
+    if direct.is_file() {
+        return Some(direct);
+    }
+    if depth == 0 {
+        return None;
+    }
+    let mut children: Vec<PathBuf> = std::fs::read_dir(root)
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    children.sort();
+    children
+        .into_iter()
+        .find_map(|child| find_export_file(&child, name, depth - 1))
+}
+
+/// Every `<year>_<MONTH>.json` under any `Semantic Location History` directory.
+///
+/// The documented layout is `Semantic Location History/<year>/<year>_<MONTH>.json`
+/// (locationhistoryformat.com, read 2026-09-23). Found by walking rather than by
+/// constructing the path, because the year folders are whatever Google wrote.
+fn timeline_files(root: &Path) -> Vec<PathBuf> {
+    fn walk(dir: &Path, under_semantic: bool, found: &mut Vec<PathBuf>, depth: usize) {
+        if depth == 0 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.filter_map(|entry| entry.ok()) {
+            let path = entry.path();
+            if path.is_dir() {
+                let semantic = under_semantic
+                    || path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .is_some_and(|name| name.eq_ignore_ascii_case("Semantic Location History"));
+                walk(&path, semantic, found, depth - 1);
+            } else if under_semantic {
+                let is_month = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.ends_with(".json") && name.contains('_'));
+                if is_month {
+                    found.push(path);
+                }
+            }
+        }
+    }
+    let mut found = Vec::new();
+    walk(root, false, &mut found, 6);
+    found.sort();
+    found
+}
+
+/// One `Semantic Location History/<year>/<year>_<MONTH>.json`.
+///
+/// **Built to the documented schema, not to a live file.** No Timeline export has
+/// been staged on this machine, so every field name here comes from
+/// locationhistoryformat.com's reference, read 2026-09-23, and none of it has been
+/// seen in the wild. The first real export is what proves it -- and the test below
+/// pins the shape so a divergence fails loudly rather than importing nothing.
+///
+/// The shape, exactly as documented:
+///
+/// ```text
+/// { "timelineObjects": [
+///     { "placeVisit": {
+///         "location": { "latitudeE7": i64, "longitudeE7": i64,
+///                       "name": str?, "address": str?, "placeId": str? },
+///         "duration": { "startTimestamp": iso, "endTimestamp": iso } } },
+///     { "activitySegment": { ... } } ] }
+/// ```
+///
+/// Timestamps are ISO strings, NOT the `startTimestampMs` integers that a summary
+/// of this format will tell you. `activitySegment` is skipped: a journey between
+/// two places is not a place, and the two Berlin trips are already recorded as
+/// plans.
+fn takeout_timeline(
+    store: &PlacesStore,
+    body: &str,
+    today: &str,
+    report: &mut TakeoutReport,
+) -> Fallible<()> {
+    let value: Value = serde_json::from_str(body)?;
+    let Some(objects) = value.get("timelineObjects").and_then(Value::as_array) else {
+        // A month file that parses but carries no `timelineObjects` is a layout
+        // this does not know, not an empty month. Counted, never silently zero.
+        report.timeline_files += 1;
+        return Ok(());
+    };
+    report.timeline_files += 1;
+
+    for object in objects {
+        let Some(visit) = object.get("placeVisit") else {
+            continue; // activitySegment, or a key this version does not know
+        };
+        let location = visit.get("location").cloned().unwrap_or(Value::Null);
+        // E7 is degrees times 10^7, rounded. Absent coordinates make a visit
+        // unplaceable, and an unplaceable visit is not a row.
+        let Some(latitude) = location.get("latitudeE7").and_then(Value::as_i64) else {
+            continue;
+        };
+        let Some(longitude) = location.get("longitudeE7").and_then(Value::as_i64) else {
+            continue;
+        };
+        let latitude = latitude as f64 / 10_000_000.0;
+        let longitude = longitude as f64 / 10_000_000.0;
+
+        // A Timeline visit is often a coordinate with no name -- Google only names
+        // places it recognises. The address's first line is the next best label,
+        // and a bare coordinate is the last: a named row is worth more, and an
+        // unnamed one is still the fact that they were there.
+        let address = location
+            .get("address")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let name = location
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| {
+                address
+                    .as_deref()
+                    .and_then(|address| address.lines().next())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| format!("{latitude:.4},{longitude:.4}"));
+
+        // Google's own place id when present, coordinates otherwise: the id is
+        // stable across exports, a coordinate is stable enough.
+        let external_ref = location
+            .get("placeId")
+            .and_then(Value::as_str)
+            .map(|id| format!("takeout:timeline:{id}"))
+            .unwrap_or_else(|| format!("takeout:timeline:{latitude:.5},{longitude:.5}"));
+
+        let place = Place {
+            id: stable_id("place", &external_ref),
+            name,
+            kind: "venue".into(),
+            address,
+            city: None,
+            country_code: None,
+            latitude: Some(latitude),
+            longitude: Some(longitude),
+            source: "takeout-timeline".into(),
+            external_ref: Some(external_ref.clone()),
+        };
+        if store.upsert_place(&place, today)? {
+            report.places_created += 1;
+        } else {
+            report.places_existing += 1;
+        }
+
+        // No rating: a Timeline visit records that they were there, and says
+        // nothing about whether they liked it. A review says both, which is why
+        // the two sources are kept apart in `source`.
+        let visit = PlaceVisit {
+            id: stable_id("visit", &external_ref),
+            place_id: place.id.clone(),
+            visited_on: visit
+                .get("duration")
+                .and_then(|duration| duration.get("startTimestamp"))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            rating: None,
+            source: "takeout-timeline".into(),
+            external_ref: Some(external_ref),
+        };
+        if store.put_visit(&visit, today)? {
+            report.visits_written += 1;
+        } else {
+            report.visits_existing += 1;
+        }
+        report.timeline_visits += 1;
+    }
+    Ok(())
+}
+
 pub fn takeout_from(store: &PlacesStore, dir: &Path, today: &str) -> Fallible<TakeoutReport> {
     let mut report = TakeoutReport {
         dirs: 1,
         ..TakeoutReport::default()
     };
-    let labelled = dir.join("Labelled places.json");
-    if labelled.is_file() {
+    if let Some(labelled) = find_export_file(dir, "Labelled places.json", 3) {
         takeout_labelled(
             store,
             &std::fs::read_to_string(&labelled)?,
@@ -1583,8 +1781,7 @@ pub fn takeout_from(store: &PlacesStore, dir: &Path, today: &str) -> Fallible<Ta
             &mut report,
         )?;
     }
-    let reviews = dir.join("Reviews.json");
-    if reviews.is_file() {
+    if let Some(reviews) = find_export_file(dir, "Reviews.json", 3) {
         takeout_reviews(
             store,
             &std::fs::read_to_string(&reviews)?,
@@ -1592,6 +1789,36 @@ pub fn takeout_from(store: &PlacesStore, dir: &Path, today: &str) -> Fallible<Ta
             &mut report,
         )?;
     }
+
+    // The Timeline: where the operator actually went, and when. This is the half
+    // that makes a place history useful for planning rather than a list of places
+    // that merely exist.
+    for path in timeline_files(dir) {
+        let body = std::fs::read_to_string(&path)?;
+        takeout_timeline(store, &body, today, &mut report)?;
+    }
+
+    // Everything else the export holds, named so a reader can see what is not
+    // being imported rather than assuming nothing is there.
+    for entry in std::fs::read_dir(dir)?.filter_map(|entry| entry.ok()) {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string();
+        if matches!(
+            name.as_str(),
+            "Labelled places.json" | "Reviews.json" | "README.md"
+        ) {
+            continue;
+        }
+        report.files_held.push(name);
+    }
+    report.files_held.sort();
     if dir.join("Commute routes.json").is_file() {
         report.commute_files_held += 1;
     }
@@ -1632,16 +1859,21 @@ pub fn takeout(store: &PlacesStore, today: &str) -> Fallible<()> {
         total.features_skipped += report.features_skipped;
         total.visits_written += report.visits_written;
         total.visits_existing += report.visits_existing;
+        total.timeline_files += report.timeline_files;
+        total.timeline_visits += report.timeline_visits;
+        total.files_held.extend(report.files_held);
     }
     println!(
         "backfill takeout: {} export dir(s), {} labelled places, {} reviews, \
-         {} places created, {} already present, {} visits written, {} already \
-         recorded, {} register proposals written, {} already present, {} feature(s) \
-         without name or point (skipped), {} commute-route file(s) HELD — raw route \
-         traces sit against the README's \"No GPS trace\" ruling and are not imported",
+         {} timeline file(s) yielding {} place visit(s), {} places created, {} \
+         already present, {} visits written, {} already recorded, {} register \
+         proposals written, {} already present, {} feature(s) without name or point \
+         (skipped)",
         total.dirs,
         total.labelled,
         total.reviews,
+        total.timeline_files,
+        total.timeline_visits,
         total.places_created,
         total.places_existing,
         total.visits_written,
@@ -1649,8 +1881,19 @@ pub fn takeout(store: &PlacesStore, today: &str) -> Fallible<()> {
         total.proposals_written,
         total.proposals_existing,
         total.features_skipped,
-        total.commute_files_held,
     );
+    // What the export held and this did not read. Named, because the complaint
+    // that produced this line was that a Takeout can carry more than the importer
+    // reads and the run reported success either way.
+    if !total.files_held.is_empty() {
+        total.files_held.sort();
+        total.files_held.dedup();
+        println!(
+            "  not read ({} file(s)): {}",
+            total.files_held.len(),
+            total.files_held.join(", ")
+        );
+    }
     Ok(())
 }
 
@@ -1769,6 +2012,166 @@ mod tests {
         assert!(plausible_city("BAD MUSTERSTADT"));
         assert!(!plausible_city("4029357733"));
         assert!(!plausible_city("A0"));
+    }
+
+    /// The documented shape, exactly: locationhistoryformat.com's reference, read
+    /// 2026-09-23. Pinned here so a divergence fails loudly instead of importing
+    /// nothing and reporting success.
+    const TIMELINE_MONTH: &str = r#"{
+      "timelineObjects": [
+        { "activitySegment": {
+            "startLocation": { "latitudeE7": 525110000, "longitudeE7": 134260000 },
+            "endLocation": { "latitudeE7": 525050000, "longitudeE7": 134410000 },
+            "duration": { "startTimestamp": "2025-12-19T14:22:00Z",
+                          "endTimestamp": "2025-12-19T14:51:00Z" },
+            "activityType": "IN_TRAIN" } },
+        { "placeVisit": {
+            "location": { "latitudeE7": 525025000, "longitudeE7": 134430000,
+                          "placeId": "ChIJdarkmatter", "name": "DARK MATTER",
+                          "address": "Koe penicker Str. 70\n10179 Berlin" },
+            "duration": { "startTimestamp": "2025-12-21T19:05:00Z",
+                          "endTimestamp": "2025-12-21T21:40:00Z" },
+            "placeConfidence": "HIGH_CONFIDENCE",
+            "visitConfidence": 92 } },
+        { "placeVisit": {
+            "location": { "latitudeE7": 525500000, "longitudeE7": 135000000,
+                          "address": "Somewhere Without A Name\nBerlin" },
+            "duration": { "startTimestamp": "2025-12-20T11:00:00Z",
+                          "endTimestamp": "2025-12-20T12:00:00Z" } } }
+      ]
+    }"#;
+
+    fn scratch(name: &str) -> (PlacesStore, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("places-timeline-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        (PlacesStore::open(&dir.join("axon.db")).unwrap(), dir)
+    }
+
+    #[test]
+    fn a_timeline_month_yields_one_visit_per_place_visit_and_skips_journeys() {
+        // A journey between two places is not a place, and the two Berlin trips are
+        // already recorded as plans. The activitySegment must not become a row.
+        let (store, dir) = scratch("parse");
+        let mut report = TakeoutReport::default();
+        takeout_timeline(&store, TIMELINE_MONTH, "2026-09-23", &mut report).unwrap();
+
+        assert_eq!(report.timeline_files, 1);
+        assert_eq!(
+            report.timeline_visits, 2,
+            "two placeVisit objects, one journey skipped"
+        );
+        assert_eq!(report.places_created, 2);
+        assert_eq!(report.visits_written, 2);
+
+        let rows = store.visits().unwrap();
+        assert_eq!(rows.len(), 2);
+        let dark = rows
+            .iter()
+            .find(|row| row.place_name == "DARK MATTER")
+            .expect("the named visit is there by name");
+        assert_eq!(
+            dark.visited_on.as_deref(),
+            Some("2025-12-21T19:05:00Z"),
+            "the ISO startTimestamp is the date, not a millisecond integer"
+        );
+        assert_eq!(
+            dark.rating, None,
+            "a Timeline visit says nothing about liking it"
+        );
+        assert!(
+            (dark.latitude.unwrap() - 52.5025).abs() < 1e-6,
+            "E7 is degrees times 10^7"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_visit_with_no_name_is_named_by_its_address_first_line() {
+        // Google only names places it recognises, and most Timeline visits are a
+        // coordinate. A row named by its address is worth more than a bare pair.
+        let (store, dir) = scratch("unnamed");
+        let mut report = TakeoutReport::default();
+        takeout_timeline(&store, TIMELINE_MONTH, "2026-09-23", &mut report).unwrap();
+        let rows = store.visits().unwrap();
+        assert!(
+            rows.iter()
+                .any(|row| row.place_name == "Somewhere Without A Name"),
+            "the address's first line became the name: {:?}",
+            rows.iter().map(|r| &r.place_name).collect::<Vec<_>>()
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_timeline_import_is_idempotent_by_google_place_id() {
+        let (store, dir) = scratch("idempotent");
+        let mut first = TakeoutReport::default();
+        takeout_timeline(&store, TIMELINE_MONTH, "2026-09-23", &mut first).unwrap();
+        let mut again = TakeoutReport::default();
+        takeout_timeline(&store, TIMELINE_MONTH, "2026-09-23", &mut again).unwrap();
+        assert_eq!(
+            again.places_created, 0,
+            "the same export twice adds no place"
+        );
+        assert_eq!(again.visits_written, 0, "and no second visit");
+        assert_eq!(again.visits_existing, 2);
+        assert_eq!(store.visits().unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_month_file_without_timeline_objects_is_counted_and_yields_nothing() {
+        // A layout this does not know, not an empty month. The distinction matters
+        // because "imported 0" must not read as "there was nothing there".
+        let (store, dir) = scratch("unknown");
+        let mut report = TakeoutReport::default();
+        takeout_timeline(
+            &store,
+            r#"{"somethingElse": []}"#,
+            "2026-09-23",
+            &mut report,
+        )
+        .unwrap();
+        assert_eq!(report.timeline_files, 1, "the file was seen");
+        assert_eq!(report.timeline_visits, 0);
+        assert!(store.visits().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_file_google_moved_is_still_found() {
+        // `Reviews.json` sits at the export root in old exports and under
+        // `Maps (your places)/` in new ones. Reading only the root meant a
+        // relayout imported nothing and reported success.
+        let dir = std::env::temp_dir().join("places-timeline-layout");
+        let _ = std::fs::remove_dir_all(&dir);
+        let nested = dir.join("Maps (your places)").join("Saved");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("Reviews.json"), "{}").unwrap();
+
+        assert!(find_export_file(&dir, "Reviews.json", 3).is_some());
+        assert!(find_export_file(&dir, "Nowhere.json", 3).is_none());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_semantic_location_history_tree_is_walked_by_shape_not_by_path() {
+        let dir = std::env::temp_dir().join("places-timeline-walk");
+        let _ = std::fs::remove_dir_all(&dir);
+        let months = dir
+            .join("Location History")
+            .join("Semantic Location History")
+            .join("2025");
+        std::fs::create_dir_all(&months).unwrap();
+        std::fs::write(months.join("2025_DECEMBER.json"), "{}").unwrap();
+        std::fs::write(months.join("notes.txt"), "x").unwrap();
+        std::fs::write(dir.join("Reviews.json"), "{}").unwrap();
+
+        let found = timeline_files(&dir);
+        assert_eq!(found.len(), 1, "one month file, and not the stray txt");
+        assert!(found[0].ends_with("2025_DECEMBER.json"));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
