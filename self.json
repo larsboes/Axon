@@ -466,6 +466,10 @@
       }
     },
     {
+      "name": "roomplan-contract",
+      "kind": "lib"
+    },
+    {
       "name": "route-manifest",
       "kind": "lib",
       "code": {
@@ -614,7 +618,7 @@
       },
       "code": {
         "files": 23,
-        "nodes": 619
+        "nodes": 620
       }
     },
     {
@@ -1984,7 +1988,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 20593,
+    "nodes": 20609,
     "external": 24,
     "stale": [
       "Packs/harness/pi-packages/accordion/app/src/lib/engine/parse.ts",

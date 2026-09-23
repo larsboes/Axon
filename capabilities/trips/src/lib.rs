@@ -1,3 +1,4 @@
+pub mod bases;
 pub mod config;
 pub mod cost;
 pub mod finance_client;

@@ -76,6 +76,20 @@ const ROUTES: &[route_manifest::Route] = &[
          observed. Refused when the stage has no selected_option_id, because there is then \
          nothing to compare an actual against.",
     ),
+    route_manifest::Route {
+        method: "POST",
+        path: "/api/bases",
+        summary: "Where to base yourself between two fixed points. Body: { from, anchor, \
+                  from_date, anchor_date, max_candidates? }. Prices the two legs that bound \
+                  a stay -- reaching the base and leaving it for the anchor -- and reports \
+                  who the companion register already puts nearby. Ranked cheapest total \
+                  first; a base with only one leg priced has no total rather than a partial \
+                  one. Synchronous, because a fare search answers in well under a second \
+                  warm and ten candidates is about ten seconds. `stay_cents` is ALWAYS null \
+                  with a reason: no accommodation source exists, and an estimated nightly \
+                  rate would be indistinguishable from a found one.",
+        request_schema: Some(route_manifest::schema_of::<trips::bases::BaseRequest>),
+    },
     r(
         "GET",
         "/api/places",
@@ -1383,6 +1397,34 @@ async fn plan_search_start(
     }
 }
 
+/// `POST /api/bases` — where to base yourself between two fixed points.
+///
+/// Synchronous, unlike `plan-search`. That one needs a job because eight
+/// candidates at up to twenty seconds of fare search each is a two-hundred-second
+/// worst case; this prices two legs per candidate and a fare search answers in
+/// well under a second warm, so ten candidates is about ten seconds. A second copy
+/// of the job machinery for a tenth of the budget would be machinery for its own
+/// sake.
+async fn base_search(Json(body): Json<trips::bases::BaseRequest>) -> ApiResponse {
+    let outcome = tokio::task::spawn_blocking(move || {
+        let sources = trips::upstream::HttpSources::new(std::time::Instant::now());
+        trips::bases::rank_bases(&body, &sources).map_err(|error| error.to_string())
+    })
+    .await;
+
+    match outcome {
+        Ok(Ok(result)) => response(
+            StatusCode::OK,
+            serde_json::to_value(result).unwrap_or_default(),
+        ),
+        Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        Err(error) => response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
 /// `{id, state, since_ms | result | error}` — the job's tag is flattened beside
 /// its number so a reader switches on one field.
 #[derive(Serialize)]
@@ -1696,6 +1738,7 @@ fn build_router(state: AppState) -> Router {
         .route("/api/import/obsidian/all", post(import_all_obsidian))
         .route("/api/import/obsidian", post(import_obsidian))
         .route("/api/plan-search", post(plan_search_start))
+        .route("/api/bases", post(base_search))
         .route("/api/plan-search/:id", get(plan_search_status))
         .route("/api/plan-search/:id/adopt", post(plan_search_adopt))
         .route("/api/plans/:id/pack", get(list_pack).post(create_pack_list))
