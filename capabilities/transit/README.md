@@ -133,7 +133,7 @@ Each leg additionally carries its own `on_time_probability`, so a consumer can p
 the weak leg rather than render one opaque score.
 
 The point of asking at the transfer's own buffer is that the answer moves. Live on
-2026-08-19, Bonn Hbf to Berlin Hbf on 2026-09-15, the same RE5-to-ICE shape at Köln Hbf:
+2026-08-19, one regional-to-ICE journey through a single transfer at Köln Hbf:
 
 | Buffer | P(catch) | n | Final leg on time | Reliability |
 |---|---|---|---|---|
@@ -268,8 +268,8 @@ offset is dropped when the stop is read. Written from the field list instead of 
 port would have searched fine and then failed every priced pair, which surfaces as "no split
 exists" rather than as a malformed query.
 
-Verified live on 2026-08-19, Bonn Hbf to Berlin Hbf on 2026-09-15: both backends returned the
-same €73.99, the same `partial` confidence, the same 3 queried pairs with 1 unpriced, and the
+Verified live on 2026-08-19, one journey: both backends returned the
+same fare, the same `partial` confidence, the same 3 queried pairs with 1 unpriced, and the
 same `exact` train match over trains 28510 and 857.
 
 ## Reading a ticket: two backends, and what each is actually for

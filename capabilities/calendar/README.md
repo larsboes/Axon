@@ -1,7 +1,7 @@
 # calendar
 
 Axon's personal calendar layer: the source of truth for what time means on any
-given day — availability windows for travel, on‑site work in Bonn, remote‑work
+given day — availability windows for travel, on‑site work, remote‑work
 blocks, busy periods, events you're attending, rhythms that materialize those
 blocks, and (later) day‑planning detail. Open by default: an empty day carries
 no meaning, and absence is not a block.

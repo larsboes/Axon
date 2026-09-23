@@ -28,7 +28,7 @@ leg silently loses its `on_time_probability`, and any journey whose arriving leg
 transfer is regional scores no `reliability` at all — one missing term voids the whole
 product by design. `delay_risk_score` has been degrading the same way far longer; it
 only looked healthy because the journey-level lookup reads the *final* leg, which on a
-Bonn→Berlin search is an ICE and does resolve.
+long-distance search is an ICE and does resolve.
 
 Separately, punctuality exists to parse someone else's binary format, and the parser is
 the one component with no test. Its 29 unit tests never open a file, so every arrow bump
@@ -90,8 +90,10 @@ every real search takes.
 
 - [x] ISC-1 — dbnav is the default rail backend: `RailBackend::default()` is `DbNav`,
   and with `AXON_TRANSIT_BACKEND` unset a live search whose arriving transfer leg is
-  regional returns a non-null `reliability`. Evidence: Bonn→Berlin 2026-08-24T09:00,
-  `reliability.probability` 0.4374 over the RE5 + ICE 557 chain, `min_sample` 1327.
+  regional returns a non-null `reliability`. Evidence: a live search on 2026-08-24
+  returned a non-null probability over a two-train chain whose arriving leg is
+  regional. The figures are in
+  `<overlay>/data/punctuality/evidence-2026-09-23.md`.
 - [x] ISC-2 — an unresolvable train type is explicitly absent, not silent: the response
   names the legs it could not ask about, so a reader can tell "no data" from "no risk"
   and "punctuality had no cell" from "nobody asked". Evidence: same search forced to

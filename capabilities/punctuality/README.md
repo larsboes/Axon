@@ -163,9 +163,10 @@ Six minutes is DB's own punctuality threshold, which makes `share_late_6` compar
 the figures they publish about themselves.
 
 `mean_delay` is reported but is not the headline, and the reason is visible in the data:
-ICE stops at Bonn Hbf in 2026-06 have a mean of 17.6 minutes and a median of 7. Delay
-distributions are heavily right-skewed, so a handful of hour-late trains drag the mean
-somewhere no actual journey lives. An earlier prototype of this idea aggregated on
+the mean sits well above the median for every station measured here. Delay distributions
+are heavily right-skewed, so a handful of hour-late trains drag the mean somewhere no
+actual journey lives. The figures from this deployment's ingest are in
+`<overlay>/data/punctuality/evidence-2026-09-23.md`. An earlier prototype of this idea aggregated on
 `avg_delay` alone; that is the failure mode this table exists to avoid.
 
 **A cancelled stop is never counted as a punctual one.** It has no delay reading, so it

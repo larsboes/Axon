@@ -58,8 +58,8 @@ pub(super) fn place_of(entry: &Entry) -> Option<String> {
 
 /// Is this place the city the operator lives in, however the source spelled it?
 ///
-/// `home` is a bare city — `Bonn`. What sources actually write into `location`
-/// is a venue line: `Nordwerk, Bonn`, or `Beispiel Innovation Hub,
+/// `home` is a bare city. What sources actually write into `location`
+/// is a venue line: `Nordwerk, Example City`, or `Beispiel Innovation Hub,
 /// Musterdeich 15, 20097 Hamburg`. Comparing the whole line therefore never fired for
 /// exactly the entries this exists for, and two committed days at the
 /// operator's own employer, in the city they live in, were proposed as a

@@ -747,28 +747,29 @@ mod cluster_tests {
         assert!(out.unclustered[0].reason.contains("home"));
     }
 
-    /// The live 2026-08-04 miss: two committed days at the operator's own
-    /// employer, in the city they live in, proposed as a journey — because the
-    /// entries say `Nordwerk, Bonn` and home says `Bonn`.
+    /// The live miss: two committed days at the operator's own employer, in the
+    /// city they live in, proposed as a journey — because a venue line carries
+    /// the city name and the home setting is that same city. The city here is an
+    /// example; the deployment's own is in the overlay.
     #[test]
     fn a_venue_in_the_home_city_is_still_home() {
         let entries = [
             event(
                 "a",
-                "Nordwerk, Bonn",
+                "Nordwerk, Example City",
                 "2026-09-15",
                 "2026-09-16",
                 Commitment::Committed,
             ),
             event(
                 "b",
-                "Nordwerk, Bonn",
+                "Nordwerk, Example City",
                 "2026-09-16",
                 "2026-09-17",
                 Commitment::Committed,
             ),
         ];
-        let out = cluster_trips(&entries, 5, Some("Bonn")).unwrap();
+        let out = cluster_trips(&entries, 5, Some("Example City")).unwrap();
         assert!(out.drafts.is_empty(), "your own city is not a journey");
         assert_eq!(out.unclustered.len(), 2);
         assert!(out.unclustered.iter().all(|e| e.reason.contains("home")));
