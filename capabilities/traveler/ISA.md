@@ -200,6 +200,33 @@ In scope, too dim to state as a claim yet.
 
 ## Decisions
 
+- **2026-09-23 — the stated half, and why it declines every hard limit.** The
+  operator set the five weights (budget_fit .30, feasibility .25, season .15,
+  events .20, retrospective .10) and declined `earliest_departure`,
+  `latest_arrival`, `max_changes` and `min_transfer_buffer_min` — recorded as
+  `stated` with a null value, not left `default`, because "no limit" is a
+  decision and must not read as a field nobody has looked at.
+
+  The reasoning matters more than the values. On changes and transfer time: *it
+  depends on the trip, predicted delays should be taken into account, and
+  sometimes stops are useful — a toilet, buying something.* Three consequences:
+
+  1. A hard transfer floor is the wrong instrument. The measured delay history
+     `punctuality` already publishes is per station, per train type and per hour,
+     and it is a better answer than one number applied to every connection — so
+     the floor stays null and the risk is read per leg, which is what
+     `journey reliability` already does.
+  2. **A transfer is not purely a cost.** Every existing treatment counts a
+     change as risk and time lost. A stop is also an opportunity, which no field
+     in this profile can express — recorded here rather than lost, and not built.
+  3. A constraint that depends on the trip cannot live on the profile. It belongs
+     on the plan or the search request, which is where it already is
+     (`PlanSearchRequest` takes the caller's own bounds per call).
+
+  The window fields stay null for the same reason: with no limit, a search
+  refuses nothing and the ranking carries the preference instead. That is the
+  intended behaviour, not an unfinished profile.
+
 - **2026-09-23 — the capability is `traveler`, and it owns the profile rather
   than the plans.** The four readers are `trips`, `transit`, `scouting` and
   `calendar`; a table in `trips` would give three of them a dependency on a peer,
@@ -220,7 +247,10 @@ In scope, too dim to state as a claim yet.
 
 ## Log
 
-- 2026-09-23 · F3 added. The first live run over the real history published a
+- 2026-09-23 · The stated half written. Every hard limit declined, with the
+  reasoning recorded in Decisions — a transfer floor is the wrong instrument for
+  a preference that depends on the trip, and a stop is not purely a cost. F3
+  added the same day; the first live run over the real history published a
   negative lead time and two counts that under-report, both now stated in the
   response rather than discovered later. The attendance ground truth came from a
   session that narrowed the eleven past plans: nine taken, one already recorded
