@@ -11,6 +11,7 @@ use std::path::Path;
 
 use axon_store::QueryAll;
 use rusqlite::{params, Connection, OptionalExtension, Row};
+use serde::{Deserialize, Serialize};
 
 pub type Fallible<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -36,6 +37,37 @@ pub struct Place {
     pub longitude: Option<f64>,
     pub source: String,
     pub external_ref: Option<String>,
+}
+
+/// One recorded visit: the operator was here, then, and rated it so.
+///
+/// Distinct from `Place`, which describes somewhere that exists. Nothing here is
+/// a property of the place -- two people disagree about the same restaurant, and a
+/// registry that held one rating would be wrong for one of them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlaceVisit {
+    pub id: String,
+    pub place_id: String,
+    /// The export's own timestamp. Its date is what a planner asks about.
+    pub visited_on: Option<String>,
+    pub rating: Option<i64>,
+    pub source: String,
+    pub external_ref: Option<String>,
+}
+
+/// A visit joined to the place it happened at, which is the only shape a reader
+/// wants: a rating with no name is a number.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlaceVisitRow {
+    pub place_id: String,
+    pub place_name: String,
+    pub city: Option<String>,
+    pub country_code: Option<String>,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    pub visited_on: Option<String>,
+    pub rating: Option<i64>,
+    pub source: String,
 }
 
 #[derive(Debug, Clone)]
@@ -246,6 +278,29 @@ impl PlacesStore {
             -- 2015-2024 from 1995-2004, which is what the period columns say.
             -- `best_month` is deliberately not a column: the numbers are data,
             -- the rule that reads them is code (climate.rs::best_months).
+            -- One time the operator was somewhere, as THEIR record rather than
+            -- the place's.
+            --
+            -- A separate table on purpose. The review export carries a date and a
+            -- star rating, and the first version of this importer dropped both with
+            -- the reasoning that they are not place attributes -- which is right,
+            -- and is exactly why they belong in their own table instead of in a
+            -- column on the registry. A shared place has no opinion about whether
+            -- anyone liked it; a person does, and the two must not be one row.
+            CREATE TABLE IF NOT EXISTS {prefix}_place_visits (
+                id TEXT PRIMARY KEY,
+                place_id TEXT NOT NULL REFERENCES {prefix}_places(id),
+                -- The export's timestamp, kept whole: its date is what a planner
+                -- asks about, and truncating here would throw away the time.
+                visited_on TEXT,
+                rating INTEGER CHECK (rating IS NULL OR (rating >= 1 AND rating <= 5)),
+                source TEXT NOT NULL,
+                external_ref TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_{prefix}_place_visits_place
+                ON {prefix}_place_visits(place_id);
+
             CREATE TABLE IF NOT EXISTS {prefix}_climate_normals (
                 place_id TEXT NOT NULL REFERENCES {prefix}_places(id),
                 month INTEGER NOT NULL CHECK (month BETWEEN 1 AND 12),
@@ -299,6 +354,67 @@ impl PlacesStore {
             ],
         )?;
         Ok(inserted == 1)
+    }
+
+    /// Record one visit. Returns whether it was new.
+    ///
+    /// Idempotent by id, which the caller derives from `external_ref` -- for a
+    /// Takeout review that is the Google Maps URL, the one identity two exports of
+    /// the same review agree on. A re-import is therefore a no-op rather than a
+    /// second visit.
+    pub fn put_visit(&self, visit: &PlaceVisit, today: &str) -> Fallible<bool> {
+        let prefix = &self.prefix;
+        let conn = self.conn()?;
+        let inserted = conn.execute(
+            &format!(
+                "INSERT INTO {prefix}_place_visits
+                    (id, place_id, visited_on, rating, source, external_ref, created_at)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7)
+                 ON CONFLICT (id) DO NOTHING"
+            ),
+            params![
+                &visit.id,
+                &visit.place_id,
+                &visit.visited_on,
+                &visit.rating,
+                &visit.source,
+                &visit.external_ref,
+                &today,
+            ],
+        )?;
+        Ok(inserted == 1)
+    }
+
+    /// Every recorded visit, newest first, joined to the place it happened at.
+    ///
+    /// Joined rather than returned bare because a rating with no name is a number:
+    /// the reader's question is always "where was this, and what did I think".
+    pub fn visits(&self) -> Fallible<Vec<PlaceVisitRow>> {
+        let prefix = &self.prefix;
+        let conn = self.conn()?;
+        Ok(conn.query_all(
+            &format!(
+                "SELECT v.place_id, p.name, p.city, p.country_code, p.latitude, p.longitude,
+                        v.visited_on, v.rating, v.source
+                 FROM {prefix}_place_visits v
+                 JOIN {prefix}_places p ON p.id = v.place_id
+                 ORDER BY v.visited_on DESC, p.name"
+            ),
+            [],
+            |row| {
+                Ok(PlaceVisitRow {
+                    place_id: row.get(0)?,
+                    place_name: row.get(1)?,
+                    city: row.get(2)?,
+                    country_code: row.get(3)?,
+                    latitude: row.get(4)?,
+                    longitude: row.get(5)?,
+                    visited_on: row.get(6)?,
+                    rating: row.get(7)?,
+                    source: row.get(8)?,
+                })
+            },
+        )?)
     }
 
     pub fn place(&self, id: &str) -> Fallible<Option<Place>> {
@@ -962,6 +1078,111 @@ pub(crate) mod db_tests {
         let store = PlacesStore::open(&path)
             .unwrap_or_else(|e| panic!("could not open test store at {}: {e}", path.display()));
         (store, path)
+    }
+
+    fn a_venue(id: &str, name: &str) -> Place {
+        Place {
+            id: id.into(),
+            name: name.into(),
+            kind: "venue".into(),
+            address: None,
+            city: Some("Bielefeld".into()),
+            country_code: Some("DE".into()),
+            latitude: Some(52.0),
+            longitude: Some(8.5),
+            source: "takeout".into(),
+            external_ref: Some(format!("takeout:review:{id}")),
+        }
+    }
+
+    #[test]
+    fn a_visit_is_recorded_once_and_reads_back_with_its_place() {
+        // The distinction the table exists for: a place exists, a visit says the
+        // operator was there. Recording the same review twice must not produce two
+        // visits, because a re-import is the normal case.
+        let (store, _path) = open_test_store("visits");
+        let place = a_venue("place:test-cafe", "Test Café");
+        assert!(store.upsert_place(&place, "2026-09-23").unwrap());
+
+        let visit = PlaceVisit {
+            id: "visit:1".into(),
+            place_id: place.id.clone(),
+            visited_on: Some("2025-10-31T19:02:16.086083Z".into()),
+            rating: Some(5),
+            source: "takeout-review".into(),
+            external_ref: place.external_ref.clone(),
+        };
+        assert!(
+            store.put_visit(&visit, "2026-09-23").unwrap(),
+            "first write is new"
+        );
+        assert!(
+            !store.put_visit(&visit, "2026-09-23").unwrap(),
+            "a re-import is not a second visit"
+        );
+
+        let rows = store.visits().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].place_name, "Test Café",
+            "joined, so a rating has a name"
+        );
+        assert_eq!(rows[0].rating, Some(5));
+        assert_eq!(rows[0].city.as_deref(), Some("Bielefeld"));
+        assert_eq!(
+            rows[0].visited_on.as_deref(),
+            Some("2025-10-31T19:02:16.086083Z"),
+            "the export's timestamp is kept whole"
+        );
+    }
+
+    #[test]
+    fn a_visit_with_no_rating_or_date_is_still_a_visit() {
+        // Both fields are optional in the export, and a visit with neither is still
+        // the fact that the operator was there.
+        let (store, _path) = open_test_store("visits-bare");
+        let place = a_venue("place:bare", "Somewhere");
+        store.upsert_place(&place, "2026-09-23").unwrap();
+        store
+            .put_visit(
+                &PlaceVisit {
+                    id: "visit:bare".into(),
+                    place_id: place.id.clone(),
+                    visited_on: None,
+                    rating: None,
+                    source: "takeout-review".into(),
+                    external_ref: None,
+                },
+                "2026-09-23",
+            )
+            .unwrap();
+        let rows = store.visits().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].rating, None);
+        assert_eq!(rows[0].visited_on, None);
+    }
+
+    #[test]
+    fn a_rating_outside_one_to_five_is_refused_by_the_database() {
+        // The CHECK is the guard: a bad rating is a data error, and a silent 0
+        // would read as "rated it nothing" rather than as a bug.
+        let (store, _path) = open_test_store("visits-range");
+        let place = a_venue("place:range", "Rated");
+        store.upsert_place(&place, "2026-09-23").unwrap();
+        for bad in [0_i64, 6] {
+            let refused = store.put_visit(
+                &PlaceVisit {
+                    id: format!("visit:range:{bad}"),
+                    place_id: place.id.clone(),
+                    visited_on: None,
+                    rating: Some(bad),
+                    source: "takeout-review".into(),
+                    external_ref: None,
+                },
+                "2026-09-23",
+            );
+            assert!(refused.is_err(), "rating {bad} must be refused");
+        }
     }
 
     #[test]

@@ -433,7 +433,7 @@
       },
       "code": {
         "files": 13,
-        "nodes": 311
+        "nodes": 320
       }
     },
     {
@@ -613,8 +613,8 @@
         "port": "8086"
       },
       "code": {
-        "files": 22,
-        "nodes": 609
+        "files": 23,
+        "nodes": 619
       }
     },
     {
@@ -1984,7 +1984,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 20566,
+    "nodes": 20583,
     "external": 24,
     "stale": [
       "Packs/harness/pi-packages/accordion/app/src/lib/engine/parse.ts",

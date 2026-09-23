@@ -37,7 +37,17 @@ const ROUTES: &[route_manifest::Route] = &[
     r(
         "GET",
         "/api/places",
-        "List/search the place registry. Optional ?q= substring and ?kind= venue|city|station|address|region.",
+        "List/search the place registry. Optional ?q= substring and ?kind= venue|city|station|address|region. \
+         A shared registry: it holds no opinion about whether anyone liked a place.",
+    ),
+    r(
+        "GET",
+        "/api/visits",
+        "Every recorded visit: the operator was at this place, then, and rated it so. Newest \
+         first, joined to the registry so a rating arrives with a name and a coordinate. \
+         Personal records in their own table -- a star rating is not a property of a place, \
+         which is exactly why it is not a column on one. Empty until a Takeout review export \
+         has been imported (`places backfill takeout`).",
     ),
     r(
         "POST",
@@ -166,6 +176,32 @@ async fn ready(State(state): State<AppState>) -> ApiResponse {
 struct PlacesQuery {
     q: Option<String>,
     kind: Option<String>,
+}
+
+/// `GET /api/visits`.
+///
+/// Answers with an empty list rather than a 404 on a registry that has never seen
+/// a review export: "no visits recorded" is a fact, and the alternative makes a
+/// caller distinguish two states that mean the same thing to it.
+async fn list_visits(State(state): State<AppState>) -> ApiResponse {
+    let database_path = state.database_path.clone();
+    match tokio::task::spawn_blocking(move || {
+        PlacesStore::open(&database_path)
+            .and_then(|store| store.visits())
+            .map_err(|error| error.to_string())
+    })
+    .await
+    {
+        Ok(Ok(visits)) => (
+            StatusCode::OK,
+            Json(json!({
+                "count": visits.len(),
+                "visits": visits,
+            })),
+        ),
+        Ok(Err(error)) => failed(error),
+        Err(error) => failed(format!("store task failed: {error}")),
+    }
 }
 
 async fn list_places(
@@ -776,6 +812,7 @@ fn build_router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/ready", get(ready))
         .route("/api/places", get(list_places))
+        .route("/api/visits", get(list_visits))
         .route("/api/geocode", post(geocode))
         .route("/api/layers/spend", get(spend_layer))
         .route("/api/layers/travel", get(travel_layer))

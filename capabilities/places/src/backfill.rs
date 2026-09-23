@@ -19,7 +19,7 @@ use axon_store::QueryAll;
 use candidate_fingerprint::CandidateKey;
 use rusqlite::{params, OptionalExtension};
 
-use crate::store::{stable_id, validate_prefix, Fallible, Place, PlacesStore};
+use crate::store::{stable_id, validate_prefix, Fallible, Place, PlaceVisit, PlacesStore};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -1387,6 +1387,13 @@ pub struct TakeoutReport {
     pub proposals_existing: usize,
     pub commute_files_held: usize,
     pub features_skipped: usize,
+    /// Visits written from a review, and reviews already recorded.
+    ///
+    /// Counted separately from places because the two are different claims: a
+    /// place exists, a visit says the operator was there. A re-import adds no
+    /// second visit, so `visits_existing` is the expected outcome on a re-run.
+    pub visits_written: usize,
+    pub visits_existing: usize,
 }
 
 /// The person a Maps label names, or `None` for the user's own anchors. Google
@@ -1524,12 +1531,39 @@ fn takeout_reviews(
             latitude: Some(latitude),
             longitude: Some(longitude),
             source: "takeout".into(),
-            external_ref: Some(external_ref),
+            // Cloned because the visit below is keyed by the same identity: the
+            // Google Maps URL is what makes a re-import a no-op instead of a second
+            // visit.
+            external_ref: Some(external_ref.clone()),
         };
         if store.upsert_place(&place, today)? {
             report.places_created += 1;
         } else {
             report.places_existing += 1;
+        }
+
+        // The date and the rating are the OPERATOR's record, not the place's, and
+        // they were dropped here until 2026-09-23 on the reasoning that they are
+        // not place attributes -- which is correct, and is why they go in their own
+        // table. Dropping them threw away the only personal signal a review export
+        // carries: that a place was been to, when, and what it was worth.
+        let visit = PlaceVisit {
+            id: stable_id("visit", &external_ref),
+            place_id: place.id.clone(),
+            visited_on: properties
+                .get("date")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            rating: properties
+                .get("five_star_rating_published")
+                .and_then(Value::as_i64),
+            source: "takeout-review".into(),
+            external_ref: Some(external_ref.clone()),
+        };
+        if store.put_visit(&visit, today)? {
+            report.visits_written += 1;
+        } else {
+            report.visits_existing += 1;
         }
     }
     Ok(())
@@ -1596,18 +1630,22 @@ pub fn takeout(store: &PlacesStore, today: &str) -> Fallible<()> {
         total.proposals_existing += report.proposals_existing;
         total.commute_files_held += report.commute_files_held;
         total.features_skipped += report.features_skipped;
+        total.visits_written += report.visits_written;
+        total.visits_existing += report.visits_existing;
     }
     println!(
         "backfill takeout: {} export dir(s), {} labelled places, {} reviews, \
-         {} places created, {} already present, {} register proposals written, \
-         {} already present, {} feature(s) without name or point (skipped), \
-         {} commute-route file(s) HELD — raw route traces sit against the \
-         README's \"No GPS trace\" ruling and are not imported",
+         {} places created, {} already present, {} visits written, {} already \
+         recorded, {} register proposals written, {} already present, {} feature(s) \
+         without name or point (skipped), {} commute-route file(s) HELD — raw route \
+         traces sit against the README's \"No GPS trace\" ruling and are not imported",
         total.dirs,
         total.labelled,
         total.reviews,
         total.places_created,
         total.places_existing,
+        total.visits_written,
+        total.visits_existing,
         total.proposals_written,
         total.proposals_existing,
         total.features_skipped,

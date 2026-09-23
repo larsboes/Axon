@@ -261,6 +261,20 @@ and reports counts.
   human confirms every row per D4. A `Commute routes.json` in the export is
   counted and reported as held, never parsed: raw route traces sit against
   "No GPS trace" below.
+
+  **A review also writes a visit** (2026-09-23). The export carries `date` and
+  `five_star_rating_published` on every review, and this importer dropped both
+  with the reasoning that they are not place attributes — which is correct, and
+  was the wrong conclusion. They are not the *place's* attributes, so they go in
+  `places_place_visits` instead of a column on the registry: a shared place has no
+  opinion about whether anyone liked it, and a person does. Idempotent by the maps
+  URL, so a re-import adds no second visit. Read back through `GET /api/visits`,
+  joined to the registry so a rating arrives with a name and a coordinate.
+
+  The review's own text and its per-question sub-ratings ("Food 5", "Noise level:
+  Quiet") stay in the export, on the same reasoning the first version applied to
+  everything: nothing reads them yet, and a column with no reader is the decay
+  this repo deletes rather than keeps.
 - `backfill travelers` — write `proposed` register rows from the travelers
   named on non-archived `trips.plans`, one per traveler × plan (PRD §8.2;
   proposals only, the human confirms every row per D4).
