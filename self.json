@@ -601,7 +601,7 @@
       },
       "code": {
         "files": 9,
-        "nodes": 151
+        "nodes": 165
       }
     },
     {
@@ -1984,7 +1984,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 20469,
+    "nodes": 20481,
     "external": 24,
     "stale": [
       "Packs/harness/pi-packages/accordion/app/src/lib/engine/parse.ts",

@@ -11,7 +11,7 @@ pub mod store;
 
 pub use derive::{derive, DerivedTravel};
 pub use model::{
-    Anchor, HardConstraints, Pace, ProfileError, ProfileInput, Provenance, SoftWeights,
-    TravelProfile, BASIS_KEYS, DEFAULT_PROFILE_ID,
+    Anchor, HardConstraints, JourneyWeights, Pace, ProfileError, ProfileInput, Provenance,
+    SoftWeights, TravelProfile, BASIS_KEYS, DEFAULT_PROFILE_ID,
 };
 pub use store::{PutOutcome, TravelerStore};

@@ -2,7 +2,7 @@
 project: axon-traveler
 type: isa
 phase: climbing
-progress: 50
+progress: 65
 principal_stated_goal: "Upgrade the Axon travel systems into a real hyper-personalised travel planning system, usable both by me directly and with an agent."
 ---
 
@@ -136,6 +136,38 @@ read by nothing. The read is pure arithmetic over typed columns.
   `{unrecorded: 3, pair: 5, group: 4}` and no name anywhere. Falsifier: a name in
   the response.
 
+### F4 · A second grain of weights, and a migration that keeps the round trip
+
+Why: `plan-search` ranks destinations, but the operator's trips are anchored — an
+event or a person decides the city, and the question is which connection gets
+there. The destination factors do not describe a journey, so ranking one needs
+its own block.
+
+- [x] TRV-12 — `journey` is a separate weight block, and a write that does not
+  sum to 1.0 is refused naming **which** block and which four keys. Two blocks
+  with different keys means "weights must sum to 1.0" alone does not tell a
+  caller what to fix. Evidence: `the_journey_block_is_refused_with_its_own_keys_named`,
+  `the_default_weights_are_normalised`, `both_weight_blocks_are_declared_in_basis`.
+  Falsifier: a refusal that names neither the block nor its keys.
+- [x] TRV-13 — the column arrives on a deployed table without losing a row.
+  SQLite adds a column but cannot alter one, so this is an `ADD COLUMN` with a
+  `{}` default that `#[serde(default)]` reads as usable weights. Evidence:
+  `a_table_without_the_journey_column_gains_it_without_losing_a_row`, and the
+  live column added on this machine with the existing row intact. Falsifier: a
+  row lost, or a stored profile that cannot be read back.
+- [x] TRV-14 — a row written before a block existed is both readable and
+  writable. Found live: the journey column arrived and a `PUT` of the existing
+  profile was refused, because its `basis` carried no `journey.*` entries and
+  `validate` demands a provenance for every declared field. An absent entry is
+  completed as `default` on read. Evidence:
+  `a_row_written_before_a_block_existed_is_readable_and_writable_again`, and a
+  live GET-then-PUT of the stored profile answering 200. Falsifier: a `400` on a
+  body that came from `GET /api/profile`.
+- [x] TRV-15 — an unstated journey block ranks nothing, so the block's arrival
+  changed no search. Evidence: `an_unstated_journey_block_ranks_nothing`; live,
+  the existing row reads every `journey.*` provenance as `default`. Falsifier: a
+  consumer that ranks while `stated_journey_weights()` returns `None`.
+
 ## Not yet specified
 
 In scope, too dim to state as a claim yet.
@@ -182,6 +214,10 @@ In scope, too dim to state as a claim yet.
 | TRV-9 | command | derive a history whose rows postdate their trips | lead time absent or positive, never negative | cargo | F3 |
 | TRV-10 | command | derive against a database with no trips tables | 200, absences not zeros | cargo + curl | F3 |
 | TRV-11 | command | grep the live derived body for a traveller name | 0 hits | curl | F3 |
+| TRV-12 | command | PUT a profile whose journey weights sum to 1.3 | 400 naming the block and its keys | cargo + curl | F4 |
+| TRV-13 | red-then-green | add the column to a hand-built old-shape table | row preserved, defaults readable | cargo | F4 |
+| TRV-14 | command | GET `/api/profile` then PUT the same body back | 2xx, not 400 | curl | F4 |
+| TRV-15 | command | read a row whose journey basis is absent | `stated_journey_weights()` is `None` | cargo | F4 |
 
 ## Anti-claims
 
@@ -248,6 +284,11 @@ In scope, too dim to state as a claim yet.
 
 ## Log
 
+- 2026-09-23 · F4 added. The journey weight block, at a second grain from the
+  destination weights, with the `ADD COLUMN` migration SQLite allows. The
+  migration exposed a gap the tests then closed: a profile written before a block
+  existed is readable but was not writable, because its basis carried no
+  provenance for the new block's fields.
 - 2026-09-23 · The stated half written. Every hard limit declined, with the
   reasoning recorded in Decisions — a transfer floor is the wrong instrument for
   a preference that depends on the trip, and a stop is not purely a cost. F3

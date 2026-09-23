@@ -50,6 +50,10 @@ pub const BASIS_KEYS: &[&str] = &[
     "soft.season",
     "soft.events",
     "soft.retrospective",
+    "journey.price",
+    "journey.duration",
+    "journey.changes",
+    "journey.reliability",
     "interests",
     "pace",
     "anchors",
@@ -180,6 +184,58 @@ pub enum Pace {
     Packed,
 }
 
+/// The weights a *journey* ranking reads, keyed to what a connection can be
+/// scored on.
+///
+/// A second block rather than four more fields on [`SoftWeights`], because the
+/// two rank different things: `soft` ranks destinations — is this a good place
+/// to go — and this ranks connections — is this a good way to get there. One
+/// block would have to carry keys that mean nothing at one of the two grains,
+/// and `plan_search` re-normalises over the factors it could compute, so a key
+/// that never applies is not merely unused, it silently takes weight away from
+/// the ones that do.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct JourneyWeights {
+    /// Cheaper is better, scored against the cheapest journey in the same answer.
+    pub price: f64,
+    /// Shorter door to door.
+    pub duration: f64,
+    /// Fewer changes. A penalty, never a refusal: the operator declined a change
+    /// ceiling, and `min_transfer_buffer_min` is null for the same reason.
+    pub changes: f64,
+    /// `reliability.probability` when punctuality has it. A journey whose
+    /// reliability is unknown scores neither well nor badly — it is dropped from
+    /// the weighted sum and the remaining weights are re-normalised, because
+    /// "nobody measured this" is not "this is unreliable".
+    pub reliability: f64,
+}
+
+impl Default for JourneyWeights {
+    /// Deliberately NOT stated on anyone's behalf. These are a starting point for
+    /// a profile that has never been written, and `basis` says so — the ranking
+    /// only runs once `journey.price` is `stated`, so nothing here changes a
+    /// search until the operator makes it theirs.
+    fn default() -> Self {
+        Self {
+            price: 0.30,
+            duration: 0.20,
+            changes: 0.15,
+            reliability: 0.35,
+        }
+    }
+}
+
+impl JourneyWeights {
+    pub fn sum(&self) -> f64 {
+        self.price + self.duration + self.changes + self.reliability
+    }
+
+    pub fn is_normalised(&self) -> bool {
+        (self.sum() - 1.0).abs() <= WEIGHT_SUM_TOLERANCE
+    }
+}
+
 /// What a trip is anchored on. The order is the preference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -202,6 +258,8 @@ pub struct TravelProfile {
     pub id: String,
     pub hard: HardConstraints,
     pub soft: SoftWeights,
+    /// The weights a connection ranking reads. Separate grain, separate block.
+    pub journey: JourneyWeights,
     pub interests: Vec<String>,
     pub pace: Pace,
     pub anchors: Vec<Anchor>,
@@ -231,6 +289,7 @@ impl TravelProfile {
             id: DEFAULT_PROFILE_ID.to_string(),
             hard: HardConstraints::default(),
             soft: SoftWeights::default(),
+            journey: JourneyWeights::default(),
             interests: Vec::new(),
             pace: Pace::default(),
             anchors: Vec::new(),
@@ -240,17 +299,49 @@ impl TravelProfile {
         }
     }
 
-    /// The weights `plan_search` should use, or `None` when nothing has been
-    /// stated and the caller should keep its own defaults.
+    /// The destination weights `plan_search` should use, or `None` when nothing
+    /// has been stated and the caller should keep its own defaults.
     ///
     /// This is the seam that makes the upgrade safe: an unstated profile returns
     /// `None`, so a search against a fresh install ranks exactly as
     /// `plan-search-v1` did.
     pub fn stated_weights(&self) -> Option<SoftWeights> {
+        self.stated("soft.budget_fit").then_some(self.soft)
+    }
+
+    /// The journey weights a connection ranking should use, or `None` when nothing
+    /// has been stated.
+    ///
+    /// The same seam at the other grain, and the same consequence: with nothing
+    /// stated a journey search returns the backend's own order, exactly as it did
+    /// before this block existed.
+    pub fn stated_journey_weights(&self) -> Option<JourneyWeights> {
+        self.stated("journey.price").then_some(self.journey)
+    }
+
+    /// Fill in any basis key this profile does not carry.
+    ///
+    /// A row written before a block existed has no provenance for that block's
+    /// fields, and the honest reading of an absent entry is `default`: nobody
+    /// stated it. Without this such a row is readable but not writable — a GET
+    /// followed by a PUT is refused for a field the operator never touched,
+    /// which makes a migration that adds a block break the round trip. Found
+    /// live: the journey column arrived on an existing row and every write of
+    /// that profile was then rejected.
+    pub fn with_complete_basis(mut self) -> Self {
+        for key in BASIS_KEYS {
+            self.basis
+                .entry((*key).to_string())
+                .or_insert(Provenance::Default);
+        }
+        self
+    }
+
+    /// Whether one field has been established rather than left at its default.
+    fn stated(&self, key: &str) -> bool {
         self.basis
-            .get("soft.budget_fit")
-            .filter(|provenance| **provenance != Provenance::Default)
-            .map(|_| self.soft)
+            .get(key)
+            .is_some_and(|provenance| *provenance != Provenance::Default)
     }
 }
 
@@ -260,6 +351,7 @@ impl TravelProfile {
 pub struct ProfileInput {
     pub hard: HardConstraints,
     pub soft: SoftWeights,
+    pub journey: JourneyWeights,
     pub interests: Vec<String>,
     pub pace: Pace,
     pub anchors: Vec<Anchor>,
@@ -275,6 +367,7 @@ impl ProfileInput {
         Self {
             hard: profile.hard,
             soft: profile.soft,
+            journey: profile.journey,
             interests: profile.interests,
             pace: profile.pace,
             anchors: profile.anchors,
@@ -284,7 +377,16 @@ impl ProfileInput {
 
     pub fn validate(&self) -> Result<(), ProfileError> {
         if !self.soft.is_normalised() {
-            return Err(ProfileError::WeightSum(self.soft.sum()));
+            return Err(ProfileError::WeightSum {
+                block: "soft",
+                sum: self.soft.sum(),
+            });
+        }
+        if !self.journey.is_normalised() {
+            return Err(ProfileError::WeightSum {
+                block: "journey",
+                sum: self.journey.sum(),
+            });
         }
         for (field, value) in [
             ("earliest_departure", &self.hard.earliest_departure),
@@ -335,8 +437,16 @@ pub fn is_clock(value: &str) -> bool {
 /// wrong, because "invalid profile" tells a caller nothing it can act on.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ProfileError {
-    WeightSum(f64),
-    Clock { field: &'static str, value: String },
+    /// The block that failed and the sum it reached, because the two blocks have
+    /// different keys and "weights must sum to 1.0" alone does not say which four.
+    WeightSum {
+        block: &'static str,
+        sum: f64,
+    },
+    Clock {
+        field: &'static str,
+        value: String,
+    },
     UnknownBasisKey(String),
     MissingBasisKey(String),
 }
@@ -344,11 +454,13 @@ pub enum ProfileError {
 impl std::fmt::Display for ProfileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ProfileError::WeightSum(sum) => write!(
-                f,
-                "soft weights must sum to 1.0, got {sum:.6} (budget_fit, feasibility, \
-                 season, events, retrospective)"
-            ),
+            ProfileError::WeightSum { block, sum } => {
+                let keys = match *block {
+                    "journey" => "price, duration, changes, reliability",
+                    _ => "budget_fit, feasibility, season, events, retrospective",
+                };
+                write!(f, "{block} weights must sum to 1.0, got {sum:.6} ({keys})")
+            }
             ProfileError::Clock { field, value } => write!(
                 f,
                 "hard.{field} must be HH:MM in 24-hour form, got {value:?}"
@@ -405,6 +517,35 @@ mod tests {
     }
 
     #[test]
+    fn a_row_written_before_a_block_existed_is_readable_and_writable_again() {
+        // The shape a deployed row has after a new block's column is added: the
+        // block's values are present, its provenance is not.
+        let mut profile = TravelProfile::unstated();
+        profile.basis.remove("journey.price");
+        profile.basis.remove("journey.reliability");
+        assert!(profile.stated_journey_weights().is_none());
+
+        let completed = profile.clone().with_complete_basis();
+        assert_eq!(
+            completed.basis.get("journey.price"),
+            Some(&Provenance::Default),
+            "an absent entry means nobody stated it"
+        );
+
+        // And it now survives the round trip that used to be refused.
+        let input = ProfileInput {
+            hard: completed.hard,
+            soft: completed.soft,
+            journey: completed.journey,
+            interests: completed.interests,
+            pace: completed.pace,
+            anchors: completed.anchors,
+            basis: completed.basis,
+        };
+        input.validate().unwrap();
+    }
+
+    #[test]
     fn a_basis_that_omits_a_field_is_refused_rather_than_defaulted() {
         let mut input = ProfileInput::unstated();
         input.basis.remove("hard.max_changes");
@@ -429,7 +570,10 @@ mod tests {
         let mut input = ProfileInput::unstated();
         input.soft.events = 0.90;
         match input.validate() {
-            Err(ProfileError::WeightSum(sum)) => assert!((sum - 1.70).abs() < 1e-9),
+            Err(ProfileError::WeightSum { block, sum }) => {
+                assert_eq!(block, "soft");
+                assert!((sum - 1.70).abs() < 1e-9);
+            }
             other => panic!("expected a weight-sum refusal, got {other:?}"),
         }
     }
@@ -437,6 +581,57 @@ mod tests {
     #[test]
     fn the_default_weights_are_normalised() {
         assert!(SoftWeights::default().is_normalised());
+        assert!(JourneyWeights::default().is_normalised());
+    }
+
+    #[test]
+    fn the_journey_block_is_refused_with_its_own_keys_named() {
+        // Two blocks with different keys means "weights must sum to 1.0" alone
+        // does not tell a caller which four numbers to fix.
+        let mut input = ProfileInput::unstated();
+        input.journey.changes = 0.5;
+        match input.validate() {
+            Err(ProfileError::WeightSum { block, .. }) => assert_eq!(block, "journey"),
+            other => panic!("expected a journey weight refusal, got {other:?}"),
+        }
+        let message = ProfileError::WeightSum {
+            block: "journey",
+            sum: 1.3,
+        }
+        .to_string();
+        assert!(
+            message.contains("price, duration, changes, reliability"),
+            "the refusal must name the four keys, got: {message}"
+        );
+    }
+
+    #[test]
+    fn an_unstated_journey_block_ranks_nothing() {
+        // The same seam as the destination weights, at the other grain: with
+        // nothing stated a journey search keeps the backend's own order.
+        let mut profile = TravelProfile::unstated();
+        assert!(profile.stated_journey_weights().is_none());
+        profile
+            .basis
+            .insert("journey.price".into(), Provenance::Stated);
+        assert!(profile.stated_journey_weights().is_some());
+    }
+
+    #[test]
+    fn both_weight_blocks_are_declared_in_basis() {
+        // A block whose keys are absent from BASIS_KEYS would be written with no
+        // provenance at all, and `validate` would refuse every write.
+        for key in [
+            "journey.price",
+            "journey.duration",
+            "journey.changes",
+            "journey.reliability",
+        ] {
+            assert!(BASIS_KEYS.contains(&key), "{key} is not in BASIS_KEYS");
+        }
+        let input = ProfileInput::unstated();
+        input.validate().unwrap();
+        assert_eq!(input.basis.len(), BASIS_KEYS.len());
     }
 
     #[test]

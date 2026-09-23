@@ -30,14 +30,22 @@ travelling" to live, and a reason for a solver to ask.
 
 ## The profile
 
-Five parts, and every field carries its provenance:
+Six parts, and every field carries its provenance:
 
 - **`hard`** — limits, not trade-offs. `earliest_departure`, `latest_arrival`,
   `max_changes`, `min_transfer_buffer_min`, `modes`, `avoid_overnight_travel`,
   `home_station`, `home_airport`, `cards`.
-- **`soft`** — the ranking weights, keyed **exactly** as `plan_search`'s factors
-  are: `budget_fit`, `feasibility`, `season`, `events`, `retrospective`. They
-  must sum to 1.0 and a write that does not is refused with the sum named.
+- **`soft`** — the *destination* ranking weights, keyed **exactly** as
+  `plan_search`'s factors are: `budget_fit`, `feasibility`, `season`, `events`,
+  `retrospective`. They must sum to 1.0 and a write that does not is refused
+  with the block and the sum named.
+- **`journey`** — the *connection* ranking weights: `price`, `duration`,
+  `changes`, `reliability`. A separate block because the two rank different
+  things — is this a good place to go, versus is this a good way to get there —
+  and one block would carry keys that mean nothing at one of the grains.
+  `plan_search` re-normalises over the factors it could compute, so a key that
+  never applies does not merely go unused: it silently takes weight from the
+  ones that do.
 - **`interests`** — free text, matched against `scouting`'s already-scored
   opportunities.
 - **`pace`** — `slow` | `balanced` | `packed`.
@@ -90,13 +98,19 @@ already makes between "no evidence" and "evidence that says zero".
 
 ## Absence degrades, it never fails
 
-The whole upgrade rests on one seam: `TravelProfile::stated_weights()` returns
-`None` when nothing has been stated, and a consumer that gets `None` keeps its
-own defaults. A search against a fresh install therefore ranks exactly as
-`plan-search-v1` did, and a search against a traveller capability that is down
-behaves the same way. This is the rule `capabilities/punctuality` already states
-for an unscored leg, applied to a whole capability: a missing profile is not a
-reason for a journey search to fail.
+The whole upgrade rests on two seams, one per grain:
+`TravelProfile::stated_weights()` and `stated_journey_weights()` return `None`
+when nothing has been stated, and a consumer that gets `None` keeps its own
+defaults. A search against a fresh install therefore ranks exactly as
+`plan-search-v1` did and returns journeys in the backend's own order, and a
+search against a traveller capability that is down behaves the same way. This is
+the rule `capabilities/punctuality` already states for an unscored leg, applied
+to a whole capability: a missing profile is not a reason for a journey search to
+fail.
+
+It is also why adding the `journey` block changed no behaviour on the day it
+landed. The column arrived on an existing row with every `journey.*` provenance
+reading `default`, so nothing was stated and nothing ranked.
 
 ## Decisions
 

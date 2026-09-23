@@ -92,6 +92,7 @@ impl TravelerStore {
                 id          TEXT PRIMARY KEY,
                 hard        TEXT NOT NULL,
                 soft        TEXT NOT NULL,
+                journey     TEXT NOT NULL,
                 interests   TEXT NOT NULL,
                 pace        TEXT NOT NULL,
                 anchors     TEXT NOT NULL,
@@ -100,6 +101,36 @@ impl TravelerStore {
                 updated_at  TEXT NOT NULL
             );
             "
+        ))?;
+        Self::add_journey_column(conn, prefix)?;
+        Ok(())
+    }
+
+    /// Add the journey weight block to a table that predates it.
+    ///
+    /// SQLite can add a column but cannot alter one, so this is the easy half of
+    /// the migration `capabilities/trips` needed for `not_taken`: no rebuild, no
+    /// copy, no temporary table. The default is `{}`, which `JourneyWeights`'s
+    /// `#[serde(default)]` reads as the built-in values — so an existing row keeps
+    /// working and its basis still says `default`, which is the truth: nobody has
+    /// stated a journey weight on this machine yet.
+    ///
+    /// Idempotent, and a no-op on a fresh file because the `CREATE` above has
+    /// already written the column. The test is `pragma_table_info` rather than a
+    /// version number, for the same reason `trips` tests its stored DDL: the
+    /// column IS the fact being asked about.
+    fn add_journey_column(conn: &Connection, prefix: &str) -> Fallible<()> {
+        let table = format!("{prefix}_profiles");
+        let present: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name = 'journey')",
+            params![&table],
+            |row| row.get(0),
+        )?;
+        if present {
+            return Ok(());
+        }
+        conn.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN journey TEXT NOT NULL DEFAULT '{{}}';"
         ))?;
         Ok(())
     }
@@ -116,14 +147,19 @@ impl TravelerStore {
         let row = conn
             .query_row(
                 &format!(
-                    "SELECT id, hard, soft, interests, pace, anchors, basis, revision, updated_at
+                    "SELECT id, hard, soft, journey, interests, pace, anchors, basis, revision,
+                            updated_at
                      FROM {prefix}_profiles WHERE id = ?1"
                 ),
                 params![id],
                 row_to_profile,
             )
             .optional()?;
-        Ok(row)
+        // A row written before a block existed has no provenance for that
+        // block, so the read completes it. The alternative — refusing the write
+        // instead — would mean a migration that adds a block silently makes
+        // every existing profile un-editable.
+        Ok(row.map(TravelProfile::with_complete_basis))
     }
 
     /// Every stored profile id, ordered so two runs agree.
@@ -179,11 +215,12 @@ impl TravelerStore {
         tx.execute(
             &format!(
                 "INSERT INTO {prefix}_profiles
-                     (id, hard, soft, interests, pace, anchors, basis, revision, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, strftime('{stamp}','now'))
+                     (id, hard, soft, journey, interests, pace, anchors, basis, revision, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, strftime('{stamp}','now'))
                  ON CONFLICT(id) DO UPDATE SET
                      hard = excluded.hard,
                      soft = excluded.soft,
+                     journey = excluded.journey,
                      interests = excluded.interests,
                      pace = excluded.pace,
                      anchors = excluded.anchors,
@@ -196,6 +233,7 @@ impl TravelerStore {
                 id,
                 serde_json::to_string(&input.hard)?,
                 serde_json::to_string(&input.soft)?,
+                serde_json::to_string(&input.journey)?,
                 serde_json::to_string(&input.interests)?,
                 serde_json::to_string(&input.pace)?,
                 serde_json::to_string(&input.anchors)?,
@@ -238,12 +276,13 @@ fn row_to_profile(row: &Row<'_>) -> rusqlite::Result<TravelProfile> {
         id: row.get(0)?,
         hard: axon_store::json_column(row, 1)?,
         soft: axon_store::json_column(row, 2)?,
-        interests: axon_store::json_column(row, 3)?,
-        pace: axon_store::json_column(row, 4)?,
-        anchors: axon_store::json_column(row, 5)?,
-        basis: axon_store::json_column(row, 6)?,
-        revision: row.get(7)?,
-        updated_at: row.get(8)?,
+        journey: axon_store::json_column(row, 3)?,
+        interests: axon_store::json_column(row, 4)?,
+        pace: axon_store::json_column(row, 5)?,
+        anchors: axon_store::json_column(row, 6)?,
+        basis: axon_store::json_column(row, 7)?,
+        revision: row.get(8)?,
+        updated_at: row.get(9)?,
     })
 }
 
@@ -385,6 +424,46 @@ mod tests {
             vec!["default".to_string(), "second".to_string()]
         );
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_table_without_the_journey_column_gains_it_without_losing_a_row() {
+        // The deployed shape: a profile table written before the journey block
+        // existed. SQLite adds a column but cannot alter one, so this is an
+        // ADD COLUMN rather than the table rebuild trips needed — and the default
+        // `{{}}` has to deserialize into usable weights or every existing row
+        // would fail to read after the upgrade.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE traveler_profiles (
+                id TEXT PRIMARY KEY, hard TEXT NOT NULL, soft TEXT NOT NULL,
+                interests TEXT NOT NULL, pace TEXT NOT NULL, anchors TEXT NOT NULL,
+                basis TEXT NOT NULL, revision INTEGER NOT NULL, updated_at TEXT NOT NULL
+            );
+            INSERT INTO traveler_profiles
+                VALUES ('default', '{}', '{}', '[]', '\"balanced\"', '[]', '{}', 1, 'then');",
+        )
+        .unwrap();
+
+        TravelerStore::add_journey_column(&conn, "traveler").unwrap();
+
+        let (journey, revision): (String, u32) = conn
+            .query_row(
+                "SELECT journey, revision FROM traveler_profiles WHERE id = 'default'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(revision, 1, "the row survived the migration");
+        assert_eq!(journey, "{}");
+        let parsed: crate::model::JourneyWeights = serde_json::from_str(&journey).unwrap();
+        assert!(
+            parsed.is_normalised(),
+            "an existing row must read back as usable weights, not as a broken one"
+        );
+
+        // Idempotent: a second call sees the column and does nothing.
+        TravelerStore::add_journey_column(&conn, "traveler").unwrap();
     }
 
     #[test]
