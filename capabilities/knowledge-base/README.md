@@ -54,10 +54,41 @@ because those strings are tar member names as well as sources.
 
 ## Rehearsed
 
-2026-08-29, and it is the only reason any of the above is a claim rather than a hope:
+**2026-09-23, and it closed D10.** The archive is 4,843,575,394 bytes, `blocks=9460112` (on this
+machine, not an iCloud stub), `flags=-`, and its sha256 matches its receipt byte for byte. It was
+restored into an isolated destination and compared against the live vault file by file:
+**13,436 files and 2,848 markdown notes, zero content differences, zero files on one side only.**
+
+Getting there required fixing two defects, and both are worth knowing because each made a
+previous success claim false:
+
+1. **The producer's link guard never worked.** `verify_archive` in `tools/backup.sh` read
+   `if printf … | grep -q '^[lhbcps]'`. `-q` exits at the first match, which closes the pipe while
+   the writer is still going, the writer dies on SIGPIPE, and `set -o pipefail` makes the pipeline
+   report **141 — so a match evaluated as false**. Measured on this archive: exit 141 with
+   pipefail, 0 without. The guard shipped the archive it exists to refuse, and its only trace was
+   a `printf: write error: Broken pipe` that reads like noise. Every archive since 2026-08-29 was
+   unchecked. It now captures the offending members first, without `-q` and without `head`, and
+   `tools/backup-archive-guard.test.sh` drives the real extracted function under pipefail.
+2. **The archive did contain a link.** `Projects/Bachelor-Thesis/Kolloquium/Assets/revision-build/node_modules`
+   points into `~/.cache/codex-runtimes/` — build residue from a runtime that built inside the
+   vault, and the only symlink in the vault outside `.obsidian/plugin-backups/`. One link is enough
+   to make the whole archive unrestorable, so it is excluded by exact path. The exclusion is
+   deliberately not a blanket `node_modules` pattern: a backup that silently drops content is worse
+   than one that refuses.
+
+A third, smaller defect surfaced while fixing the second, and it is the same class: `backup_exclude`
+written as a **multi-line** array parses as *empty*, because `tools/lib/toml.sh`'s `toml_array`
+greps a single line. The exclusion vanished, the archive carried all 20 symlinks, and the fixed
+guard refused the run instead of shipping it — which is how it was found. The array is one line,
+with the reason beside it.
+
+**2026-08-29**, and it is the only reason any of the above was a claim rather than a hope:
 704,596,192 bytes shipped, fetched back, restored into an isolated destination, and compared
 against the live vault — **2,168 notes, 14,878,214 bytes, zero content differences**.
 
 Eleven filenames differ in Unicode normalisation only (NFD on APFS, NFC through tar). Harmless on
 macOS, which is normalisation-insensitive; worth knowing before restoring onto Linux, where those
-eleven names would differ byte-wise and Obsidian's wikilinks to them would not resolve.
+eleven names would differ byte-wise and Obsidian's wikilinks to them would not resolve. The
+2026-09-23 comparison normalises both sides to NFC and found no such difference, which is the
+confirmation that the earlier eleven were cosmetic.

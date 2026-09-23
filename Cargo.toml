@@ -25,6 +25,7 @@ members = [
     "libs/inference",
     "libs/markdown-root",
     "libs/route-manifest",
+    "libs/roomplan-contract",
     "libs/station-time",
     "libs/summarize",
     # A tool, not a capability: operator machinery lives in tools/ (on-placement.md), and its

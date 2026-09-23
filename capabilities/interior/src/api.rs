@@ -15,7 +15,9 @@ use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 struct AppState {
@@ -51,6 +53,26 @@ const ROUTES: &[route_manifest::Route] = &[
         "GET",
         "/api/media/*pfad",
         "Ein Bild aus dem Medienverzeichnis des Overlays. Nur von dort, und nur auf Anfrage.",
+    ),
+    r(
+        "GET",
+        "/api/roomplan/reference",
+        "Die aktuellste native RoomPlan-Referenz als Metadaten, ohne absolute Pfade.",
+    ),
+    r(
+        "GET",
+        "/api/roomplan/asset",
+        "Die aktuellste native RoomPlan-Referenz als unveraenderte USDZ-Datei.",
+    ),
+    r(
+        "GET",
+        "/api/roomplan/revisions",
+        "Synchronisierte semantische RoomPlan-Revisionen fuer den Vergleich.",
+    ),
+    r(
+        "POST",
+        "/api/roomplan/revisions/:revision_id/review",
+        "Eine RoomPlan-Revision annehmen oder ablehnen, ohne room.toml zu aendern.",
     ),
     r(
         "GET",
@@ -687,6 +709,223 @@ async fn api_put_layout(
 /// Handler im Repo, der ein ganzes Bild liest, und ein `std::fs::read` in einem `async fn` haelt
 /// einen Worker-Thread der Laufzeit an, statt nur diese eine Anfrage warten zu lassen. Die
 /// Pfadpruefung bleibt davon unberuehrt: `canonicalize` und `starts_with` sagen dasselbe.
+async fn latest_roomplan_capture(
+    flat: &str,
+) -> Result<(PathBuf, PathBuf, PathBuf), (StatusCode, String)> {
+    let root = crate::model::data_dir()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .join("captures")
+        .join(flat);
+    let mut entries = tokio::fs::read_dir(&root).await.map_err(|_| {
+        (
+            StatusCode::NOT_FOUND,
+            "keine RoomPlan-Aufnahmen".to_string(),
+        )
+    })?;
+    let mut dates = Vec::new();
+    while let Some(entry) = entries.next_entry().await.map_err(boom)? {
+        if entry.file_type().await.map_err(boom)?.is_dir() {
+            dates.push(entry.path());
+        }
+    }
+    dates.sort();
+    for directory in dates.into_iter().rev() {
+        let asset = directory.join("captured-room.usdz");
+        let observation = directory.join("observation.json");
+        if tokio::fs::try_exists(&asset).await.map_err(boom)?
+            && tokio::fs::try_exists(&observation).await.map_err(boom)?
+        {
+            return Ok((directory, asset, observation));
+        }
+    }
+    Err((
+        StatusCode::NOT_FOUND,
+        "keine vollstaendige RoomPlan-Aufnahme".to_string(),
+    ))
+}
+
+async fn api_roomplan_reference(
+    State(s): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let (directory, asset, observation) = latest_roomplan_capture(&s.flat).await?;
+    let observation: serde_json::Value =
+        serde_json::from_slice(&tokio::fs::read(&observation).await.map_err(boom)?)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let manifest_path = directory.join("sync-manifest.json");
+    let manifest = if tokio::fs::try_exists(&manifest_path).await.map_err(boom)? {
+        Some(
+            serde_json::from_slice::<serde_json::Value>(
+                &tokio::fs::read(manifest_path).await.map_err(boom)?,
+            )
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
+        )
+    } else {
+        None
+    };
+    let bytes = tokio::fs::read(&asset).await.map_err(boom)?;
+    let sha256 = format!("{:x}", Sha256::digest(&bytes));
+    Ok(Json(serde_json::json!({
+        "flat": s.flat,
+        "status": "raw-only",
+        "revision": manifest.as_ref().and_then(|m| m.get("revision_id")),
+        "asset": {
+            "format": "usdz",
+            "byte_length": bytes.len(),
+            "sha256": sha256,
+            "url": "/interior/api/roomplan/asset"
+        },
+        "observation": observation,
+        "manifest": manifest,
+    })))
+}
+
+async fn api_roomplan_asset(
+    State(s): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let (_, asset, _) = latest_roomplan_capture(&s.flat).await?;
+    let bytes = tokio::fs::read(asset).await.map_err(boom)?;
+    Ok((
+        [(axum::http::header::CONTENT_TYPE, "model/vnd.usdz+zip")],
+        bytes,
+    ))
+}
+
+async fn roomplan_revision_drafts(
+    flat: &str,
+) -> Result<Vec<serde_json::Value>, (StatusCode, String)> {
+    let root = crate::model::data_dir()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .join("captures")
+        .join(flat);
+    if !tokio::fs::try_exists(&root).await.map_err(boom)? {
+        return Ok(Vec::new());
+    }
+    let mut dates = tokio::fs::read_dir(&root).await.map_err(boom)?;
+    let mut drafts = Vec::new();
+    while let Some(date) = dates.next_entry().await.map_err(boom)? {
+        if !date.file_type().await.map_err(boom)?.is_dir() {
+            continue;
+        }
+        let direct = date.path().join("draft.json");
+        if tokio::fs::try_exists(&direct).await.map_err(boom)? {
+            drafts.push(read_json_file(&direct).await?);
+        }
+        let revisions = date.path().join("revisions");
+        if !tokio::fs::try_exists(&revisions).await.map_err(boom)? {
+            continue;
+        }
+        let mut entries = tokio::fs::read_dir(revisions).await.map_err(boom)?;
+        while let Some(entry) = entries.next_entry().await.map_err(boom)? {
+            if !entry.file_type().await.map_err(boom)?.is_dir() {
+                continue;
+            }
+            let draft = entry.path().join("draft.json");
+            if tokio::fs::try_exists(&draft).await.map_err(boom)? {
+                drafts.push(read_json_file(&draft).await?);
+            }
+        }
+    }
+    drafts.sort_by(|left, right| {
+        left.get("created_at")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .cmp(
+                right
+                    .get("created_at")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(""),
+            )
+    });
+    Ok(drafts)
+}
+
+async fn read_json_file(path: &std::path::Path) -> Result<serde_json::Value, (StatusCode, String)> {
+    serde_json::from_slice(&tokio::fs::read(path).await.map_err(boom)?)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
+async fn api_roomplan_revisions(
+    State(s): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    Ok(Json(serde_json::json!({
+        "flat": s.flat,
+        "revisions": roomplan_revision_drafts(&s.flat).await?,
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct RoomPlanReviewRequest {
+    decision: String,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+async fn api_roomplan_review(
+    State(s): State<Arc<AppState>>,
+    Path(revision_id): Path<String>,
+    Json(request): Json<RoomPlanReviewRequest>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    if !matches!(request.decision.as_str(), "accept" | "reject") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "decision must be accept or reject".to_string(),
+        ));
+    }
+    let root = crate::model::data_dir()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .join("captures")
+        .join(&s.flat);
+    let mut dates = tokio::fs::read_dir(&root).await.map_err(|_| {
+        (
+            StatusCode::NOT_FOUND,
+            "keine RoomPlan-Aufnahmen".to_string(),
+        )
+    })?;
+    while let Some(date) = dates.next_entry().await.map_err(boom)? {
+        if !date.file_type().await.map_err(boom)?.is_dir() {
+            continue;
+        }
+        let mut candidates = Vec::new();
+        let direct = date.path().join("draft.json");
+        if tokio::fs::try_exists(&direct).await.map_err(boom)? {
+            candidates.push(direct);
+        }
+        let revisions = date.path().join("revisions");
+        if tokio::fs::try_exists(&revisions).await.map_err(boom)? {
+            let mut entries = tokio::fs::read_dir(revisions).await.map_err(boom)?;
+            while let Some(entry) = entries.next_entry().await.map_err(boom)? {
+                if entry.file_type().await.map_err(boom)?.is_dir() {
+                    candidates.push(entry.path().join("draft.json"));
+                }
+            }
+        }
+        for draft_path in candidates {
+            if !tokio::fs::try_exists(&draft_path).await.map_err(boom)? {
+                continue;
+            }
+            let draft = read_json_file(&draft_path).await?;
+            if draft.get("draft_id").and_then(serde_json::Value::as_str)
+                != Some(revision_id.as_str())
+            {
+                continue;
+            }
+            let review = serde_json::json!({
+                "decision": request.decision,
+                "note": request.note,
+            });
+            let review_path = draft_path.with_file_name("review.json");
+            let bytes = serde_json::to_vec_pretty(&review)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            tokio::fs::write(review_path, bytes).await.map_err(boom)?;
+            return Ok(Json(review));
+        }
+    }
+    Err((
+        StatusCode::NOT_FOUND,
+        "RoomPlan-Revision nicht gefunden".to_string(),
+    ))
+}
+
 async fn api_media(Path(pfad): Path<String>) -> Result<impl IntoResponse, (StatusCode, String)> {
     let wurzel = crate::model::data_dir()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
@@ -959,6 +1198,13 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/flats", get(api_flats))
         .route("/api/inventory", get(api_inventory))
         .route("/api/media/*pfad", get(api_media))
+        .route("/api/roomplan/reference", get(api_roomplan_reference))
+        .route("/api/roomplan/asset", get(api_roomplan_asset))
+        .route("/api/roomplan/revisions", get(api_roomplan_revisions))
+        .route(
+            "/api/roomplan/revisions/:revision_id/review",
+            post(api_roomplan_review),
+        )
         .route("/api/wishlist", get(api_wishlist))
         .route("/api/placements/:flat", get(api_placements))
         .route("/api/items", post(api_post_item))

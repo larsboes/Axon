@@ -140,12 +140,22 @@ describe("a value that is already a step is written as the step", () => {
 
 describe("the off-scale literals are a ceiling, not a target", () => {
   /**
-   * 518, counted 2026-09-08 after the substitution above.
+   * 518, counted 2026-09-08 after the substitution above. Raised to 522 on 2026-09-23.
    *
    * Lower it when you tokenise one. Raising it is a decision, and it should read as one in
    * the diff — which is the whole reason the number is here rather than derived.
+   *
+   * 2026-09-23: +4, all of them in the two new native-capture panels
+   * (`lib/interior/RoomCapturePanel.svelte`: 1.35rem, .88rem; and
+   * `lib/interior/RoomPlanRevisionReview.svelte`: 1rem, .88rem, .8rem). Not tokenised on
+   * purpose: every one of those values sits BETWEEN two steps (0.8rem against 0.8125, 1.35rem
+   * against 1.3125, 1rem equidistant between 0.9375 and 1.0625), so substituting the nearest
+   * step is the silent redesign this file exists to refuse. They are also the app's existing
+   * house pattern rather than a new habit — `routes/interior/+page.svelte` alone carries fifteen
+   * of the same shape. The ratchet is raised because the panels are new surfaces, and the
+   * right fix is a typography decision for §8.1, not four literals swapped to the nearest name.
    */
-  const BASELINE = 518;
+  const BASELINE = 522;
 
   function offScale(): string[] {
     const found: string[] = [];

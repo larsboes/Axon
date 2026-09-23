@@ -1363,8 +1363,10 @@
       /* The cap goes on the GRID, not on the tracks. Capping the first track with
        * `minmax(0, 68rem)` plus `justify-content: center` sized both tracks to their
        * content instead of to the container — the columns collapsed and the page grew
-       * to 15,460px. Bounding the container leaves `fr` doing what `fr` does. */
-      max-width: 96rem;
+       * to 15,460px. Bounding the container leaves `fr` doing what `fr` does. The wider
+       * cap keeps the pane edges closer to the shell at normal desktop widths without
+       * allowing ultrawide rows to become a second reading surface. */
+      max-width: 110rem;
       margin-inline: auto;
       width: 100%;
     }

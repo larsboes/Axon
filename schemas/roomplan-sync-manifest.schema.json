@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axon.local/schemas/roomplan-sync-manifest.schema.json",
+  "title": "RoomPlan sync manifest",
+  "type": "object",
+  "required": ["protocol_version", "room_id", "revision_id", "status", "expected_sha256", "asset_filename", "observation_filename"],
+  "additionalProperties": false,
+  "properties": {
+    "protocol_version": { "const": "roomplan-sync/v1" },
+    "room_id": { "type": "string", "minLength": 1 },
+    "revision_id": { "type": "string", "minLength": 1 },
+    "status": { "const": "raw-only" },
+    "expected_sha256": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" },
+    "asset_filename": { "const": "captured-room.usdz" },
+    "observation_filename": { "const": "observation.json" }
+  }
+}

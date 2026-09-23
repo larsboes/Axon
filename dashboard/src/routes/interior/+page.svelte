@@ -31,14 +31,19 @@
     type InteriorSearchReport,
     type InteriorComposed,
     type InteriorModel,
+    type InteriorRoomPlanReference,
   } from "$lib/api";
   import { capabilities } from "$lib/capabilities.svelte";
+  import RoomCapturePanel from "$lib/interior/RoomCapturePanel.svelte";
+  import RoomPlanRevisionReview from "$lib/interior/RoomPlanRevisionReview.svelte";
+  import { isRoomPlanPhone } from "$lib/roomplan";
 
   type View = "plans" | "inventory" | "solve" | "buy";
 
   let view = $state<View>("plans");
   let loading = $state(true);
   let error = $state<string | null>(null);
+  let phoneOnly = $state(false);
   let starting = $state(false);
 
   let layouts = $state<InteriorLayoutSummary[]>([]);
@@ -50,6 +55,9 @@
   let wishlist = $state<InteriorWishlist | null>(null);
   /** The flat itself: its name, its outer measurements, its area. Measured, not drawn from. */
   let room = $state<InteriorModel | null>(null);
+  let roomplanReference = $state<InteriorRoomPlanReference | null>(null);
+  let roomplanRevisions = $state<import("$lib/roomplan").RoomPlanDraft[]>([]);
+  let RoomPlanViewer = $state<typeof import("$lib/interior/RoomPlanViewer.svelte").default | null>(null);
 
   /**
    * The three questions a verdict alone cannot answer, fetched per layout and never guessed:
@@ -702,6 +710,19 @@
     }
   }
 
+  async function loadRoomplanReference(): Promise<void> {
+    try {
+      roomplanReference = await interior.roomplanReference();
+    } catch {
+      roomplanReference = null;
+    }
+    try {
+      roomplanRevisions = (await interior.roomplanRevisions()).revisions;
+    } catch {
+      roomplanRevisions = [];
+    }
+  }
+
   async function load(): Promise<void> {
     loading = true;
     error = null;
@@ -880,6 +901,7 @@
       await axonStatus.start("interior");
       await capabilities.refresh();
       await load();
+      await loadRoomplanReference();
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught);
     } finally {
@@ -888,8 +910,17 @@
   }
 
   onMount(() => {
+    phoneOnly = isRoomPlanPhone();
+    if (phoneOnly) {
+      loading = false;
+      return;
+    }
     capabilities.subscribe();
+    void import("$lib/interior/RoomPlanViewer.svelte").then(({ default: viewer }) => {
+      RoomPlanViewer = viewer;
+    });
     void load();
+    void loadRoomplanReference();
   });
 </script>
 
@@ -901,7 +932,13 @@
   desc="Layouts judged against the flat's own clearance rules, and an inventory that outlives the flat."
 />
 
-{#if error}
+<RoomCapturePanel />
+
+{#if phoneOnly}
+  <div class="card offer">
+    <p class="lead">Room capture is available offline on this iPhone. Apartment layouts and inventory run in the desktop interior service.</p>
+  </div>
+{:else if error}
   <div class="card offer">
     <p class="lead"><Icon name="alert" size={15} /> {error}</p>
     <!-- On-demand is the design: nothing but the shell runs until you open something. -->
@@ -995,6 +1032,27 @@
             Which plan, and how big the room it is drawn in actually is. The measurements come
             from the capability, which reads them off the same polygon every check rasterises.
           -->
+          {#if roomplanReference}
+            <section class="scan-review" aria-labelledby="scan-review-heading">
+              <div class="scan-review-head">
+                <div>
+                  <p class="eyebrow">Native RoomPlan · read-only reference</p>
+                  <h3 id="scan-review-heading">3D scan beside the 2D apartment model</h3>
+                </div>
+                <span class="mono">{roomplanReference.asset.byte_length.toLocaleString()} bytes</span>
+              </div>
+              {#if RoomPlanViewer}
+                <RoomPlanViewer assetUrl={roomplanReference.asset.url} />
+              {:else}
+                <p class="note">Loading the 3D viewer…</p>
+              {/if}
+              <p class="note">
+                The 3D file stays native USDZ. The plan below remains the measured 2D model used
+                for clearances; neither view overwrites the other.
+              </p>
+              <RoomPlanRevisionReview revisions={roomplanRevisions} />
+            </section>
+          {/if}
           <p class="where">
             <strong>{detail.layout.name}</strong>
             <span class="mono id">{selected}</span>
@@ -1844,6 +1902,37 @@
   }
   .verdict.pass {
     color: var(--success);
+  }
+
+  .scan-review {
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-md);
+    margin-bottom: 1rem;
+    padding: 0.85rem;
+  }
+  .scan-review-head {
+    align-items: baseline;
+    display: flex;
+    gap: 1rem;
+    justify-content: space-between;
+    margin-bottom: 0.7rem;
+  }
+  .scan-review h3 {
+    color: var(--text-primary);
+    font-size: var(--text-base);
+    margin: 0;
+  }
+  .scan-review .eyebrow {
+    color: var(--text-tertiary);
+    font-size: var(--text-2xs);
+    letter-spacing: 0.08em;
+    margin: 0 0 0.2rem;
+    text-transform: uppercase;
+  }
+  .scan-review .note {
+    color: var(--text-tertiary);
+    font-size: var(--text-xs);
+    margin: 0.6rem 0 0;
   }
 
   /* Which plan, in which room. Above the drawing, because that is where the eye starts. */

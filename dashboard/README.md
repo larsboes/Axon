@@ -54,14 +54,11 @@ which is how one `--header-h` covers a bar that is 3.5 rem at desktop and 3.25 r
 The ladder's four band tones collapse thirteen bands, and **no band is identified by colour
 alone**: the break above each band carries its name in words.
 
-**Two debts, recorded rather than closed** (PRD B50). `--warning` still fails AA as a text
-colour at 3.19:1 on white, in the fourteen files that pass was not allowed to touch;
-`--warning-ink` at 5.02:1 exists and everything written for the refresh uses it, and the
-contrast gate deliberately does not assert on `--warning`, so the gate is green while the debt
-is real. And `PinnedLinks.svelte` still renders an all-caps eyebrow, the last
-`text-transform: uppercase` label after the nav sections dropped theirs. Not verified at all:
-no browser was driven at the accessibility assertions — the VoiceOver announcement of a focused
-row, the sticky rail at both bar heights and the ten-rows-above-the-fold target are unverified.
+**B50 was closed 2026-09-07.** Text declarations use `--warning-ink`; `--warning` remains for
+non-text fills and borders. `tools/dashboard-contrast.test.ts` asserts the separation. The
+`PinnedLinks.svelte` eyebrow is sentence-case. These are code and contrast checks, not a
+VoiceOver or full visual audit: a focused row's announcement and the sticky rail at both bar
+heights still need in-browser verification.
 
 ### Home's decision ladder
 

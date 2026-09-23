@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axon.local/schemas/roomplan-capture.schema.json",
+  "title": "Native RoomPlan capture draft",
+  "type": "object",
+  "required": ["schema_version", "draft_id", "created_at", "source", "coordinate_system", "room", "assets", "provenance"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": "roomplan-capture/v1" },
+    "draft_id": { "type": "string", "minLength": 1 },
+    "created_at": { "type": "string", "minLength": 1 },
+    "source": { "$ref": "#/$defs/source" },
+    "coordinate_system": { "$ref": "#/$defs/coordinate_system" },
+    "room": { "$ref": "#/$defs/room" },
+    "assets": { "type": "array", "items": { "$ref": "#/$defs/asset" } },
+    "provenance": { "$ref": "#/$defs/provenance" }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "required": ["platform"],
+      "additionalProperties": false,
+      "properties": {
+        "platform": { "const": "ios" },
+        "roomplan_version": { "type": "string" },
+        "app_version": { "type": "string" }
+      }
+    },
+    "coordinate_system": {
+      "type": "object",
+      "required": ["units", "up_axis"],
+      "additionalProperties": false,
+      "properties": {
+        "units": { "const": "meters" },
+        "up_axis": { "const": "Y" },
+        "handedness": { "type": "string" }
+      }
+    },
+    "room": {
+      "type": "object",
+      "required": ["id", "surfaces", "openings", "objects"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "surfaces": { "type": "array", "items": { "$ref": "#/$defs/element" } },
+        "openings": { "type": "array", "items": { "$ref": "#/$defs/element" } },
+        "objects": { "type": "array", "items": { "$ref": "#/$defs/element" } }
+      }
+    },
+    "element": {
+      "type": "object",
+      "required": ["id", "category", "dimensions_m", "transform"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "category": { "type": "string", "minLength": 1 },
+        "dimensions_m": { "type": "array", "prefixItems": [{"type":"number","minimum":0},{"type":"number","minimum":0},{"type":"number","minimum":0}], "items": false },
+        "transform": { "type": "array", "prefixItems": [{"type":"number"},{"type":"number"},{"type":"number"},{"type":"number"},{"type":"number"},{"type":"number"},{"type":"number"},{"type":"number"},{"type":"number"},{"type":"number"},{"type":"number"},{"type":"number"},{"type":"number"},{"type":"number"},{"type":"number"},{"type":"number"}], "items": false },
+        "confidence": { "enum": ["high", "medium", "low"] },
+        "source_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "asset": {
+      "type": "object",
+      "required": ["asset_id", "role", "format", "byte_length", "sha256", "storage_token"],
+      "additionalProperties": false,
+      "properties": {
+        "asset_id": { "type": "string", "minLength": 1 },
+        "role": { "enum": ["parametric", "mesh", "model"] },
+        "format": { "const": "usdz" },
+        "byte_length": { "type": "integer", "minimum": 1 },
+        "sha256": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" },
+        "storage_token": { "type": "string", "minLength": 1 }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "capture_mode": { "enum": ["refine_existing", "new_room"] },
+        "parent_revision_id": { "type": "string", "minLength": 1 },
+        "confidence": { "enum": ["high", "medium", "low"] },
+        "capture_started_at": { "type": "string" },
+        "capture_finished_at": { "type": "string" }
+      }
+    }
+  }
+}

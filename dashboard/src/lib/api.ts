@@ -59,7 +59,19 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(res.status, describeFailure(res.status, body, path));
   }
   const text = await res.text();
-  const parsed = text ? JSON.parse(text) : undefined;
+  if (!text) return undefined as T;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    const capability = capabilityFrom(path);
+    const html = /<\s*!doctype\s+html|<\s*html[\s>]/i.test(text);
+    const message = html
+      ? `${capability ?? "API"} did not return JSON; its service is unavailable here`
+      : `${capability ?? "API"} returned invalid JSON`;
+    throw new ApiError(res.status, message);
+  }
   if (parsed && typeof parsed === 'object' && 'error' in parsed && parsed.error) {
     throw new ApiError(res.status, String(parsed.error));
   }
@@ -943,7 +955,28 @@ export interface InteriorWishlist {
  * Nothing on the page recomputes a clearance rule: a second implementation of one is exactly
  * the drift the capability exists to prevent (PRD B27).
  */
+export interface InteriorRoomPlanReference {
+  flat: string;
+  status: "raw-only";
+  revision: string | null;
+  asset: { format: "usdz"; byte_length: number; sha256: string; url: string };
+  observation: {
+    export_observation: { room_groups: number; mesh_assets: number; category_counts: Record<string, number> };
+  };
+  manifest: unknown;
+}
+
+export interface InteriorRoomPlanRevisions {
+  flat: string;
+  revisions: import("$lib/roomplan").RoomPlanDraft[];
+}
+
 export const interior = {
+  roomplanReference: () => request<InteriorRoomPlanReference>('/interior/api/roomplan/reference'),
+  roomplanRevisions: () => request<InteriorRoomPlanRevisions>('/interior/api/roomplan/revisions'),
+  reviewRoomplanRevision: (revisionId: string, decision: 'accept' | 'reject', note?: string) =>
+    request<{ decision: string }>('/interior/api/roomplan/revisions/' + encodeURIComponent(revisionId) + '/review', jsonInit('POST', { decision, note })),
+  roomplanAssetUrl: () => '/interior/api/roomplan/asset',
   model: () => request<InteriorModel>('/interior/api/model'),
   layouts: () => request<InteriorLayoutSummary[]>('/interior/api/layouts'),
   layout: (name: string) =>

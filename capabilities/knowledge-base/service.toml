@@ -50,7 +50,24 @@ backup_paths = ["Knowledge-Base"]
 #
 # Excluded rather than deleted: it is Obsidian's directory, not Axon's, and a backup tool that
 # edits the thing it is backing up has the wrong relationship to it.
-backup_exclude = [".obsidian/plugin-backups"]
+#
+# The second entry is the same class of thing, found 2026-09-23 by rehearsing a restore of this
+# capability's own archive: `revision-build/node_modules` is a symlink pointing into
+# `~/.cache/codex-runtimes/`, left by a runtime that built inside the vault. It is the only link
+# in the vault outside `.obsidian/plugin-backups/`, and one link is enough to make the whole 4.8 GB
+# archive unrestorable. Nothing is lost by excluding it — it is a pointer to a cache, not content.
+#
+# The exclusion is narrow on purpose. It names the one path known to be a build artifact rather
+# than every `node_modules`, because a blanket pattern would also stop carrying a real directory
+# someone happened to name that, and a backup that silently drops content is worse than one that
+# refuses. Any other link still refuses the run, which is the correct outcome now that
+# verify_archive in tools/backup.sh actually detects them.
+# A single-line array on purpose: tools/lib/toml.sh's `toml_array` greps one line, so a
+# multi-line array parses as EMPTY and every exclusion silently disappears — measured
+# 2026-09-23, when the two entries below were first written across three lines and the vault
+# backup shipped all 20 symlinks instead. The fixed verify_archive refused it rather than
+# shipping an unrestorable archive, which is how it was caught.
+backup_exclude = [".obsidian/plugin-backups", "Projects/Bachelor-Thesis/Kolloquium/Assets/revision-build/node_modules"]
 
 backup_target = "backup-target"
 

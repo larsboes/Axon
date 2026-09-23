@@ -77,7 +77,10 @@ while IFS= read -r line; do [ -n "$line" ] && CPATHS+=("$line"); done < <(toml_a
 #
 # Needed the day the vault got a contract: `.obsidian/plugin-backups/` held 19 symlinks pointing
 # out of the vault at a since-retired plugin monorepo, so every one dangled, and 4 KB of dead
-# links made a 704 MB archive unrestorable — verify_archive below now refuses exactly that. An exclusion is
+# links made a 704 MB archive unrestorable — verify_archive below refuses exactly that. That
+# refusal was itself broken from 2026-08-29 to 2026-09-23: `grep -q` under `pipefail` inverted it,
+# so it shipped what it should have refused. See verify_archive for the measurement and
+# tools/backup-archive-guard.test.sh for the regression test. An exclusion is
 # the right answer rather than a louder failure, because a plugin backup is not vault content:
 # nothing is protected by carrying it and it cannot be restored if it is.
 EXCLUDES=()
@@ -607,12 +610,27 @@ verify_archive() {  # <path>
   # Found 2026-08-29 by rehearsing the vault's first restore: it shipped 704 MB, verified the size
   # on the target, wrote a receipt, reported success, and could never have been restored. Nothing
   # was wrong with the copy. The producer and the consumer simply did not hold the same contract.
+  #
+  # Found again 2026-09-23, and the first fix never worked. This guard was written as
+  # `if printf ... | grep -q '^[lhbcps]'`. `-q` exits at the first match, which closes the pipe
+  # while printf is still writing 13,000 lines; the writer dies on SIGPIPE, and `set -o pipefail`
+  # then makes the pipeline report 141. **A match therefore evaluated as false**, so the guard
+  # shipped the very archive it exists to refuse — and its only trace was
+  # `printf: write error: Broken pipe` on stderr, which reads like noise. Measured on the vault
+  # archive: pipeline exit 141 with pipefail, 0 without. Every archive produced since 2026-08-29
+  # was unchecked.
+  #
+  # So the offending lines are captured first, with no `-q` and no `head` (both of which close the
+  # pipe early). Nothing below branches on a pipeline's status, which is what makes it correct
+  # under pipefail rather than accidentally correct without it.
   local verbose
   verbose="$(tar -tvzf "$1" 2>/dev/null || true)"
-  if printf '%s\n' "$verbose" | LC_ALL=C grep -Eq '^[lhbcps]'; then
+  local offending
+  offending="$(printf '%s\n' "$verbose" | LC_ALL=C grep -E '^[lhbcps]' | sed -n '1,5p' || true)"
+  if [ -n "$offending" ]; then
     echo "backup.sh: $1 contains a link or special file, which tools/restore.sh refuses to extract." >&2
     echo "  Declare the offending subtree in backup_exclude, or remove it from the source:" >&2
-    printf '%s\n' "$verbose" | LC_ALL=C grep -E '^[lhbcps]' | head -5 | sed 's/^/    /' >&2
+    printf '%s\n' "$offending" | sed 's/^/    /' >&2
     return 1
   fi
 }
