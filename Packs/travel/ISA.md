@@ -165,6 +165,33 @@ private file, or not verified.
   of the total and into a stage row. Falsifier: any `booked_cents` in the body
   that is the sum of amounts with different `currency` values.
 
+### F4 · A trip that did not happen is an outcome, not a silence
+
+Why: the ladder asks about a closed trip with no retrospective, and until
+2026-09-23 the only two answers were a verdict about a place nobody visited or
+archiving the plan. Found live: the one pending retrospective in the store was
+for a trip the operator was not on.
+
+- [x] ISC-13 — `not_taken` is a fourth `again` value, and it is not a judgement:
+it scores `None`, contributes to neither `mean_again` nor `n`, and puts no plan
+id in `basis`. Evidence: `a_trip_that_did_not_happen_has_no_score`,
+`a_not_taken_trip_contributes_nothing_to_the_destination`, and
+`a_destination_with_only_a_not_taken_trip_is_absent_rather_than_neutral` — the
+last rejects a neutral `1.0`, which is the shape "no evidence" must not take.
+Falsifier: a destination factor whose `basis` cites a plan recorded
+`not_taken`.
+- [x] ISC-14 — the widening survives a file that predates it. `CREATE TABLE IF
+NOT EXISTS` folds a widened `CHECK` only on a database that never had the old
+one, and every deployed machine has it, so the table is rebuilt inside the
+migration's own transaction. Evidence:
+`a_deployed_table_refuses_not_taken_until_it_is_widened` (the premise),
+`widening_a_deployed_table_keeps_every_row_and_admits_the_new_word` (the copy
+preserves the row, the temp table is dropped), and
+`widening_is_idempotent_and_a_no_op_on_a_fresh_table`. Verified live
+2026-09-23: the stored DDL on this machine's database gained `not_taken` on
+restart with no leftover table. Falsifier: a row lost by the rebuild, or a
+second call to the widener that rebuilds again.
+
 ## Not yet specified
 
 In scope, too dim to state as a claim yet.
@@ -223,6 +250,8 @@ In scope, too dim to state as a claim yet.
 | ISC-10 | command | `cargo test -p trips retrospective::`; grep the body for a traveler name | 0 names | cargo | F3 |
 | ISC-11 | command | `cargo test -p trips cost::`; assert every actuals figure | null, never 0 | cargo | F3 |
 | ISC-12 | command | `cargo test -p trips cost::`; grep the body for a cross-currency sum | 0 hits | cargo | F3 |
+| ISC-13 | command | `cargo test -p trips retrospective::`; read `/api/retrospectives/summary` after a `not_taken` row | destination absent, `basis` cites no not-taken plan | cargo + curl | F4 |
+| ISC-14 | red-then-green | widen a hand-built old-shape table | row preserved, `not_taken` admitted, no leftover table | cargo | F4 |
 
 ## Anti-claims
 
@@ -278,4 +307,7 @@ In scope, too dim to state as a claim yet.
 
 ## Log
 
+- 2026-09-23 · F4 added. A live pending retrospective turned out to be for a trip
+the operator was not on, and the model had no way to say so; `not_taken` was
+added with the migration a widened `CHECK` actually needs on a deployed file.
 - 2026-08-19 · Scaffolded from Axon issues #185 and #186 plus the PRD §8 remainder.

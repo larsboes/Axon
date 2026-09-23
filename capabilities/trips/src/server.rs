@@ -145,7 +145,7 @@ const ROUTES: &[route_manifest::Route] = &[
         path: "/api/plans/:id/retrospective",
         summary: "Record or correct one plan's retrospective: exactly the three fields PRD 8.2 \
                   rules -- cost_cents (in the PLAN's currency; a plan with none refuses a cost), \
-                  again (yes|no|maybe) and change_note. One row per plan, so a second POST is a \
+                  again (yes|no|maybe|not_taken) and change_note. One row per plan, so a second POST is a \
                   correction and answers 200. Different from POST /api/plans/:id/outcome, which \
                   measures one stage against the option it was chosen under.",
         request_schema: Some(route_manifest::schema_of::<RetrospectiveBody>),

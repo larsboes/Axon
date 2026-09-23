@@ -489,7 +489,7 @@ impl TripsStore {
                 plan_id TEXT PRIMARY KEY
                     REFERENCES {prefix}_plans(id) ON DELETE CASCADE,
                 cost_cents INTEGER CHECK (cost_cents IS NULL OR cost_cents >= 0),
-                again TEXT NOT NULL CHECK (again IN ('yes','no','maybe')),
+                again TEXT NOT NULL CHECK (again IN ('yes','no','maybe','not_taken')),
                 change_note TEXT NOT NULL DEFAULT '',
                 filled_at TEXT NOT NULL
             );
@@ -500,6 +500,64 @@ impl TripsStore {
         // Its own statement rather than more text inside the batch above, so
         // two streams editing this file touch two hunks that merge cleanly.
         conn.execute_batch(&crate::pack::DDL.replace("{prefix}", prefix))?;
+        Self::widen_again_vocabulary(conn, prefix)?;
+        Ok(())
+    }
+
+    /// Widen the retrospective vocabulary on a file that predates it.
+    ///
+    /// `libs/axon-store/README.md` states that folding a widened `CHECK` into
+    /// the `CREATE TABLE` is the translation, "and it is only correct because no
+    /// deployed SQLite file predates it". That held for every widening until
+    /// this one: `not_taken` was added on 2026-09-23 to a table machines had
+    /// already created, and SQLite cannot alter a constraint. So the table is
+    /// rebuilt — rename, recreate, copy, drop — which is the only form SQLite
+    /// offers for it.
+    ///
+    /// Idempotent, and a no-op on a fresh file: the `CREATE` above has already
+    /// written the new vocabulary, so the stored DDL contains `not_taken` and
+    /// this returns immediately. The test is on the stored SQL rather than on a
+    /// version column because the constraint IS the fact being asked about, and
+    /// a version number is a second copy of it that can disagree.
+    ///
+    /// Runs inside `migrate_once`'s `BEGIN IMMEDIATE`, so it opens no
+    /// transaction of its own: nesting one is an error and the write lock is
+    /// already held.
+    fn widen_again_vocabulary(
+        conn: &Connection,
+        prefix: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let table = format!("{prefix}_retrospectives");
+        let stored: Option<String> = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                params![&table],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(stored) = stored else {
+            return Ok(());
+        };
+        if stored.contains("not_taken") {
+            return Ok(());
+        }
+        let old = format!("{table}_before_not_taken");
+        conn.execute_batch(&format!(
+            "
+            ALTER TABLE {table} RENAME TO {old};
+            CREATE TABLE {table} (
+                plan_id TEXT PRIMARY KEY
+                    REFERENCES {prefix}_plans(id) ON DELETE CASCADE,
+                cost_cents INTEGER CHECK (cost_cents IS NULL OR cost_cents >= 0),
+                again TEXT NOT NULL CHECK (again IN ('yes','no','maybe','not_taken')),
+                change_note TEXT NOT NULL DEFAULT '',
+                filled_at TEXT NOT NULL
+            );
+            INSERT INTO {table} (plan_id, cost_cents, again, change_note, filled_at)
+                SELECT plan_id, cost_cents, again, change_note, filled_at FROM {old};
+            DROP TABLE {old};
+            "
+        ))?;
         Ok(())
     }
 
@@ -716,7 +774,7 @@ impl TripsStore {
         change_note: &str,
     ) -> Result<Option<(Retrospective, bool)>, Box<dyn std::error::Error>> {
         if crate::retrospective::Again::parse(again).is_none() {
-            return Err("again must be one of yes, no, maybe".into());
+            return Err("again must be one of yes, no, maybe, not_taken".into());
         }
         if cost_cents.is_some_and(|cents| cents < 0) {
             return Err("cost_cents must not be negative".into());
@@ -1449,6 +1507,130 @@ fn row_to_item(row: &Row) -> rusqlite::Result<PlanItem> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A file whose retrospective table predates `not_taken`.
+    ///
+    /// The narrowing this guards is not hypothetical: `libs/axon-store/README.md`
+    /// states that folding a widened `CHECK` into the `CREATE TABLE` is correct
+    /// "only because no deployed SQLite file predates it", and every machine
+    /// running trips has a file that does. SQLite cannot alter a constraint, so
+    /// without the rebuild the write fails on exactly the machines that have
+    /// history — while a fresh test database passes.
+    fn deployed_shape() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "
+            CREATE TABLE trips_plans (id TEXT PRIMARY KEY);
+            CREATE TABLE trips_retrospectives (
+                plan_id TEXT PRIMARY KEY
+                    REFERENCES trips_plans(id) ON DELETE CASCADE,
+                cost_cents INTEGER CHECK (cost_cents IS NULL OR cost_cents >= 0),
+                again TEXT NOT NULL CHECK (again IN ('yes','no','maybe')),
+                change_note TEXT NOT NULL DEFAULT '',
+                filled_at TEXT NOT NULL
+            );
+            INSERT INTO trips_plans (id) VALUES ('p1'), ('p2');
+            INSERT INTO trips_retrospectives
+                (plan_id, cost_cents, again, change_note, filled_at)
+                VALUES ('p1', 1234, 'yes', 'kept me', '2026-01-03');
+            ",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn a_deployed_table_refuses_not_taken_until_it_is_widened() {
+        let conn = deployed_shape();
+        let refused = conn.execute(
+            "INSERT INTO trips_retrospectives
+                 (plan_id, cost_cents, again, change_note, filled_at)
+                 VALUES ('p2', NULL, 'not_taken', '', '2026-01-04')",
+            [],
+        );
+        assert!(
+            refused.is_err(),
+            "the premise: the old CHECK is what makes the rebuild necessary"
+        );
+    }
+
+    #[test]
+    fn widening_a_deployed_table_keeps_every_row_and_admits_the_new_word() {
+        let conn = deployed_shape();
+        TripsStore::widen_again_vocabulary(&conn, "trips").unwrap();
+
+        // The row that was already there survived the rebuild intact — the
+        // copy is the step that would silently drop history.
+        let (cost, again, note): (Option<i64>, String, String) = conn
+            .query_row(
+                "SELECT cost_cents, again, change_note FROM trips_retrospectives
+                 WHERE plan_id = 'p1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(cost, Some(1234));
+        assert_eq!(again, "yes");
+        assert_eq!(note, "kept me");
+
+        conn.execute(
+            "INSERT INTO trips_retrospectives
+                 (plan_id, cost_cents, again, change_note, filled_at)
+                 VALUES ('p2', NULL, 'not_taken', 'was not there', '2026-01-04')",
+            [],
+        )
+        .unwrap();
+
+        // And the temporary table the rebuild used is gone rather than left
+        // behind as a second copy of the same rows.
+        let leftovers: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                 WHERE type = 'table' AND name LIKE '%_before_not_taken'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(leftovers, 0);
+    }
+
+    #[test]
+    fn widening_is_idempotent_and_a_no_op_on_a_fresh_table() {
+        let conn = deployed_shape();
+        TripsStore::widen_again_vocabulary(&conn, "trips").unwrap();
+        // The second call sees `not_taken` in the stored DDL and returns without
+        // rebuilding, so a process that migrates twice cannot lose the rows the
+        // first call copied.
+        conn.execute(
+            "INSERT INTO trips_retrospectives
+                 (plan_id, cost_cents, again, change_note, filled_at)
+                 VALUES ('p2', NULL, 'not_taken', 'still here', '2026-01-04')",
+            [],
+        )
+        .unwrap();
+        TripsStore::widen_again_vocabulary(&conn, "trips").unwrap();
+        let note: String = conn
+            .query_row(
+                "SELECT change_note FROM trips_retrospectives WHERE plan_id = 'p2'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(note, "still here");
+
+        // A table that never existed is not created here — the `CREATE` in
+        // `run_migration` owns that, and this function only ever widens.
+        let absent = Connection::open_in_memory().unwrap();
+        TripsStore::widen_again_vocabulary(&absent, "trips").unwrap();
+        let created: i64 = absent
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'trips_retrospectives'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(created, 0);
+    }
 
     #[test]
     fn generated_ids_unique() {

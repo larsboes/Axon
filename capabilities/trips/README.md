@@ -125,10 +125,22 @@ not close the first.
 It is a table rather than a twelfth plan-item type for two reasons that stand
 alone. The summary groups by destination ACROSS plans, which is a query with an
 index rather than a `json_extract` scan of every item row. And the three fields
-are ruled and closed, so `again` earns `CHECK (again IN ('yes','no','maybe'))`
-and `cost_cents` earns INTEGER — neither of which a JSON payload carries. The
-`outcome` payload next door is deliberately open precisely because nobody knew
-its fields yet.
+are ruled and closed, so `again` earns
+`CHECK (again IN ('yes','no','maybe','not_taken'))` and `cost_cents` earns
+INTEGER — neither of which a JSON payload carries. The `outcome` payload next
+door is deliberately open precisely because nobody knew its fields yet.
+
+`not_taken` is the fourth word and it is not a judgement (added 2026-09-23). A
+trip that was planned and did not happen had no way to be recorded: the ladder
+kept asking, and the only answers were a verdict about a place nobody visited or
+archiving the plan — which also hides the planning that did happen. It scores
+nothing, contributes to neither `mean_again` nor `n`, and puts no plan id in
+`basis`, because "I did not go" is not evidence about a destination in either
+direction. That widening needed a real migration: `CREATE TABLE IF NOT EXISTS`
+folds a widened `CHECK` only on a file that never had the old one, and every
+deployed machine has the old one, so `store.rs::widen_again_vocabulary` rebuilds
+the table — rename, recreate, copy, drop — inside the migration's own
+transaction.
 
 The money is denominated exactly once. `cost_cents` is in the PLAN's `currency`;
 the retrospective carries no currency column, and a plan with none refuses a cost

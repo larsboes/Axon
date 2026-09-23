@@ -26,7 +26,8 @@ use crate::store::{normalize_place_name, Retrospective, TripPlan};
 /// The published formula, served in the response so a consumer never has to read
 /// this file to know what it is multiplying by.
 pub const FORMULA: &str =
-    "factor = 1 + 0.25 * mean_again * n/(n+2); again scores yes=+1, maybe=0, no=-1";
+    "factor = 1 + 0.25 * mean_again * n/(n+2); again scores yes=+1, maybe=0, no=-1; \
+     not_taken records a trip that did not happen and is excluded from the mean and from n";
 
 /// The contract a consumer is held to. Principle 5, and calendar's own
 /// soft-verdict precedent: a ranked output explains and never filters.
@@ -54,12 +55,21 @@ pub const BOUNDS: (f64, f64) = (0.75, 1.25);
 /// The closed vocabulary. One of the two reasons the retrospective is a table
 /// and not a JSON payload: a `CHECK` constraint can spell this and a payload
 /// cannot.
+///
+/// `NotTaken` is the fourth value and it is not a judgement. A trip that was
+/// planned and did not happen is a real outcome the ladder has to be answerable
+/// with — without it the only ways to silence the prompt are to record a
+/// verdict about a place nobody visited, or to archive the plan, which also
+/// hides the planning that did happen. It carries no score and contributes to
+/// neither the mean nor `n`, because "I did not go" is not evidence about the
+/// destination in either direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum Again {
     Yes,
     No,
     Maybe,
+    NotTaken,
 }
 
 impl Again {
@@ -68,6 +78,7 @@ impl Again {
             Self::Yes => "yes",
             Self::No => "no",
             Self::Maybe => "maybe",
+            Self::NotTaken => "not_taken",
         }
     }
 
@@ -76,16 +87,25 @@ impl Again {
             "yes" => Some(Self::Yes),
             "no" => Some(Self::No),
             "maybe" => Some(Self::Maybe),
+            "not_taken" => Some(Self::NotTaken),
             _ => None,
         }
     }
 
-    /// +1 / 0 / −1. The only place the words become numbers.
-    pub fn score(self) -> f64 {
+    /// +1 / 0 / −1, or `None` when there is nothing to score. The only place
+    /// the words become numbers.
+    ///
+    /// An `Option` rather than a fourth number, because a `0.0` for `NotTaken`
+    /// would be indistinguishable from `Maybe` in the mean — and "it was fine"
+    /// and "I was never there" must not average together. It would also put the
+    /// plan into `basis`, citing a trip as evidence for a destination it never
+    /// reached.
+    pub fn score(self) -> Option<f64> {
         match self {
-            Self::Yes => 1.0,
-            Self::Maybe => 0.0,
-            Self::No => -1.0,
+            Self::Yes => Some(1.0),
+            Self::Maybe => Some(0.0),
+            Self::No => Some(-1.0),
+            Self::NotTaken => None,
         }
     }
 }
@@ -150,6 +170,12 @@ pub fn summary(rows: &[Retrospective], plans: &[TripPlan]) -> Summary {
         let Some(again) = Again::parse(&row.again) else {
             continue;
         };
+        // A trip that did not happen contributes nothing — not a score, not a
+        // basis entry. Falling through here rather than pushing a 0.0 is the
+        // whole reason `score` returns an `Option`.
+        let Some(score) = again.score() else {
+            continue;
+        };
         // Basis points against the intent, when both halves exist. A plan with
         // no budget contributes a score and no overrun, rather than a zero.
         //
@@ -172,7 +198,7 @@ pub fn summary(rows: &[Retrospective], plans: &[TripPlan]) -> Summary {
             }
             match groups.iter_mut().find(|(existing, ..)| *existing == key) {
                 Some((_, scores, basis, overruns)) => {
-                    scores.push(again.score());
+                    scores.push(score);
                     if !basis.contains(&plan.id) {
                         basis.push(plan.id.clone());
                     }
@@ -180,7 +206,7 @@ pub fn summary(rows: &[Retrospective], plans: &[TripPlan]) -> Summary {
                 }
                 None => groups.push((
                     key,
-                    vec![again.score()],
+                    vec![score],
                     vec![plan.id.clone()],
                     overrun.into_iter().collect(),
                 )),
@@ -349,11 +375,65 @@ mod tests {
     }
 
     #[test]
-    fn again_is_one_of_three_words() {
+    fn again_is_one_of_four_words() {
         assert_eq!(Again::parse("yes"), Some(Again::Yes));
         assert_eq!(Again::parse("no"), Some(Again::No));
         assert_eq!(Again::parse("maybe"), Some(Again::Maybe));
+        assert_eq!(Again::parse("not_taken"), Some(Again::NotTaken));
         assert_eq!(Again::parse("sure"), None);
         assert_eq!(Again::parse("Yes"), None, "the vocabulary is exact");
+        // The spelling is the stored one, so `as_str` and `parse` round-trip
+        // through the CHECK constraint's own vocabulary.
+        assert_eq!(Again::NotTaken.as_str(), "not_taken");
+    }
+
+    #[test]
+    fn a_trip_that_did_not_happen_has_no_score() {
+        assert_eq!(Again::Yes.score(), Some(1.0));
+        assert_eq!(Again::Maybe.score(), Some(0.0));
+        assert_eq!(Again::No.score(), Some(-1.0));
+        assert_eq!(
+            Again::NotTaken.score(),
+            None,
+            "a 0.0 here would average with `maybe`, and \"it was fine\" and \"I was \
+             never there\" must not be the same number"
+        );
+    }
+
+    #[test]
+    fn a_not_taken_trip_contributes_nothing_to_the_destination() {
+        // One real judgement and one trip that did not happen, at the same
+        // destination. The factor must be the one-trip factor, not diluted by
+        // the absent trip, and the basis must cite only the plan that happened.
+        let plans = vec![
+            plan("went", "Lisbon", &[], None),
+            plan("skipped", "Lisbon", &[], None),
+        ];
+        let rows = vec![
+            retrospective("went", "yes", None),
+            retrospective("skipped", "not_taken", None),
+        ];
+        let summary = summary(&rows, &plans);
+        let lisbon = summary
+            .by_destination
+            .iter()
+            .find(|factor| factor.key == "lisbon")
+            .expect("the trip that happened still scores");
+        assert_eq!(lisbon.n, 1, "the absent trip is not a second observation");
+        assert_eq!(lisbon.mean_again, 1.0);
+        assert_eq!(lisbon.factor, factor(1.0, 1));
+        assert_eq!(lisbon.basis, vec!["went".to_string()]);
+    }
+
+    #[test]
+    fn a_destination_with_only_a_not_taken_trip_is_absent_rather_than_neutral() {
+        let plans = vec![plan("skipped", "Salzburg", &[], None)];
+        let rows = vec![retrospective("skipped", "not_taken", None)];
+        let summary = summary(&rows, &plans);
+        assert!(
+            summary.by_destination.is_empty(),
+            "no evidence must read as no evidence, not as a neutral 1.0: {:?}",
+            summary.by_destination
+        );
     }
 }

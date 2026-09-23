@@ -329,7 +329,7 @@
       "kind": "pack",
       "code": {
         "files": 11,
-        "nodes": 213
+        "nodes": 217
       }
     },
     {
@@ -588,7 +588,7 @@
       "kind": "pack",
       "code": {
         "files": 4,
-        "nodes": 39
+        "nodes": 40
       }
     },
     {
@@ -614,7 +614,7 @@
       },
       "code": {
         "files": 22,
-        "nodes": 601
+        "nodes": 609
       }
     },
     {
@@ -1974,7 +1974,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 20407,
+    "nodes": 20418,
     "external": 24,
     "stale": [
       "Packs/harness/pi-packages/accordion/app/src/lib/engine/parse.ts",

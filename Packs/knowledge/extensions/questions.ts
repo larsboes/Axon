@@ -1,5 +1,5 @@
 /**
- * Questions for the human in the loop — one widget family, two tools.
+ * Questions for the human in the loop — one widget family, three tools.
  *
  * `ask` — a decision round. Each question carries 2-4 mutually exclusive options (the schema allows
  * up to 9), a one-line consequence per option, an optional preview block rendered only for the
@@ -9,6 +9,10 @@
  *
  * `quiz` — a graded multiple-choice quiz. The model supplies the correct answer and the
  * explanation; the widget grades on selection and returns correct / incorrect / IDK per question.
+ *
+ * `narrow` — winnow a pile of candidates down to the ones worth deciding about. Space keeps and
+ * advances, `s` skips, `x` drops with a reason, `u` retracts; read the narrow section below for
+ * why space advances rather than toggling.
  *
  * Used by the `teach` skill (probe + understanding checks) and by question rounds in
  * `crystallize`.
@@ -953,9 +957,18 @@ async function runQuizReview(
  * Divergence produces more than it needs; this is where the excess goes.
  *
  * `ask` cannot express it: that tool is single-select per question and caps at nine options, so
- * "keep 3 of these 30" has no shape there. The interaction here is deliberately three keys — space
- * keeps, `x` rejects and asks why, Enter finishes — because the failure mode of a long list is
- * that nobody winnows it, and every extra keystroke per item makes that more likely.
+ * "keep 3 of these 30" has no shape there.
+ *
+ * The gesture set is built for a linear pass, because the failure mode of a long list is that
+ * nobody winnows it and every extra keystroke per item makes that more likely: space keeps the
+ * focused candidate and advances, `s` skips it and advances, `x` rejects it with a reason and
+ * advances, and Enter finishes. Arrow keys move without deciding, and `u` retracts a verdict.
+ *
+ * Space advancing is the part that was wrong until 2026-09-23. It used to toggle in place, so a
+ * pass over eleven candidates cost two keystrokes each and pressing space twice on one candidate
+ * undecided it — which is what a session's `Narrowed: 0 kept, 0 rejected, 11 undecided` was.
+ * `tools/pack-extensions.test.ts` drives the widget with keystrokes and is what stops that
+ * returning; its `space keeps and advances` case is the regression written down.
  */
 interface NarrowCandidate {
 	id: string;
@@ -972,6 +985,47 @@ interface NarrowVerdict {
 	kept: boolean;
 	/** Set when the candidate was rejected: why, in the user's words. */
 	why: string | null;
+}
+
+/*
+ * The verdict state of one pass, as pure functions.
+ *
+ * They live in this file rather than in a sibling module because
+ * `tools/pack-extensions.test.ts` discovers every `Packs/<pack>/extensions/*.ts` as an extension
+ * and asserts each one registers a tool under a stub api — so a helper sitting next to
+ * `questions.ts` is read as a broken extension. Extracting them was tried on 2026-09-23 and
+ * reverted for that reason; the fix is unchanged either way.
+ *
+ * Every one returns a new array rather than mutating in place. The version before this pushed,
+ * spliced and reassigned a single captured array from four call sites, and a reducer that returns
+ * the next state is the version that can be reasoned about.
+ */
+function verdictIn(verdicts: NarrowVerdict[], id: string): NarrowVerdict | undefined {
+	return verdicts.find((v) => v.id === id);
+}
+
+/** Keep a candidate, replacing whatever verdict it had. Idempotent, so a repeated keep on one
+ * candidate cannot retract it — `u` is the key that does that. */
+function keepVerdict(verdicts: NarrowVerdict[], id: string): NarrowVerdict[] {
+	return [...verdicts.filter((v) => v.id !== id), { id, kept: true, why: null }];
+}
+
+/** Remove any verdict, leaving the candidate undecided again. */
+function undecideVerdict(verdicts: NarrowVerdict[], id: string): NarrowVerdict[] {
+	return verdicts.filter((v) => v.id !== id);
+}
+
+/** Reject a candidate. An empty or whitespace-only reason becomes null rather than "", so
+ * "rejected with no reason given" and "rejected with an empty reason" are one state. */
+function dropVerdict(verdicts: NarrowVerdict[], id: string, why: string): NarrowVerdict[] {
+	const text = why.trim();
+	return [...verdicts.filter((v) => v.id !== id), { id, kept: false, why: text.length > 0 ? text : null }];
+}
+
+/** Where focus goes after a verdict is recorded. Stops at the last candidate rather than
+ * wrapping, which would silently revisit candidates already decided. */
+function advanceIndex(index: number, total: number): number {
+	return Math.min(index + 1, total - 1);
 }
 
 interface NarrowResult {
@@ -1026,7 +1080,7 @@ async function runNarrow(
 		let index = 0;
 		let cachedLines: string[] | undefined;
 		let reasonPhase = false;
-		const verdicts: NarrowVerdict[] = [];
+		let verdicts: NarrowVerdict[] = [];
 		const editor = new Editor(tui, editorTheme(theme));
 
 		function refresh() {
@@ -1035,34 +1089,25 @@ async function runNarrow(
 		}
 
 		function verdictOf(id: string): NarrowVerdict | undefined {
-			return verdicts.find((v) => v.id === id);
+			return verdictIn(verdicts, id);
 		}
 
-		function toggleKeep(candidate: NarrowCandidate) {
-			const existing = verdictOf(candidate.id);
-			if (!existing) {
-				verdicts.push({ id: candidate.id, kept: true, why: null });
-				return;
-			}
-			if (existing.kept) {
-				// Second press undecides, rather than flipping straight to a rejection. A rejection
-				// should cost a reason, and `x` is where that happens.
-				verdicts.splice(verdicts.indexOf(existing), 1);
-				return;
-			}
-			existing.kept = true;
-			existing.why = null;
+		/**
+		 * Keep the focused candidate and move on.
+		 *
+		 * The advance is the whole point: a pass over a long list should cost one keystroke per
+		 * candidate, and a keep that stays put turns every pass into two.
+		 */
+		function keepAndAdvance() {
+			verdicts = keepVerdict(verdicts, candidates[index].id);
+			index = advanceIndex(index, candidates.length);
+			refresh();
 		}
 
-		function recordRejection(candidate: NarrowCandidate, why: string) {
-			const existing = verdictOf(candidate.id);
-			const text = why.trim();
-			if (existing) {
-				existing.kept = false;
-				existing.why = text.length > 0 ? text : null;
-				return;
-			}
-			verdicts.push({ id: candidate.id, kept: false, why: text.length > 0 ? text : null });
+		/** Leave the focused candidate undecided and move on. */
+		function skipAndAdvance() {
+			index = advanceIndex(index, candidates.length);
+			refresh();
 		}
 
 		function move(delta: number) {
@@ -1072,12 +1117,12 @@ async function runNarrow(
 
 		editor.onChange = () => refresh();
 		editor.onSubmit = (value) => {
-			recordRejection(candidates[index], value);
+			verdicts = dropVerdict(verdicts, candidates[index].id, value);
 			reasonPhase = false;
 			editor.setText("");
 			// Move on automatically: rejecting with a reason is the long part of the pass, and the
 			// next candidate is almost always the next thing wanted.
-			if (index < candidates.length - 1) index++;
+			index = advanceIndex(index, candidates.length);
 			refresh();
 		};
 
@@ -1099,8 +1144,20 @@ async function runNarrow(
 			}
 			if (matchesKey(data, Key.up) || data === "k") return move(-1);
 			if (matchesKey(data, Key.down) || data === "j") return move(1);
-			if (data === " ") {
-				toggleKeep(candidates[index]);
+			// `matchesKey` first, with the raw byte as a fallback. Every other widget in this file
+			// pairs the two, and this one used to check only `data === " "` — which is how a pass
+			// over eleven candidates recorded nothing at all. pi's own space-invaders example
+			// hedges the same way, so the raw comparison alone is not a reliable detector.
+			if (matchesKey(data, Key.space) || data === " ") {
+				keepAndAdvance();
+				return;
+			}
+			if (data === "s") {
+				skipAndAdvance();
+				return;
+			}
+			if (data === "u") {
+				verdicts = undecideVerdict(verdicts, candidates[index].id);
 				refresh();
 				return;
 			}
@@ -1165,7 +1222,7 @@ async function runNarrow(
 					lines,
 					w,
 					" ",
-					theme.fg("dim", "↑↓ move · space keep/undecide · x drop with a reason · Enter finish · Esc stop"),
+					theme.fg("dim", "↑↓ move · space keep → · s skip → · x drop → · u undecide · Enter finish · Esc stop"),
 				);
 			}
 			lines.push(theme.fg("accent", "─".repeat(w)));
@@ -1184,7 +1241,7 @@ async function runNarrow(
 
 	const kept = result.verdicts.filter((v) => v.kept);
 	const rejected = result.verdicts.filter((v) => !v.kept);
-	const undecided = candidates.filter((c) => !verdictOf(result.verdicts, c.id));
+	const undecided = candidates.filter((c) => !verdictIn(result.verdicts, c.id));
 	const header = result.cancelled
 		? `Narrowing stopped early: ${kept.length} kept, ${rejected.length} rejected, ${undecided.length} not reached.`
 		: `Narrowed: ${kept.length} kept, ${rejected.length} rejected, ${undecided.length} undecided.`;
@@ -1210,10 +1267,6 @@ async function runNarrow(
 	if (undecided.length > 0) lines.push(`Undecided, so not on the table: ${undecided.map((c) => c.id).join(", ")}`);
 
 	return { content: [{ type: "text" as const, text: lines.join("\n") }], details: result };
-}
-
-function verdictOf(verdicts: NarrowVerdict[], id: string): NarrowVerdict | undefined {
-	return verdicts.find((v) => v.id === id);
 }
 
 /* ────────────────────────────── registration ────────────────────────────── */

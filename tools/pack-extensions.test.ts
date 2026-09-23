@@ -638,27 +638,51 @@ describe.skipIf(!piConfigured)("pack extensions > questions widgets", () => {
       ],
     };
 
+    test("space keeps and advances, so a pile is winnowed in one pass", async () => {
+      // The 2026-09-23 regression, as a test: space used to toggle in place, so keeping
+      // three candidates cost six keystrokes and a second press on one retracted it. A
+      // session over eleven candidates ended `0 kept, 0 rejected, 11 undecided`.
+      const r = await run("narrow", round, [" ", " ", " ", "\r"]);
+      const kept = r.details.verdicts.filter((v: any) => v.kept).map((v: any) => v.id);
+      expect(kept).toEqual(["c1", "c2", "c3"]);
+      expect(textOf(r)).toMatch(/3 kept, 0 rejected, 0 undecided/);
+    });
+
     test("keep, drop-with-reason and undecided are three distinct outcomes", async () => {
-      const r = await run("narrow", round, [" ", "j", "x", ..."too costly", "\r", "\r"]);
+      // space keeps c1 and moves to c2; `s` skips c2 and moves to c3; `x` drops c3 with a
+      // reason. One keystroke per candidate, no arrow keys.
+      const r = await run("narrow", round, [" ", "s", "x", ..."too costly", "\r", "\r"]);
       const kept = r.details.verdicts.filter((v: any) => v.kept).map((v: any) => v.id);
       const dropped = r.details.verdicts.filter((v: any) => !v.kept);
       expect(kept).toEqual(["c1"]);
       expect(dropped).toHaveLength(1);
+      expect(dropped[0].id).toBe("c3");
       expect(dropped[0].why).toBe("too costly");
-      // A candidate never reached must NOT be recorded as rejected.
-      expect(r.details.verdicts.some((v: any) => v.id === "c3")).toBe(false);
+      // A candidate that was skipped must NOT be recorded as rejected.
+      expect(r.details.verdicts.some((v: any) => v.id === "c2")).toBe(false);
       expect(textOf(r)).toMatch(/1 kept, 1 rejected, 1 undecided/);
       expect(textOf(r)).toMatch(/Do not re-propose a rejected candidate/);
     });
 
-    test("pressing space twice undecides rather than dropping", async () => {
-      const r = await run("narrow", round, [" ", " ", "\r"]);
+    test("a scattered pick is reachable, which is why space advancing needs a skip", async () => {
+      // Without `s`, a space that advances could only ever keep a prefix: keeping c1 and c3
+      // would mean pressing space twice and keeping c2 as well.
+      const r = await run("narrow", round, [" ", "s", " ", "\r"]);
+      const kept = r.details.verdicts.filter((v: any) => v.kept).map((v: any) => v.id);
+      expect(kept).toEqual(["c1", "c3"]);
+      expect(textOf(r)).toMatch(/2 kept, 0 rejected, 1 undecided/);
+    });
+
+    test("u retracts a verdict rather than space undoing itself", async () => {
+      // Space advances, so retracting what it just kept takes a move back: keep c1, `k` to
+      // c1, then `u`. This is the key that used to be a second press of space.
+      const r = await run("narrow", round, [" ", "k", "u", "\r"]);
       expect(r.details.verdicts).toHaveLength(0);
       expect(textOf(r)).toMatch(/0 kept, 0 rejected, 3 undecided/);
     });
 
     test("a drop with no reason records null, not an empty string", async () => {
-      const r = await run("narrow", round, [" ", "x", "\r", "\r"]);
+      const r = await run("narrow", round, ["x", "\r", "\r"]);
       const c1 = r.details.verdicts.find((v: any) => v.id === "c1");
       expect(c1.kept).toBe(false);
       expect(c1.why).toBeNull();
