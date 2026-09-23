@@ -16,6 +16,11 @@ name = "traveler-server"
 path = "src/server.rs"
 
 [dependencies]
+# Howard Hinnant's civil-from-days pair, shared rather than copied. The derived
+# baseline measures trip length and booking lead time in whole days, and both
+# endpoints are ISO dates — the one thing this lib exists to do without pulling
+# a date crate in for it.
+civil-date = { path = "../../libs/civil-date" }
 axon-config = { path = "../../libs/axon-config" }
 # The bind, the inbound gate and the browser-origin refusal. This capability
 # serves personal state, so the origin guard is load-bearing rather than

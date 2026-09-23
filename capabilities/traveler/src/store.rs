@@ -221,7 +221,7 @@ impl TravelerStore {
 /// Same rule and same reason as `capabilities/places/src/store.rs`: the prefix
 /// arrives from configuration, and a value that reaches `format!` unchecked is
 /// how a config typo becomes SQL.
-fn validate_prefix(prefix: &str) -> Fallible<()> {
+pub(crate) fn validate_prefix(prefix: &str) -> Fallible<()> {
     let ok = !prefix.is_empty()
         && prefix
             .bytes()

@@ -5,9 +5,11 @@
 //! the conditional write; `server.rs` is the binary and its HTTP surface.
 
 pub mod config;
+pub mod derive;
 pub mod model;
 pub mod store;
 
+pub use derive::{derive, DerivedTravel};
 pub use model::{
     Anchor, HardConstraints, Pace, ProfileError, ProfileInput, Provenance, SoftWeights,
     TravelProfile, BASIS_KEYS, DEFAULT_PROFILE_ID,

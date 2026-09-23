@@ -2,7 +2,7 @@
 project: axon-traveler
 type: isa
 phase: climbing
-progress: 25
+progress: 50
 principal_stated_goal: "Upgrade the Axon travel systems into a real hyper-personalised travel planning system, usable both by me directly and with an agent."
 ---
 
@@ -105,6 +105,37 @@ identically and must not read the same.
   `curl` against the running process. Falsifier: a field that does not survive
   the trip.
 
+### F3 · The baseline comes from the rows, not from a guess
+
+Why: thirteen plans, their dates, companions and interests were captured and
+read by nothing. The read is pure arithmetic over typed columns.
+
+- [x] TRV-8 — the projection publishes what it counted and what it cannot say.
+  Evidence: `notes` carries three limits and `basis` carries every plan id used,
+  asserted by `the_baseline_counts_plans_and_a_not_taken_one_out`; the live
+  response reports 12 plans considered, 1 excluded, and 12 plan ids. Falsifier: a
+  count with no `basis`, or a `notes` list shorter than the limits the fields
+  have.
+- [x] TRV-9 — lead time is measured only over plans whose row predates the trip.
+  The first live run over a vault-imported history published
+  `lead_time_days: {min: -276, median: -173}` — the row's age, not a booking lead
+  time, rendered as a measurement. Evidence:
+  `an_imported_trip_is_left_out_of_the_lead_time_rather_than_counted_negative`
+  and `a_history_with_no_bookings_has_no_lead_time_rather_than_a_negative_one`.
+  Live after the fix: 2 plans measured, 10 skipped, spread 69–78 days. Falsifier:
+  a negative figure in `lead_time_days`.
+- [x] TRV-10 — a machine where `trips` has never run answers with absences rather
+  than 500. Evidence:
+  `a_machine_where_trips_has_never_run_reads_as_empty_rather_than_failing`,
+  `plans_without_a_retrospectives_table_still_derive`, and the live HTTP case
+  `the_derived_route_answers_with_no_trips_rather_than_failing`. Falsifier: a
+  non-200 from the route on a fresh install.
+- [x] TRV-11 — company is counted as a shape and never listed. The projection
+  reads `travelers` only through `traveller_count`, which returns a number.
+  Evidence: `company_counts_a_shape_and_never_a_name`; live output carries
+  `{unrecorded: 3, pair: 5, group: 4}` and no name anywhere. Falsifier: a name in
+  the response.
+
 ## Not yet specified
 
 In scope, too dim to state as a claim yet.
@@ -117,12 +148,13 @@ In scope, too dim to state as a claim yet.
   and writes nothing until the operator accepts. Gated on deciding which TELOS
   sections are admissible: `CURRENT_STATE` holds money, freedom, rhythms and
   relationships, which is a different kind of fact from an interest list.
-- **F4 · The derived baseline.** Thirteen plans and the stored offers already
-  hold trip length, lead time, repeat destinations and the offered-versus-chosen
-  trade-off. Pure queries over existing rows, no model and no new input — and the
-  honest answer to "what does this person's travel actually look like".
+- **F4 · The offered-versus-chosen half.** Twenty-eight `option_set` items exist
+  on one plan and the chosen stay beside them. Comparing what was offered to what
+  was picked is the sharpest personal signal in the store and needs no new input
+  — but one plan is one observation, and a preference inferred from a single
+  choice is a guess wearing a number.
 - **F5 · `plan-search-v2` reads the profile.** The consumer. Without it this
-  capability is a store with a contract and no reader, which is why it is the
+  capability is a store with a contract and no reader, which is why it was the
   first item in the design conversation and not the last.
 - **F6 · Companion patterns, pseudonymously.** `places_person_places` holds
   nineteen rows, all in state `proposed`, with the person's name in a plain
@@ -146,6 +178,10 @@ In scope, too dim to state as a claim yet.
 | TRV-5 | command | PUT twice, second with a wrong `expected_revision` | 409, `current_revision` correct | curl + jq | F1 |
 | TRV-6 | command | GET with a foreign `Origin` on the wired router | 403, and 200 without one | cargo | F2 |
 | TRV-7 | command | PUT then GET against the running process | every field survives | curl + jq | F2 |
+| TRV-8 | command | `cargo test -p traveler derive::`; read `/api/profile/derived` | `basis` non-empty, `notes` complete | cargo + curl | F3 |
+| TRV-9 | command | derive a history whose rows postdate their trips | lead time absent or positive, never negative | cargo | F3 |
+| TRV-10 | command | derive against a database with no trips tables | 200, absences not zeros | cargo + curl | F3 |
+| TRV-11 | command | grep the live derived body for a traveller name | 0 hits | curl | F3 |
 
 ## Anti-claims
 
@@ -184,6 +220,11 @@ In scope, too dim to state as a claim yet.
 
 ## Log
 
+- 2026-09-23 · F3 added. The first live run over the real history published a
+  negative lead time and two counts that under-report, both now stated in the
+  response rather than discovered later. The attendance ground truth came from a
+  session that narrowed the eleven past plans: nine taken, one already recorded
+  `not_taken`, one left undecided and therefore excluded from nothing.
 - 2026-09-23 · Scaffolded from the design conversation that settled the four
   rulings in Decisions. F1 and F2 shipped with 25 passing tests; F3–F6 recorded
   as not yet specified.

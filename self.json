@@ -601,7 +601,7 @@
       },
       "code": {
         "files": 8,
-        "nodes": 108
+        "nodes": 112
       }
     },
     {
@@ -1415,6 +1415,16 @@
     },
     {
       "from": "traveler",
+      "to": "civil-date",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/traveler/Cargo.toml"
+      ]
+    },
+    {
+      "from": "traveler",
       "to": "route-manifest",
       "kinds": [
         "cargo-dep"
@@ -1974,7 +1984,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 20418,
+    "nodes": 20430,
     "external": 24,
     "stale": [
       "Packs/harness/pi-packages/accordion/app/src/lib/engine/parse.ts",

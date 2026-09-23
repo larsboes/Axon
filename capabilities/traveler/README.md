@@ -57,9 +57,36 @@ yet behave identically and mean completely different things.
 | --- | --- |
 | `GET /api/profile` | The profile plus `stored`. **Never 404s**: an unstated profile comes back with `stored: false` and `revision: 0` |
 | `PUT /api/profile` | Replace it. `{ profile, expected_revision? }`. 400 names the rule broken; 409 `stale_profile` carries `current_revision` |
+| `GET /api/profile/derived` | What the stored trips actually show — trip length, lead time, destinations, company shape, months, modes, and the plan ids every number came from. Computed on read, stored nowhere |
 
 `GET /routes` serves the manifest, including the write body's schema derived from
 the struct serde already deserializes.
+
+## The derived baseline
+
+A read-only projection over `trips`' own tables, the same shape
+`capabilities/places/src/layers.rs` uses for its travel layer and for the same
+reason: the rows belong to `trips`, and a second copy would be a second thing to
+keep true. It answers what the stored history actually shows, which nothing did
+before — thirteen plans, their dates, companions and interests were all captured
+and all unread.
+
+Three limits ride in the response as `notes`, because the counts cannot say them
+themselves:
+
+- **Attendance.** A plan is not a trip. Only a retrospective recording
+  `not_taken` excludes one; nothing records that any other plan was attended.
+- **Lead time.** Measured only over plans whose row was created *before* the trip
+  started. The vault import stamps `created_at` with the import date, so an
+  imported trip's row age is how long ago the import ran. The first live run
+  published a median of **-173 days** before this restriction existed — a
+  negative number rendered as a measurement.
+- **Destination identity.** Destinations are as stored, so one city typed two
+  ways counts as two and a multi-stop plan is a single name.
+
+It answers with absences rather than failing when `trips` has never run on the
+machine: `null` for a `Spread` rather than `0`, the distinction `punctuality`
+already makes between "no evidence" and "evidence that says zero".
 
 ## Absence degrades, it never fails
 
@@ -109,12 +136,13 @@ Stated here rather than left to be discovered:
   release ships the interface. `TELOS/Personal/Events Profile.md` is marked
   *"Draft profile, awaiting Lars's corrections"* and nothing reads it into this
   store yet.
-- **The derived baseline is not built.** Thirteen plans and twenty-eight stored
-  offers already hold trip length, lead time, repeat destinations and the
-  offered-versus-chosen trade-off. Nothing computes them yet.
-- **Companion patterns are not built**, and `places_person_places` holds nineteen
-  rows all in state `proposed`, with the person's name in a plain column rather
-  than only in the id. `GET /api/plans` still serves `travelers`.
-- **No consumer reads this yet.** `plan_search` is still `plan-search-v1` with
-  its constants. Until `plan-search-v2` lands, this capability is a store with a
-  contract and no reader.
+- **The derived baseline is built, and nothing reads it.** It publishes what the
+  history shows; no ranking consumes it. The offered-versus-chosen half is not in
+  it either — twenty-eight `option_set` items exist on one plan, and comparing
+  them to what was picked needs the same treatment.
+- **Companion patterns are not built**, and `places_person_places` holds rows all
+  in state `proposed`, with the person's name in a plain column rather than only
+  in the id. `GET /api/plans` still serves `travelers`.
+- **No consumer reads the profile yet.** `plan_search` is still
+  `plan-search-v1` with its constants. Until `plan-search-v2` lands, this
+  capability is a store with a contract and no reader.

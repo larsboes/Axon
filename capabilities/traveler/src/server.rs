@@ -25,6 +25,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use traveler::config::Config;
+use traveler::derive::{self, DerivedTravel, TRIPS_PREFIX};
 use traveler::model::{ProfileInput, TravelProfile, DEFAULT_PROFILE_ID};
 use traveler::store::{PutOutcome, TravelerStore};
 
@@ -55,6 +56,18 @@ const ROUTES: &[route_manifest::Route] = &[
                   every field exactly once.",
         request_schema: Some(route_manifest::schema_of::<PutProfileRequest>),
     },
+    route_manifest::get(
+        "GET",
+        "/api/profile/derived",
+        "What the stored trips actually show: trip length, booking lead time, destinations, \
+         repeat destinations, company shape, months and modes, with the plan ids every number \
+         was computed from. Computed on read over trips' own tables and stored nowhere. Counts \
+         plans, not confirmed trips: only a retrospective recording not_taken excludes one, and \
+         lead_time_days covers only plans whose row predates the trip, because the vault import \
+         stamps created_at with the import date. Company is counted as a shape, never listed, \
+         because travelers holds real names. `notes` carries every limit in the response. \
+         Answers with absences rather than 500 when trips has never run here.",
+    ),
 ];
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -159,6 +172,24 @@ async fn put_profile(
     }
 }
 
+/// `GET /api/profile/derived`.
+///
+/// Read-only and computed on demand, so there is no cache to invalidate when a
+/// plan changes. It never fails on an empty store: the `Spread`s come back
+/// `null` rather than zero, which is the same distinction `punctuality` makes
+/// between "no evidence" and "evidence that says zero".
+async fn get_derived(
+    State(store): State<Arc<TravelerStore>>,
+) -> Result<Json<DerivedTravel>, ApiError> {
+    let derived = tokio::task::spawn_blocking(move || {
+        derive::derive(&store, TRIPS_PREFIX).map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| ApiError::internal(format!("store task failed: {error}")))?
+    .map_err(ApiError::internal)?;
+    Ok(Json(derived))
+}
+
 async fn read_profile(store: Arc<TravelerStore>) -> Result<Option<TravelProfile>, ApiError> {
     tokio::task::spawn_blocking(move || {
         store
@@ -197,6 +228,7 @@ fn router(store: Arc<TravelerStore>) -> Router {
         .route("/ready", get(ready))
         .route("/routes", get(routes))
         .route("/api/profile", get(get_profile).put(put_profile))
+        .route("/api/profile/derived", get(get_derived))
         // Below every route, because axum's `layer` wraps only what is
         // registered before it (libs/axon-server/src/origin.rs).
         .layer(middleware::from_fn_with_state(
@@ -414,6 +446,23 @@ mod http_tests {
         // runner's probes and every server-to-server caller still pass.
         let allowed = reqwest::get(format!("{base}/api/profile")).await.unwrap();
         assert_eq!(allowed.status(), 200);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn the_derived_route_answers_with_no_trips_rather_than_failing() {
+        // The scratch store has no trips tables, which is a fresh install. A 500
+        // here would read as an outage rather than as "nothing recorded yet".
+        let (base, dir) = scratch_server("derived").await;
+        let response = reqwest::get(format!("{base}/api/profile/derived"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body: Value = response.json().await.unwrap();
+        assert_eq!(body["considered"], json!(0));
+        assert!(body["length_days"].is_null(), "no evidence is not a zero");
+        assert!(body["lead_time_days"].is_null());
+        assert_eq!(body["notes"].as_array().unwrap().len(), 3);
         let _ = std::fs::remove_dir_all(dir);
     }
 
