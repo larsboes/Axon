@@ -9,7 +9,7 @@
    *
    * The one arithmetic below is cents to euros for display.
    */
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
   import Icon from "$lib/Icon.svelte";
   import PageHeader from "$lib/PageHeader.svelte";
   import {
@@ -526,6 +526,7 @@
   // to prevent (PRD B27).
 
   let editing = $state<string | null>(null);
+  let editorEl = $state<HTMLElement | null>(null);
   /** Form values are strings while they are being typed; `patchFrom` converts on the way out. */
   type Draft = {
     label: string;
@@ -617,6 +618,10 @@
       bild: i.bild ?? "",
     };
     history = [];
+    // The editor renders below the whole inventory. On a phone that is dozens of cards
+    // down, so without this a tap on Edit looked like it did nothing (measured 2026-09-25).
+    await tick();
+    editorEl?.scrollIntoView({ behavior: "smooth", block: "start" });
     try {
       history = await interior.stateHistory(id);
     } catch {
@@ -1713,7 +1718,7 @@
 
   {#if editing !== null}
     {@const row = byId.get(editing)}
-    <div class="card editor">
+    <div class="card editor" bind:this={editorEl}>
       <h4>{row?.item.label ?? editing} <span class="mono id">{editing}</span></h4>
 
       {#if saveError}<p class="err">{saveError}</p>{/if}
@@ -2298,6 +2303,8 @@
   .editor {
     margin: 1rem 0 1.5rem;
     padding: 1rem;
+    /* Clears the sticky header and the sync line when scrolled to. */
+    scroll-margin-top: calc(env(safe-area-inset-top, 0px) + 8rem);
   }
 
   .editor h4 {
