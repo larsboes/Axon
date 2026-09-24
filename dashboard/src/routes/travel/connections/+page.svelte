@@ -322,13 +322,13 @@
           <input
             class="input priority-phrase"
             bind:value={journeyPhrase}
+            aria-label="Rank journeys by a sentence"
             onkeydown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
                 void search();
               }
             }}
-            aria-label="Rank journeys by a sentence"
             placeholder="or say it: cheapest, direct, schnell und zuverlässig"
           />
         </div>

@@ -1717,6 +1717,7 @@
               type="text"
               placeholder="e.g. Somewhere warm in October under 300 euro by train..."
               bind:value={intentSentence}
+              aria-label="Trip idea in plain prose"
               onkeydown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();

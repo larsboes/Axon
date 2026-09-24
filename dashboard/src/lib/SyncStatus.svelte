@@ -147,7 +147,7 @@
             The Mac changed this item after you read it. Nothing was overwritten. Pick one.
           </p>
           <table>
-            <thead><tr><th>Field</th><th>Yours</th><th>On the Mac</th></tr></thead>
+            <thead><tr><th scope="col">Field</th><th scope="col">Yours</th><th scope="col">On the Mac</th></tr></thead>
             <tbody>
               {#each fieldDiff(entry) as d (d.field)}
                 <tr><td class="mono">{d.field}</td><td>{showValue(d.mine)}</td><td>{showValue(d.theirs)}</td></tr>
@@ -199,7 +199,7 @@
     gap: 0.4rem 0.9rem;
     align-items: center;
     padding: 0.4rem 1rem;
-    font-size: 0.85rem;
+    font-size: var(--text-sm);
     border-bottom: 1px solid var(--border, rgba(128, 128, 128, 0.3));
     background: var(--surface-2, rgba(128, 128, 128, 0.12));
   }
@@ -228,7 +228,7 @@
   .when,
   .hint {
     opacity: 0.75;
-    font-size: 0.9em;
+    font-size: var(--text-sm);
   }
   table {
     width: 100%;

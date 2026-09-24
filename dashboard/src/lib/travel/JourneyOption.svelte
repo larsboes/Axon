@@ -344,7 +344,7 @@
     align-items: center;
     padding: 0.05rem 0.35rem;
     border-radius: 999px;
-    font-size: 0.5625rem;
+    font-size: var(--text-2xs);
     font-weight: 700;
     letter-spacing: 0.02em;
     flex-shrink: 0;
@@ -374,7 +374,7 @@
   }
 
   .price-strikethrough {
-    font-size: 0.5625rem;
+    font-size: var(--text-2xs);
     text-decoration: line-through;
     color: var(--text-tertiary);
     font-family: var(--font-mono);

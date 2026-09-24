@@ -116,7 +116,7 @@
   }
   .hint {
     opacity: 0.75;
-    font-size: 0.9em;
+    font-size: var(--text-sm);
   }
   .actions {
     display: flex;

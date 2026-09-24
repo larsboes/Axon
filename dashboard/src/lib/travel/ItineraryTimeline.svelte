@@ -295,6 +295,7 @@
                 {#if onUpdateItemDay}
                   <select
                     class="day-assign-select"
+                    aria-label="Day for {item.title}"
                     value={item.day ?? ""}
                     onchange={(e) => void onUpdateItemDay?.(item, e.currentTarget.value || null)}
                     title="Change day or unschedule"
@@ -367,6 +368,7 @@
                 {#if onUpdateItemDay}
                   <select
                     class="day-assign-select unscheduled-assign"
+                    aria-label="Schedule {item.title} to a day"
                     value=""
                     onchange={(e) => void onUpdateItemDay?.(item, e.currentTarget.value || null)}
                     title="Schedule to day"
@@ -416,9 +418,9 @@
     gap: 0.3rem;
     padding: 0.25rem 0.6rem;
     border-radius: var(--radius-full, 9999px);
-    border: 1px solid var(--border);
-    background: var(--surface-1);
-    color: var(--text-muted);
+    border: 1px solid var(--card-border);
+    background: var(--card-bg);
+    color: var(--text-secondary);
     font-size: var(--text-xs);
     cursor: pointer;
     white-space: nowrap;
@@ -426,8 +428,8 @@
   }
 
   .pill:hover {
-    background: var(--surface-2);
-    color: var(--text);
+    background: var(--surface);
+    color: var(--text-primary);
   }
 
   .pill.active {
@@ -470,7 +472,7 @@
     bottom: -0.75rem;
     left: 0.75rem;
     width: 2px;
-    background: var(--border);
+    background: var(--card-border);
   }
 
   .timeline-day:last-child::before {
@@ -488,20 +490,20 @@
     width: 1.6rem;
     height: 1.6rem;
     border-radius: 50%;
-    background: var(--surface-2);
-    border: 2px solid var(--border);
+    background: var(--surface);
+    border: 2px solid var(--card-border);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 1;
-    font-size: 0.65rem;
+    font-size: var(--text-2xs);
     font-weight: 700;
-    color: var(--text);
+    color: var(--text-primary);
   }
 
   .unscheduled-marker {
-    background: var(--surface-1);
-    color: var(--text-muted);
+    background: var(--card-bg);
+    color: var(--text-secondary);
   }
 
   .day-titles {
@@ -514,12 +516,12 @@
     margin: 0;
     font-size: var(--text-sm);
     font-weight: 600;
-    color: var(--text);
+    color: var(--text-primary);
   }
 
   .day-meta {
     font-size: var(--text-xs);
-    color: var(--text-muted);
+    color: var(--text-secondary);
   }
 
   .day-content {
@@ -533,8 +535,8 @@
     align-items: center;
     gap: 0.65rem;
     padding: 0.55rem 0.75rem;
-    background: var(--surface-1);
-    border: 1px solid var(--border);
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
     border-radius: var(--radius-md);
     transition: border-color 0.15s ease;
   }
@@ -544,7 +546,7 @@
   }
 
   .stage-card {
-    background: var(--surface-2);
+    background: var(--surface);
     border-left: 3px solid var(--accent);
   }
 
@@ -555,8 +557,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: var(--surface-2);
-    color: var(--text);
+    background: var(--surface);
+    color: var(--text-primary);
     flex-shrink: 0;
   }
 
@@ -592,12 +594,12 @@
     display: inline-block;
     padding: 0.1rem 0.4rem;
     border-radius: var(--radius-sm);
-    font-size: 0.65rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    background: var(--surface-2);
-    color: var(--text-muted);
+    background: var(--surface);
+    color: var(--text-secondary);
   }
 
   .badge-stage {
@@ -628,7 +630,7 @@
 
   .stage-status {
     font-size: var(--text-xs);
-    color: var(--text-muted);
+    color: var(--text-secondary);
     text-transform: capitalize;
   }
 
@@ -641,7 +643,7 @@
 
   .item-title {
     font-size: var(--text-sm);
-    color: var(--text);
+    color: var(--text-primary);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -651,21 +653,21 @@
     display: inline-flex;
     align-items: center;
     gap: 0.2rem;
-    color: var(--text-muted);
-    font-size: 0.7rem;
+    color: var(--text-secondary);
+    font-size: var(--text-2xs);
   }
 
   .item-price {
     font-weight: 600;
-    color: var(--text);
-    font-size: 0.7rem;
+    color: var(--text-primary);
+    font-size: var(--text-2xs);
     margin-left: auto;
   }
 
   .remove-btn {
     background: transparent;
     border: none;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     cursor: pointer;
     padding: 0.25rem;
     border-radius: var(--radius-sm);
@@ -686,7 +688,7 @@
     align-items: center;
     gap: 0.5rem;
     padding: 0.35rem 0.5rem;
-    color: var(--text-muted);
+    color: var(--text-secondary);
     font-size: var(--text-xs);
     font-style: italic;
     opacity: 0.7;
@@ -695,7 +697,7 @@
   .empty-dash {
     width: 12px;
     height: 1px;
-    background: var(--border);
+    background: var(--card-border);
   }
 
   .empty-day-placeholder p {
@@ -709,14 +711,14 @@
     flex-wrap: wrap;
     padding: 0.25rem 0.5rem;
     border-radius: var(--radius-sm);
-    background: var(--surface-1);
-    border: 1px dashed var(--border);
+    background: var(--card-bg);
+    border: 1px dashed var(--card-border);
   }
 
   .commitments-label {
-    font-size: 0.65rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
-    color: var(--text-muted);
+    color: var(--text-secondary);
   }
 
   .commitment-pill {
@@ -725,9 +727,9 @@
     gap: 0.25rem;
     padding: 0.1rem 0.4rem;
     border-radius: var(--radius-full, 9999px);
-    font-size: 0.65rem;
-    background: var(--surface-2);
-    color: var(--text);
+    font-size: var(--text-2xs);
+    background: var(--surface);
+    color: var(--text-primary);
   }
 
   .commitment-committed {
@@ -739,8 +741,8 @@
   }
 
   .commitment-time {
-    color: var(--text-muted);
-    font-size: 0.6rem;
+    color: var(--text-secondary);
+    font-size: var(--text-2xs);
   }
 
   .stage-card-open {
@@ -764,7 +766,7 @@
     align-items: center;
     gap: 0.3rem;
     margin-top: 0.2rem;
-    font-size: 0.7rem;
+    font-size: var(--text-2xs);
     color: #f59e0b;
   }
 
@@ -777,17 +779,17 @@
   .day-assign-select {
     padding: 0.15rem 0.35rem;
     border-radius: var(--radius-sm);
-    border: 1px solid var(--border);
-    background: var(--surface-2);
-    color: var(--text-muted);
-    font-size: 0.65rem;
+    border: 1px solid var(--card-border);
+    background: var(--surface);
+    color: var(--text-secondary);
+    font-size: var(--text-2xs);
     cursor: pointer;
     outline: none;
     transition: all 0.15s ease;
   }
 
   .day-assign-select:hover {
-    color: var(--text);
+    color: var(--text-primary);
     border-color: var(--accent);
   }
 

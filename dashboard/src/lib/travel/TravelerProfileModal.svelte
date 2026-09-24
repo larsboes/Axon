@@ -272,6 +272,7 @@
               max="1"
               step="0.05"
               bind:value={profile.journey.price}
+              aria-label="Journey weight: price"
               oninput={() => markStated("journey.price")}
             />
             <span class="weight-val">{Math.round(profile.journey.price * 100)}%</span>
@@ -290,6 +291,7 @@
               max="1"
               step="0.05"
               bind:value={profile.journey.duration}
+              aria-label="Journey weight: duration"
               oninput={() => markStated("journey.duration")}
             />
             <span class="weight-val">{Math.round(profile.journey.duration * 100)}%</span>
@@ -308,6 +310,7 @@
               max="1"
               step="0.05"
               bind:value={profile.journey.reliability}
+              aria-label="Journey weight: reliability"
               oninput={() => markStated("journey.reliability")}
             />
             <span class="weight-val">{Math.round(profile.journey.reliability * 100)}%</span>
@@ -326,6 +329,7 @@
               max="1"
               step="0.05"
               bind:value={profile.journey.changes}
+              aria-label="Journey weight: changes"
               oninput={() => markStated("journey.changes")}
             />
             <span class="weight-val">{Math.round(profile.journey.changes * 100)}%</span>
@@ -363,6 +367,7 @@
               max="1"
               step="0.05"
               bind:value={profile.soft.budget_fit}
+              aria-label="Ranking weight: budget fit"
               oninput={() => markStated("soft.budget_fit")}
             />
             <span class="weight-val">{Math.round(profile.soft.budget_fit * 100)}%</span>
@@ -381,6 +386,7 @@
               max="1"
               step="0.05"
               bind:value={profile.soft.feasibility}
+              aria-label="Ranking weight: feasibility"
               oninput={() => markStated("soft.feasibility")}
             />
             <span class="weight-val">{Math.round(profile.soft.feasibility * 100)}%</span>
@@ -399,6 +405,7 @@
               max="1"
               step="0.05"
               bind:value={profile.soft.season}
+              aria-label="Ranking weight: season"
               oninput={() => markStated("soft.season")}
             />
             <span class="weight-val">{Math.round(profile.soft.season * 100)}%</span>
@@ -417,6 +424,7 @@
               max="1"
               step="0.05"
               bind:value={profile.soft.events}
+              aria-label="Ranking weight: events"
               oninput={() => markStated("soft.events")}
             />
             <span class="weight-val">{Math.round(profile.soft.events * 100)}%</span>
@@ -435,6 +443,7 @@
               max="1"
               step="0.05"
               bind:value={profile.soft.retrospective}
+              aria-label="Ranking weight: retrospective"
               oninput={() => markStated("soft.retrospective")}
             />
             <span class="weight-val">{Math.round(profile.soft.retrospective * 100)}%</span>
@@ -769,7 +778,7 @@
   }
 
   .prov-tag {
-    font-size: 0.625rem;
+    font-size: var(--text-2xs);
     font-weight: 600;
     padding: 0.1rem 0.3rem;
     border-radius: var(--radius-sm);
