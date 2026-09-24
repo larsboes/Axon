@@ -42,6 +42,7 @@
   import { SYNC_CHANGED_EVENT } from "$lib/sync-status";
   import { bridgedSrc } from "$lib/bridged-url";
   import { getMacSettings } from "$lib/mac-bridge";
+  import { modal } from "$lib/modal";
 
   type View = "plans" | "inventory" | "solve" | "buy";
 
@@ -99,6 +100,27 @@
 
   const size = (i: InteriorItem): string =>
     i.b !== null && i.t !== null ? `${i.b} × ${i.t}${i.h !== null ? ` × ${i.h}` : ""} cm` : "—";
+
+  /** The same measurement for a card's meta line, where an unknown size is left out rather
+      than printed as a lone "—" on a line of its own. */
+  const knownSize = (i: InteriorItem): string | null => (i.b !== null && i.t !== null ? size(i) : null);
+
+  /**
+   * Phone width, by the phone breakpoint `app.css` names (38rem). Below it the item editor
+   * is a bottom sheet over the list and a card's note is clamped; above it nothing changes.
+   * Read from the browser rather than guessed, and followed when the window is resized.
+   */
+  let phone = $state(false);
+  onMount(() => {
+    const query = window.matchMedia("(width < 38rem)");
+    const sync = () => (phone = query.matches);
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
+  });
+
+  /** Which cards show their whole note on a phone. A tap opens one; the rest stay clamped. */
+  let expandedNotes = $state<Record<string, boolean>>({});
 
   /** The lower edge: a product's own price, otherwise the bottom of its estimate. */
   const floorPrice = (i: InteriorItem): number | null => i.preis_cent ?? i.kosten_min_cent;
@@ -527,6 +549,31 @@
 
   let editing = $state<string | null>(null);
   let editorEl = $state<HTMLElement | null>(null);
+  /** The editor's first field, focused when it opens. */
+  let firstField = $state<HTMLInputElement | null>(null);
+  /** The sheet's scrolling body on a phone, so a result can be brought into view inside it. */
+  let sheetBody = $state<HTMLElement | null>(null);
+  let impactEl = $state<HTMLElement | null>(null);
+
+  /**
+   * Focus back on the Edit button of item `id`, looked up rather than remembered. Safari does
+   * not focus a button it was tapped on, so `document.activeElement` at open is `<body>`; and
+   * a save reloads the list, which replaces the button that was pressed.
+   */
+  function focusEditButton(id: string): void {
+    document.querySelector<HTMLElement>(`button[data-edit="${CSS.escape(id)}"]`)?.focus();
+  }
+
+  // The page behind a bottom sheet does not scroll under the reader's thumb.
+  $effect(() => {
+    if (!phone || editing === null) return;
+    const root = document.documentElement;
+    const before = root.style.overflow;
+    root.style.overflow = "hidden";
+    return () => {
+      root.style.overflow = before;
+    };
+  });
   /** Form values are strings while they are being typed; `patchFrom` converts on the way out. */
   type Draft = {
     label: string;
@@ -618,15 +665,46 @@
       bild: i.bild ?? "",
     };
     history = [];
-    // The editor renders below the whole inventory. On a phone that is dozens of cards
-    // down, so without this a tap on Edit looked like it did nothing (measured 2026-09-25).
     await tick();
-    editorEl?.scrollIntoView({ behavior: "smooth", block: "start" });
+    if (phone) {
+      // A bottom sheet over the list: nothing to scroll to. `use:modal` has focused the
+      // sheet; the first field is where the reader starts.
+      firstField?.focus();
+    } else if (editorEl) {
+      // The editor renders below the whole inventory, so without a scroll a click on Edit
+      // looked like it did nothing (measured 2026-09-25). Focus moves with the scroll, which
+      // is what `tools/dashboard-list-cursor.test.ts` asks of every scroll to an element.
+      firstField?.focus({ preventScroll: true });
+      const margin = Number.parseFloat(getComputedStyle(editorEl).scrollMarginTop) || 0;
+      window.scrollTo({
+        top: editorEl.getBoundingClientRect().top + window.scrollY - margin,
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+      });
+    }
     try {
       history = await interior.stateHistory(id);
     } catch {
       // A missing history is not a reason to refuse the edit; the panel says so itself.
     }
+  }
+
+  /** Close the editor and hand focus back to the Edit button that opened it. */
+  async function closeEditor(): Promise<void> {
+    const id = editing;
+    editing = null;
+    impact = null;
+    await tick();
+    if (id !== null) focusEditButton(id);
+  }
+
+  /** On a phone, bring a part of the sheet into view inside the sheet's own scroll. */
+  async function showInSheet(target: "impact" | "top"): Promise<void> {
+    if (!phone) return;
+    // After the tick, because the impact block is not rendered until `impact` is set.
+    await tick();
+    if (!sheetBody) return;
+    const top = target === "top" ? 0 : impactEl ? impactEl.offsetTop - 8 : null;
+    if (top !== null) sheetBody.scrollTo({ top, behavior: "smooth" });
   }
 
   /** Only the fields that actually differ. Sending the unchanged ones would work, but a diff
@@ -667,8 +745,10 @@
     saveError = null;
     try {
       impact = await interior.impact(editing, patch);
+      void showInSheet("impact");
     } catch (caught) {
       saveError = caught instanceof Error ? caught.message : String(caught);
+      void showInSheet("top");
     } finally {
       impactBusy = false;
     }
@@ -678,19 +758,23 @@
     if (editing === null) return;
     const patch = patchFrom(editing);
     if (Object.keys(patch).length === 0) {
-      editing = null;
+      void closeEditor();
       return;
     }
     saving = true;
     saveError = null;
     conflict = null;
     try {
-      await interior.patchItem(editing, patch, editingRevision);
+      const id = editing;
+      await interior.patchItem(id, patch, editingRevision);
       editing = null;
       impact = null;
       await load();
+      await tick();
+      focusEditButton(id);
     } catch (caught) {
       saveError = caught instanceof Error ? caught.message : String(caught);
+      void showInSheet("top");
       if (caught instanceof InteriorConflict) {
         // Show what stands now and keep the form open. Nothing is retried: saving again is a
         // deliberate overwrite, measured against the fresh values and their revision.
@@ -1009,21 +1093,24 @@
 {:else if loading}
   <p class="empty">Reading the model…</p>
 {:else}
+  <!-- On a phone: one sticky line under the header, scrolling sideways if it must. -->
   <nav class="views" aria-label="Interior views">
-    <button class:active={view === "plans"} onclick={() => (view = "plans")}>
+    <button class:active={view === "plans"} aria-pressed={view === "plans"} onclick={() => (view = "plans")}>
       Plans <span class="count">{layouts.length}</span>
     </button>
-    <button class:active={view === "inventory"} onclick={() => (view = "inventory")}>
+    <button class:active={view === "inventory"} aria-pressed={view === "inventory"} onclick={() => (view = "inventory")}>
       Inventory <span class="count">{inventory.length}</span>
     </button>
     <button
       class:active={view === "solve"}
+      aria-pressed={view === "solve"}
       onclick={() => (view = "solve")}
     >
       Solve
     </button>
     <button
       class:active={view === "buy"}
+      aria-pressed={view === "buy"}
       onclick={() => {
         view = "buy";
         if (order === null) void loadOrder();
@@ -1646,7 +1733,7 @@
     <h3 class="group">Wanted <span class="count">{wishlist.items.length}</span></h3>
     <ul class="items">
       {#each wishlist.items as i (i.id)}
-        <li class="card item">
+        <li class="card item" class:has-shot={!!i.bild}>
           <div class="head">
             <span class="label">{i.label}</span>
             {#if i.prioritaet}<span class="tag">{i.prioritaet}</span>{/if}
@@ -1657,22 +1744,41 @@
           {#if i.bild}
             <img class="shot" use:bridgedSrc={interior.mediaUrl(i.bild)} alt={i.label} loading="lazy" />
           {/if}
-          <span class="dims mono">{size(i)}</span>
-          <span class="price mono">
+          <!-- One meta line: size and price, with an unknown size left out rather than
+               printed as "—", and a missing price as a small tag. -->
+          <p class="meta">
+            {#if knownSize(i)}<span class="dims mono">{knownSize(i)}</span>{/if}
             {#if floorPrice(i) === null}
-              <span class="unpriced">no price</span>
-            {:else if i.preis_cent !== null}
-              {euro(i.preis_cent)}
+              <span class="tag unpriced">no price</span>
             {:else}
-              {euro(i.kosten_min_cent ?? 0)} – {euro(i.kosten_max_cent ?? 0)}
+              <span class="price mono">
+                {#if i.preis_cent !== null}
+                  {euro(i.preis_cent)}
+                {:else}
+                  {euro(i.kosten_min_cent ?? 0)} – {euro(i.kosten_max_cent ?? 0)}
+                {/if}
+              </span>
             {/if}
-          </span>
-          {#if i.unsicher.length > 0}
-            <span class="guess" title="measured? no.">~ {i.unsicher.join(", ")}</span>
+            {#if i.unsicher.length > 0}
+              <span class="guess" title="measured? no.">~ {i.unsicher.join(", ")}</span>
+            {/if}
+          </p>
+          {#if i.ziel}
+            {#if phone}
+              <!-- Clamped to two lines on a phone; a tap shows the rest. -->
+              <button
+                type="button"
+                class="target clamp"
+                class:open={expandedNotes[i.id]}
+                aria-expanded={!!expandedNotes[i.id]}
+                onclick={() => (expandedNotes[i.id] = !expandedNotes[i.id])}
+              ><span>{i.ziel}</span></button>
+            {:else}
+              <p class="target">{i.ziel}</p>
+            {/if}
           {/if}
-          {#if i.ziel}<p class="target">{i.ziel}</p>{/if}
           <div class="actions">
-            <button class="ghost" onclick={() => openEditor(i.id)}>Edit</button>
+            <button class="ghost" data-edit={i.id} onclick={() => openEditor(i.id)}>Edit</button>
             <button class="ghost" disabled={saving} onclick={() => move(i.id, "owned")}>
               Mark bought
             </button>
@@ -1685,7 +1791,7 @@
   <h3 class="group">Owned <span class="count">{owned.length}</span></h3>
   <ul class="items">
     {#each owned as { item: i } (i.id)}
-      <li class="card item">
+      <li class="card item" class:has-shot={!!i.bild}>
         <div class="head">
           <span class="label">{i.label}</span>
           {#if i.mitnahme}<span class="tag">{i.mitnahme}</span>{/if}
@@ -1695,11 +1801,15 @@
         {#if i.bild}
           <img class="shot" use:bridgedSrc={interior.mediaUrl(i.bild)} alt={i.label} loading="lazy" />
         {/if}
-        <span class="dims mono">{size(i)}</span>
-        {#if i.unsicher.length > 0}
-          <span class="guess" title="measured? no.">~ {i.unsicher.join(", ")}</span>
-        {:else if i.gemessen_am}
-          <span class="measured mono">measured {i.gemessen_am.slice(0, 10)}</span>
+        {#if knownSize(i) || i.unsicher.length > 0 || i.gemessen_am}
+          <p class="meta">
+            {#if knownSize(i)}<span class="dims mono">{knownSize(i)}</span>{/if}
+            {#if i.unsicher.length > 0}
+              <span class="guess" title="measured? no.">~ {i.unsicher.join(", ")}</span>
+            {:else if i.gemessen_am}
+              <span class="measured mono">measured {i.gemessen_am.slice(0, 10)}</span>
+            {/if}
+          </p>
         {/if}
         {#if declares(i)}
           <span class="declares mono" title="This piece states what it needs, so the name heuristic does not run for it (PRD Q61).">
@@ -1707,7 +1817,7 @@
           </span>
         {/if}
         <div class="actions">
-          <button class="ghost" onclick={() => openEditor(i.id)}>Edit</button>
+          <button class="ghost" data-edit={i.id} onclick={() => openEditor(i.id)}>Edit</button>
           <button class="ghost" disabled={saving} onclick={() => move(i.id, "gone")}>
             Given away
           </button>
@@ -1716,139 +1826,186 @@
     {/each}
   </ul>
 
-  {#if editing !== null}
-    {@const row = byId.get(editing)}
-    <div class="card editor" bind:this={editorEl}>
-      <h4>{row?.item.label ?? editing} <span class="mono id">{editing}</span></h4>
-
-      {#if saveError}<p class="err">{saveError}</p>{/if}
-      {#if conflict}
-        <div class="err conflict">
-          <p>Saved on another device meanwhile. Nothing was written. Values now:</p>
-          <ul>
-            {#each Object.entries(conflict.patch) as [key, mine]}
-              <li>
-                <span class="mono">{key}</span>: now
-                <strong>{JSON.stringify((conflict.current as Record<string, unknown> | null)?.[key] ?? null)}</strong>,
-                yours {JSON.stringify(mine)}
-              </li>
-            {/each}
-          </ul>
-          <p>Save again to overwrite with yours.</p>
-        </div>
-      {/if}
-
-      <div class="grid">
-        <label>label <input bind:value={draft.label} /></label>
-        <label>width cm <input bind:value={draft.b} inputmode="numeric" /></label>
-        <label>depth cm <input bind:value={draft.t} inputmode="numeric" /></label>
-        <label>height cm <input bind:value={draft.h} inputmode="numeric" /></label>
-        <label>price ct <input bind:value={draft.preis_cent} inputmode="numeric" /></label>
-        <label>priority <input bind:value={draft.prioritaet} /></label>
-      </div>
-
-      <label class="wide">
-        picture <input bind:value={draft.bild} placeholder="produkt/…-01-….png" />
-      </label>
-      <p class="note">
-        A path below the private interior asset root. Kept out of the bundle and fetched only
-        when shown.
-      </p>
-      {#if draft.bild}
-        <img class="shot big" use:bridgedSrc={interior.mediaUrl(String(draft.bild))} alt="" />
-      {/if}
-      <label class="wide">note <textarea rows="2" bind:value={draft.hinweis}></textarea></label>
-      <label class="wide">reasoning <textarea rows="2" bind:value={draft.begruendung}></textarea></label>
-
-      <h5>What this piece needs</h5>
-      <p class="note">
-        Fill any of these and the name heuristic stops judging this piece — it is checked against
-        exactly what it states and nothing else (PRD Q61). Leave them empty and it is still
-        measured by its name.
-      </p>
-      <div class="grid">
-        <label>
-          opens
-          <select bind:value={draft.opens}>
-            <option value="">— not stated —</option>
-            <option value="nord">nord</option>
-            <option value="sued">sued</option>
-            <option value="ost">ost</option>
-            <option value="west">west</option>
-          </select>
-        </label>
-        <label>open_clear cm <input bind:value={draft.open_clear} inputmode="numeric" /></label>
-        <label>
-          wall_ok
-          <select bind:value={draft.wall_ok}>
-            <option value="">— not stated —</option>
-            <option value="true">true — may sit against a wall</option>
-            <option value="false">false — that side is useless there</option>
-          </select>
-        </label>
-        <label>access_sides <input bind:value={draft.access_sides} inputmode="numeric" /></label>
-        <label>access_clear cm <input bind:value={draft.access_clear} inputmode="numeric" /></label>
-        <label class="check">
-          <input type="checkbox" bind:checked={draft.raumtrenner} />
-          raumtrenner — meant to stand free
-        </label>
-      </div>
-
-      <div class="actions">
-        <button class="ghost" disabled={impactBusy} onclick={preview}>
-          {impactBusy ? "Checking…" : "Check impact"}
-        </button>
-        <button disabled={saving} onclick={save}>{saving ? "Saving…" : "Save"}</button>
-        <button class="ghost" onclick={() => { editing = null; impact = null; }}>Close</button>
-      </div>
-
-      <!--
-        The reason this is a button and not a surprise. Declaring which side the wardrobe opens
-        costs 2 or 4 layouts depending on the direction, and nothing said so until it was worked
-        out by hand. The capability re-checks every layout here; the page only prints the answer.
-      -->
-      {#if impact}
-        <div class="impact" class:worse={impact.bestanden_nachher < impact.bestanden_vorher}>
-          <strong>
-            {impact.bestanden_vorher} → {impact.bestanden_nachher} of {impact.layouts} layouts pass
-          </strong>
-          {#if impact.geaendert.length === 0}
-            <p>No verdict moves. Safe to save.</p>
-          {:else}
-            <ul>
-              {#each impact.geaendert as g (g.layout)}
-                <li>
-                  <span class="mono">{g.layout}</span>
-                  {g.vorher.pass ? "passes" : "fails"} → {g.nachher.pass ? "passes" : "fails"}
-                  {#if g.nachher.hard.length > 0}
-                    <span class="mono rules">{g.nachher.hard.join(", ")}</span>
-                  {/if}
-                </li>
-              {/each}
-            </ul>
-          {/if}
-        </div>
-      {/if}
-
-      <h5>State history</h5>
-      {#if history.length === 0}
-        <p class="note">No history recorded.</p>
-      {:else}
-        <ul class="history">
-          {#each history as h, n (h.since + n)}
+  <!--
+    One editor, two frames. On a phone it is a bottom sheet over the list, with Save and
+    Cancel pinned under the fields; above the phone breakpoint it stays the card below the
+    inventory it has always been. The fields, the impact preview and the history are the
+    same snippets in both.
+  -->
+  {#snippet editorFields()}
+    {#if saveError}<p class="err">{saveError}</p>{/if}
+    {#if conflict}
+      <div class="err conflict">
+        <p>Saved on another device meanwhile. Nothing was written. Values now:</p>
+        <ul>
+          {#each Object.entries(conflict.patch) as [key, mine]}
             <li>
-              <span class="mono st">{h.state}</span>
-              <span class="mono when">{h.since.slice(0, 10)}</span>
-              {#if h.note}<span class="why">{h.note}</span>{/if}
+              <span class="mono">{key}</span>: now
+              <strong>{JSON.stringify((conflict.current as Record<string, unknown> | null)?.[key] ?? null)}</strong>,
+              yours {JSON.stringify(mine)}
             </li>
           {/each}
         </ul>
-        <p class="note">
-          Appended, never overwritten — a wish that gets bought is a second row, and that span is
-          what the wishlist joins to money with.
-        </p>
-      {/if}
+        <p>Save again to overwrite with yours.</p>
+      </div>
+    {/if}
+
+    <div class="grid">
+      <label class="f-full">label <input bind:this={firstField} bind:value={draft.label} /></label>
+      <label class="f-third">width cm <input bind:value={draft.b} inputmode="numeric" /></label>
+      <label class="f-third">depth cm <input bind:value={draft.t} inputmode="numeric" /></label>
+      <label class="f-third">height cm <input bind:value={draft.h} inputmode="numeric" /></label>
+      <label class="f-half">price ct <input bind:value={draft.preis_cent} inputmode="numeric" /></label>
+      <label class="f-half">priority <input bind:value={draft.prioritaet} /></label>
     </div>
+
+    <label class="wide">
+      picture <input bind:value={draft.bild} placeholder="produkt/…-01-….png" />
+    </label>
+    <p class="note">
+      A path below the private interior asset root. Kept out of the bundle and fetched only
+      when shown.
+    </p>
+    {#if draft.bild}
+      <img class="shot big" use:bridgedSrc={interior.mediaUrl(String(draft.bild))} alt="" />
+    {/if}
+    <label class="wide">note <textarea rows="2" bind:value={draft.hinweis}></textarea></label>
+    <label class="wide">reasoning <textarea rows="2" bind:value={draft.begruendung}></textarea></label>
+
+    <h5>What this piece needs</h5>
+    <p class="note">
+      Fill any of these and the name heuristic stops judging this piece — it is checked against
+      exactly what it states and nothing else (PRD Q61). Leave them empty and it is still
+      measured by its name.
+    </p>
+    <div class="grid">
+      <label class="f-half">
+        opens
+        <select bind:value={draft.opens}>
+          <option value="">— not stated —</option>
+          <option value="nord">nord</option>
+          <option value="sued">sued</option>
+          <option value="ost">ost</option>
+          <option value="west">west</option>
+        </select>
+      </label>
+      <label class="f-half">open_clear cm <input bind:value={draft.open_clear} inputmode="numeric" /></label>
+      <label>
+        wall_ok
+        <select bind:value={draft.wall_ok}>
+          <option value="">— not stated —</option>
+          <option value="true">true — may sit against a wall</option>
+          <option value="false">false — that side is useless there</option>
+        </select>
+      </label>
+      <label class="f-half">access_sides <input bind:value={draft.access_sides} inputmode="numeric" /></label>
+      <label class="f-half">access_clear cm <input bind:value={draft.access_clear} inputmode="numeric" /></label>
+      <label class="check">
+        <input type="checkbox" bind:checked={draft.raumtrenner} />
+        raumtrenner — meant to stand free
+      </label>
+    </div>
+
+  {/snippet}
+
+  {#snippet editorAfter()}
+    <!--
+      The reason this is a button and not a surprise. Declaring which side the wardrobe opens
+      costs 2 or 4 layouts depending on the direction, and nothing said so until it was worked
+      out by hand. The capability re-checks every layout here; the page only prints the answer.
+    -->
+    {#if impact}
+      <div class="impact" bind:this={impactEl} class:worse={impact.bestanden_nachher < impact.bestanden_vorher}>
+        <strong>
+          {impact.bestanden_vorher} → {impact.bestanden_nachher} of {impact.layouts} layouts pass
+        </strong>
+        {#if impact.geaendert.length === 0}
+          <p>No verdict moves. Safe to save.</p>
+        {:else}
+          <ul>
+            {#each impact.geaendert as g (g.layout)}
+              <li>
+                <span class="mono">{g.layout}</span>
+                {g.vorher.pass ? "passes" : "fails"} → {g.nachher.pass ? "passes" : "fails"}
+                {#if g.nachher.hard.length > 0}
+                  <span class="mono rules">{g.nachher.hard.join(", ")}</span>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
+    {/if}
+
+    <h5>State history</h5>
+    {#if history.length === 0}
+      <p class="note">No history recorded.</p>
+    {:else}
+      <ul class="history">
+        {#each history as h, n (h.since + n)}
+          <li>
+            <span class="mono st">{h.state}</span>
+            <span class="mono when">{h.since.slice(0, 10)}</span>
+            {#if h.note}<span class="why">{h.note}</span>{/if}
+          </li>
+        {/each}
+      </ul>
+      <p class="note">
+        Appended, never overwritten — a wish that gets bought is a second row, and that span is
+        what the wishlist joins to money with.
+      </p>
+    {/if}
+  {/snippet}
+
+  {#if editing !== null}
+    {@const row = byId.get(editing)}
+    {#if phone}
+      <div class="sheet-wrap">
+        <button class="sheet-backdrop" aria-label="Close editor" onclick={() => !saving && closeEditor()}></button>
+        <div
+          class="sheet editor"
+          bind:this={editorEl}
+          use:modal={{ onClose: closeEditor, canClose: () => !saving }}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="item-editor-title"
+          tabindex="-1"
+        >
+          <div class="sheet-grip" aria-hidden="true"></div>
+          <div class="sheet-head">
+            <h4 id="item-editor-title">{row?.item.label ?? editing} <span class="mono id">{editing}</span></h4>
+            <button type="button" class="btn btn-soft" onclick={closeEditor}>Close</button>
+          </div>
+          <div class="sheet-body" bind:this={sheetBody}>
+            {@render editorFields()}
+            {@render editorAfter()}
+          </div>
+          <div class="actions sheet-foot">
+            <button class="ghost" disabled={impactBusy} onclick={preview}>
+              {impactBusy ? "Checking…" : "Check impact"}
+            </button>
+            <button class="ghost" disabled={saving} onclick={closeEditor}>Cancel</button>
+            <button disabled={saving} onclick={save}>{saving ? "Saving…" : "Save"}</button>
+          </div>
+        </div>
+      </div>
+    {:else}
+      <div class="card editor" bind:this={editorEl}>
+        <h4>{row?.item.label ?? editing} <span class="mono id">{editing}</span></h4>
+
+        {@render editorFields()}
+
+        <div class="actions">
+          <button class="ghost" disabled={impactBusy} onclick={preview}>
+            {impactBusy ? "Checking…" : "Check impact"}
+          </button>
+          <button disabled={saving} onclick={save}>{saving ? "Saving…" : "Save"}</button>
+          <button class="ghost" onclick={closeEditor}>Close</button>
+        </div>
+
+        {@render editorAfter()}
+      </div>
+    {/if}
   {/if}
 
   <div class="addrow">
@@ -1877,9 +2034,9 @@
             <option value="owned">owned</option>
           </select>
         </label>
-        <label>width cm <input bind:value={draftNew.b} inputmode="numeric" /></label>
-        <label>depth cm <input bind:value={draftNew.t} inputmode="numeric" /></label>
-        <label>height cm <input bind:value={draftNew.h} inputmode="numeric" /></label>
+        <label class="f-third">width cm <input bind:value={draftNew.b} inputmode="numeric" /></label>
+        <label class="f-third">depth cm <input bind:value={draftNew.t} inputmode="numeric" /></label>
+        <label class="f-third">height cm <input bind:value={draftNew.h} inputmode="numeric" /></label>
         <label>price ct <input bind:value={draftNew.preis} inputmode="numeric" /></label>
       </div>
       <p class="note">
@@ -1900,7 +2057,7 @@
       {#each gone as { item: i } (i.id)}
         <li class="card item muted">
           <div class="head"><span class="label">{i.label}</span></div>
-          <span class="dims mono">{size(i)}</span>
+          {#if knownSize(i)}<p class="meta"><span class="dims mono">{knownSize(i)}</span></p>{/if}
         </li>
       {/each}
     </ul>
@@ -2507,10 +2664,18 @@
     margin: 0;
     padding: 0;
   }
+  /* A column, not a grid: a card in a tall row keeps its lines together and puts its
+     actions at the bottom, where a grid spread the spare height between every line and
+     stretched the buttons (measured at 1280px, 2026-09-25). */
   .item {
-    display: grid;
+    display: flex;
+    flex-direction: column;
     gap: 0.25rem;
     padding: 0.7rem 0.85rem;
+  }
+  .item > .actions {
+    margin-top: auto;
+    padding-top: 0.6rem;
   }
   .item.muted {
     opacity: 0.55;
@@ -2548,8 +2713,23 @@
     color: var(--text-secondary);
     font-size: var(--text-sm);
   }
-  .unpriced {
-    color: var(--warning-ink);
+  /* Size, price and the guess marker on one line. A part that is not known is left out. */
+  .meta {
+    align-items: baseline;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1) var(--space-3);
+    margin: 0;
+  }
+  .meta .dims + .price::before {
+    color: var(--text-tertiary);
+    content: "·";
+    margin-right: var(--space-3);
+  }
+  /* A missing price is a fact about the record, not an alarm: a quiet tag. */
+  .tag.unpriced {
+    background: var(--surface);
+    color: var(--text-tertiary);
   }
   .guess {
     color: var(--warning-ink);
@@ -2559,6 +2739,31 @@
     color: var(--text-tertiary);
     font-size: var(--text-xs);
     margin: 0.25rem 0 0;
+  }
+  /* The phone's note: two lines, and the whole text on a tap. Still a button, so it is
+     reachable and announced as something that opens. */
+  .target.clamp {
+    background: none;
+    border: 0;
+    color: var(--text-tertiary);
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--text-xs);
+    line-height: var(--leading-normal);
+    padding: 0;
+    text-align: left;
+    width: 100%;
+  }
+  /* The clamp sits on the span: WebKit does not lay a <button> out as a line-clamp box. */
+  .target.clamp span {
+    -webkit-box-orient: vertical;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+  }
+  .target.clamp.open span {
+    display: block;
   }
 
   .card {
@@ -2761,5 +2966,279 @@
     margin: 0.35rem 0;
     padding: 0.4rem 0.6rem;
     white-space: pre-wrap;
+  }
+
+  /* ─── The editor as a bottom sheet (rendered only below the phone breakpoint) ─── */
+
+  /* Above the header (50) and the bottom tab bar (45): a modal covers the shell. */
+  .sheet-wrap {
+    align-items: flex-end;
+    display: flex;
+    inset: 0;
+    position: fixed;
+    z-index: 100;
+  }
+  .sheet-backdrop {
+    background: rgb(0 0 0 / 48%);
+    border: 0;
+    height: 100%;
+    inset: 0;
+    position: absolute;
+    width: 100%;
+  }
+  .editor.sheet {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-bottom: 0;
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+    box-shadow: var(--glass-shadow);
+    display: flex;
+    flex-direction: column;
+    margin: 0;
+    max-height: 90dvh;
+    padding: 0;
+    position: relative;
+    width: 100%;
+  }
+  .editor.sheet:focus,
+  .editor.sheet:focus-visible {
+    box-shadow: var(--glass-shadow);
+    outline: none;
+  }
+  .sheet-grip {
+    background: var(--rule);
+    border-radius: 999px;
+    flex: none;
+    height: 0.3rem;
+    margin: var(--space-3) auto 0;
+    width: 2.5rem;
+  }
+  .sheet-head {
+    align-items: center;
+    border-bottom: 1px solid var(--card-border);
+    display: flex;
+    flex: none;
+    gap: var(--space-3);
+    justify-content: space-between;
+    padding: var(--space-2) var(--space-5) var(--space-3);
+  }
+  .editor .sheet-head h4 {
+    flex-wrap: wrap;
+    font-size: var(--text-md);
+    margin: 0;
+    min-width: 0;
+  }
+  .sheet-head .btn {
+    flex: none;
+    min-height: 2.75rem;
+  }
+  /* The one part that scrolls; `position` makes it the offset parent `showInSheet` measures from. */
+  .sheet-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: var(--space-4) var(--space-5) var(--space-5);
+    position: relative;
+  }
+  .actions.sheet-foot {
+    background: var(--card-bg);
+    border-top: 1px solid var(--card-border);
+    flex: none;
+    flex-wrap: nowrap;
+    gap: var(--space-3);
+    margin: 0;
+    padding: var(--space-3) var(--space-5) calc(var(--space-3) + env(safe-area-inset-bottom, 0px));
+  }
+  .sheet-foot button {
+    flex: 1 1 auto;
+    font-size: var(--text-sm);
+    min-height: 2.75rem;
+    padding: 0 var(--space-3);
+    white-space: nowrap;
+  }
+
+  /* ─── Phone width (the 38rem breakpoint `app.css` names) ─────────────────── */
+
+  @media (width < 38rem) {
+    /* One segmented line, pinned under the header. The header is its bar plus the top
+       safe area plus a 1px rule; the band runs edge to edge over main's padding. */
+    /* Opaque, not glass: labels over moving text were unreadable wherever the blur was
+       missing, and a strip this thin gains nothing from it. */
+    .views {
+      background-color: var(--page-bg);
+      border-bottom: 1px solid var(--header-border);
+      gap: 0;
+      margin: var(--space-4) calc(-1 * var(--space-5)) var(--space-4);
+      overflow-x: auto;
+      padding: var(--space-2) var(--space-4);
+      position: sticky;
+      scrollbar-width: none;
+      top: calc(var(--header-h) + env(safe-area-inset-top, 0px) + 1px);
+      z-index: 30;
+    }
+    .views::-webkit-scrollbar {
+      display: none;
+    }
+    .views button {
+      align-items: center;
+      border-color: transparent;
+      border-radius: var(--radius-md);
+      display: inline-flex;
+      flex: 0 0 auto;
+      gap: var(--space-1);
+      min-height: 2.5rem;
+      padding: 0 var(--space-3);
+      white-space: nowrap;
+    }
+    .views button:not(.active) {
+      background: transparent;
+    }
+    .views button.active {
+      box-shadow: var(--card-shadow);
+    }
+    .views .count {
+      background: var(--surface);
+      border-radius: var(--radius-sm);
+      font-size: var(--text-2xs);
+      font-variant-numeric: tabular-nums;
+      line-height: var(--leading-normal);
+      margin: 0;
+      padding: 0 var(--space-1);
+    }
+
+    /* Denser cards: a photo becomes a thumbnail beside the text, the actions a short row. */
+    .item {
+      align-content: start;
+      display: grid;
+      gap: var(--space-2);
+      padding: var(--space-4);
+    }
+    .item.has-shot {
+      column-gap: var(--space-4);
+      grid-template-columns: minmax(0, 1fr) 4.5rem;
+    }
+    .item.has-shot > * {
+      grid-column: 1;
+    }
+    .item.has-shot > .shot {
+      grid-column: 2;
+      grid-row: 1 / span 2;
+      height: 4.5rem;
+      margin: 0;
+      width: 4.5rem;
+    }
+    .item.has-shot > .actions {
+      grid-column: 1 / -1;
+    }
+    .item > .actions {
+      flex-wrap: nowrap;
+      margin-top: var(--space-1);
+      padding-top: 0;
+    }
+    .item .actions button {
+      font-size: var(--text-sm);
+      min-height: 2.5rem;
+      padding: 0 var(--space-4);
+    }
+    .target {
+      margin: 0;
+    }
+
+    .group {
+      margin: var(--space-5) 0 var(--space-3);
+    }
+
+    /* Solve and Buy & declare: their cards had no inset and a page-sized heading. */
+    section.card {
+      padding: var(--space-4);
+    }
+    section.card h2 {
+      font-size: var(--text-md);
+      line-height: var(--leading-tight);
+      margin: 0 0 var(--space-2);
+    }
+    section.card + section.card {
+      margin-top: var(--space-4);
+    }
+    .probe input[type="number"],
+    .stepper input {
+      font-size: var(--text-base);
+      min-height: 2.75rem;
+    }
+    /* A wide table scrolls inside its card instead of pushing the page sideways. */
+    .corridors {
+      display: block;
+      overflow-x: auto;
+    }
+    .corridors td {
+      padding-left: var(--space-3);
+      white-space: nowrap;
+    }
+    .corridors th {
+      min-width: 9rem;
+    }
+
+        /* Every number and sentence stays; only the air between them goes. */
+    .budget {
+      padding: var(--space-4);
+    }
+    .budget h2 {
+      font-size: var(--text-sm);
+      margin: 0 0 var(--space-1);
+    }
+    .budget .sum {
+      gap: var(--space-1) var(--space-3);
+    }
+    .budget .sum strong {
+      font-size: var(--text-lg);
+    }
+    .budget .caveat {
+      margin-top: var(--space-3);
+    }
+    /* A warning that wraps keeps its icon on the first line. */
+    .caveat,
+    .unchecked,
+    .guessed {
+      align-items: flex-start;
+    }
+    .finance {
+      font-size: var(--text-xs);
+      line-height: var(--leading-normal);
+      margin-top: var(--space-3);
+    }
+
+    /* Fields in rows that match what they measure: the three dimensions together, price
+       beside priority. 16px or more, or iOS zooms the page on focus; 44px tall to tap. */
+    .editor .grid {
+      gap: var(--space-4) var(--space-3);
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+    }
+    .editor .grid > label {
+      grid-column: span 6;
+    }
+    .editor .grid > label.f-half {
+      grid-column: span 3;
+    }
+    .editor .grid > label.f-third {
+      grid-column: span 2;
+    }
+    .editor label {
+      font-size: var(--text-2xs);
+    }
+    .editor input,
+    .editor select,
+    .editor textarea {
+      font-size: var(--text-base);
+      min-height: 2.75rem;
+      padding: var(--space-2) var(--space-3);
+    }
+    .editor input[type="checkbox"] {
+      min-height: 0;
+      width: auto;
+    }
+    .editor .note {
+      font-size: var(--text-xs);
+    }
   }
 </style>

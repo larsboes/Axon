@@ -28,6 +28,21 @@
   let captureMode = $state<RoomPlanCaptureMode | null>(null);
   let error = $state<string | null>(null);
 
+  /**
+   * The explanation is folded on a phone, where it filled the whole first screen, and open
+   * above the phone breakpoint (38rem, `app.css`), where the summary is hidden and the text
+   * reads as the paragraph it always was.
+   */
+  let explainOpen = $state(true);
+
+  onMount(() => {
+    const query = window.matchMedia("(width < 38rem)");
+    const sync = () => (explainOpen = !query.matches);
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
+  });
+
   onMount(() => {
     const subscriptions = [
       listenRoomPlan<{ phase: string; draft_id?: string }>("capture-progress", (event) => {
@@ -146,11 +161,14 @@
     </span>
   </div>
 
-  <p class="explain">
-    The iPhone keeps capture offline. Refine existing creates a child revision for comparison;
-    Start new scan creates a separate room revision. The native USDZ stays preserved and no
-    capture replaces the measured apartment model automatically.
-  </p>
+  <details class="explain" bind:open={explainOpen}>
+    <summary>How capture works</summary>
+    <p>
+      The iPhone keeps capture offline. Refine existing creates a child revision for comparison;
+      Start new scan creates a separate room revision. The native USDZ stays preserved and no
+      capture replaces the measured apartment model automatically.
+    </p>
+  </details>
 
   <div class="actions">
     {#if !running}
@@ -224,6 +242,18 @@
   .availability { color: var(--muted, #68736f); font: .78rem ui-monospace, monospace; }
   .availability.online { color: #397565; }
   .explain { max-width: 50rem; color: var(--muted, #68736f); line-height: 1.5; }
+  .explain p { margin: 1em 0; }
+  .explain summary { display: none; }
+  @media (width < 38rem) {
+    /* Compact on a phone: title and status, the fold, then the action. */
+    .capture-panel { padding: var(--space-4); border-radius: var(--radius-lg); }
+    .capture-heading { align-items: flex-start; }
+    h2 { font-size: var(--text-md); }
+    .explain { margin: 0; font-size: var(--text-sm); }
+    .explain summary { display: list-item; cursor: pointer; font-size: var(--text-xs); min-height: 2.75rem; line-height: 2.75rem; }
+    .explain p { margin: 0 0 var(--space-2); }
+    .actions { flex-wrap: wrap; gap: var(--space-3); }
+  }
   button { border: 0; border-radius: 999px; padding: .65rem 1rem; background: #397565; color: white; cursor: pointer; }
   button:disabled { cursor: not-allowed; opacity: .45; }
   button.secondary { background: #5f746c; }
