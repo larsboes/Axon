@@ -128,8 +128,9 @@ describe('executeCalendarAccept', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe('/calendar/api/entries');
     expect(calls[0].method).toBe('POST');
-    const body = calls[0].body as { starts_at: string; ends_at: string };
+    const body = calls[0].body as { starts_at: string; ends_at: string; commitment: string };
     expect(body.starts_at).toBe('2026-10-15T09:30:00');
+    expect(body.commitment).toBe('planned');
     expect(body.ends_at).toBe('2026-10-15T11:30:00');
   });
 
@@ -369,6 +370,15 @@ describe('engine: travel', () => {
     const search = calls.find((c) => c.url.startsWith('/api/search'));
     expect(search?.url).toBe('/api/search?from=Frankfurt&to=Berlin&time=2026-10-16T08%3A00%3A00');
     expect(reply.cards).toEqual([{ type: 'journey_option', data: { journey } }]);
+  });
+
+  it('starts transit before it searches, because transit is on-demand', async () => {
+    mockFetch((url) => (url.startsWith('/trips/') ? json(draft()) : json([journey])));
+    await assistantEngine.processQuery('train from Frankfurt to Berlin', extractRouteContext('/travel'));
+    const start = calls.findIndex((c) => c.method === 'POST' && c.url.endsWith('/capabilities/transit/start'));
+    const search = calls.findIndex((c) => c.url.startsWith('/api/search'));
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(start).toBeLessThan(search);
   });
 });
 

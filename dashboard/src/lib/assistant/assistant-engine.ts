@@ -1,4 +1,4 @@
-import { calendar, interior, transit, trips, type IntentDraft, type Journey } from '$lib/api';
+import { axonStatus, calendar, interior, transit, trips, type IntentDraft, type Journey } from '$lib/api';
 import { addDays, findFreeSlots, localDate, unreadableEntries } from './calendar-slots';
 import { matchedCues, routeByKeywords } from './keyword-router';
 import type { ActionCard, AssistantMessage, IntentDomain, RouteContext } from './types';
@@ -102,6 +102,11 @@ export class AssistantEngine {
       lines.push(`Not searched: transit searches rail only, and the sentence asked for ${modes.join(', ')}.`);
       return { content: lines.join('\n') };
     }
+
+    // transit is on-demand. Start it before the search, as /travel/connections does on
+    // mount (operator ruling 2026-09-24). A failed start is not fatal here: the search
+    // below reports the real error.
+    await axonStatus.start('transit').catch(() => undefined);
 
     let journeys: Journey[];
     try {
