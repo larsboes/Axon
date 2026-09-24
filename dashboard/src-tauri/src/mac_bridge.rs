@@ -352,11 +352,22 @@ impl ReqwestTransport {
     }
 }
 
-/// Connect, DNS and timeout errors mean the Mac was not reached; anything else is a failure
-/// that the offline path must not hide.
+/// Whether an error from `send()` means the Mac was not reached.
+///
+/// Decided by what the error is NOT, because the flags are unreliable per platform:
+/// measured on an iPhone in airplane mode (2026-09-25), the DNS failure ("nodename nor
+/// servname provided, or not known") came back without `is_connect()`, so the page showed
+/// the error instead of the local copy. Any error that arrives before a response exists means
+/// the Mac did not answer, except a request we built wrongly (`is_builder`) and a redirect,
+/// which the client refuses by policy. Those are our faults, and the offline path must not hide
+/// them.
+fn is_unreachable(builder: bool, redirect: bool) -> bool {
+    !builder && !redirect
+}
+
 fn classify(error: reqwest::Error, what: &str) -> SendError {
     let message = format!("mac-bridge: {what}: {error}");
-    if error.is_connect() || error.is_timeout() {
+    if is_unreachable(error.is_builder(), error.is_redirect()) {
         SendError::Unreachable(message)
     } else {
         SendError::Failed(message)
@@ -624,6 +635,15 @@ pub async fn sync_resolve<R: Runtime>(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn only_our_own_request_errors_count_as_failures_not_as_offline() {
+        // DNS, connect, TLS, timeout, reset: all arrive without a response, so all are offline.
+        assert!(is_unreachable(false, false));
+        assert!(!is_unreachable(true, false));
+        assert!(!is_unreachable(false, true));
+    }
+
     use super::*;
 
     fn base(url: &str) -> Url {
