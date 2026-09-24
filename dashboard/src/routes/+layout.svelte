@@ -11,6 +11,7 @@
   import SoundscapeDock from "$lib/SoundscapeDock.svelte";
   import AssistantDrawer from "$lib/assistant/AssistantDrawer.svelte";
   import MacConnection from "$lib/MacConnection.svelte";
+  import SyncStatus from "$lib/SyncStatus.svelte";
 
   let { children, data } = $props();
 
@@ -213,6 +214,8 @@
       </details>
     </div>
   </header>
+
+  <SyncStatus />
 
   {#if demo}
     <!-- Sticky under the header rather than dismissible: a visitor who scrolls past a

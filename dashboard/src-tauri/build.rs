@@ -7,6 +7,10 @@ const COMMANDS: &[&str] = &[
     "mac_request_bytes",
     "mac_settings_get",
     "mac_settings_set",
+    "sync_status",
+    "sync_entries",
+    "sync_flush",
+    "sync_resolve",
 ];
 
 fn main() {

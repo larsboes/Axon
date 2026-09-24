@@ -17,6 +17,7 @@
     interior,
     InteriorConflict,
     type InteriorItem,
+    type InteriorInventoryRow,
     type InteriorLayoutDetail,
     type InteriorLayoutSummary,
     type InteriorState,
@@ -38,6 +39,7 @@
   import RoomCapturePanel from "$lib/interior/RoomCapturePanel.svelte";
   import RoomPlanRevisionReview from "$lib/interior/RoomPlanRevisionReview.svelte";
   import { isRoomPlanPhone } from "$lib/roomplan";
+  import { SYNC_CHANGED_EVENT } from "$lib/sync-status";
   import { bridgedSrc } from "$lib/bridged-url";
   import { getMacSettings } from "$lib/mac-bridge";
 
@@ -54,7 +56,7 @@
   let detail = $state<InteriorLayoutDetail | null>(null);
   let detailError = $state<string | null>(null);
 
-  let inventory = $state<{ item: InteriorItem; state: InteriorState | null }[]>([]);
+  let inventory = $state<InteriorInventoryRow[]>([]);
   let wishlist = $state<InteriorWishlist | null>(null);
   /** The flat itself: its name, its outer measurements, its area. Measured, not drawn from. */
   let room = $state<InteriorModel | null>(null);
@@ -560,6 +562,13 @@
   let draftNew = $state({ id: "", label: "", kind: "piece" as "piece" | "slot", state: "wanted" as InteriorState, b: "", t: "", h: "", preis: "" });
 
   const byId = $derived(new Map(inventory.map((r) => [r.item.id, r])));
+  /**
+   * Items whose shown values include an edit that has not reached the Mac, and items whose
+   * queued edit the Mac refused as stale. Both are set only in the app, by the device's
+   * outbox (`src-tauri/src/sync.rs`); the web shell never sees them.
+   */
+  const pendingIds = $derived(new Set(inventory.filter((r) => r.pending).map((r) => r.item.id)));
+  const conflictIds = $derived(new Set(inventory.filter((r) => r.conflict).map((r) => r.item.id)));
 
   /** Which Q61 fields a piece fills in, if any. Empty means the name heuristic still judges it. */
   const declares = (i: InteriorItem): string =>
@@ -928,6 +937,17 @@
       starting = false;
     }
   }
+
+  // The outbox sent or dropped an edit: show the Mac's answer instead of the pending values.
+  onMount(() => {
+    const reload = () => {
+      if (inventory.length === 0) return;
+      void interior.inventory().then((rows) => (inventory = rows)).catch(() => {});
+      void interior.wishlist().then((w) => (wishlist = w)).catch(() => {});
+    };
+    window.addEventListener(SYNC_CHANGED_EVENT, reload);
+    return () => window.removeEventListener(SYNC_CHANGED_EVENT, reload);
+  });
 
   onMount(() => {
     if (isRoomPlanPhone()) {
@@ -1626,6 +1646,8 @@
             <span class="label">{i.label}</span>
             {#if i.prioritaet}<span class="tag">{i.prioritaet}</span>{/if}
             {#if i.kind === "slot"}<span class="tag slot">slot</span>{/if}
+            {#if pendingIds.has(i.id)}<span class="tag pending" title="Saved on this device; not on the Mac yet.">not synced</span>{/if}
+            {#if conflictIds.has(i.id)}<span class="tag conflict" title="The Mac changed this item too. Review it in the sync line at the top.">conflict</span>{/if}
           </div>
           {#if i.bild}
             <img class="shot" use:bridgedSrc={interior.mediaUrl(i.bild)} alt={i.label} loading="lazy" />
@@ -1662,6 +1684,8 @@
         <div class="head">
           <span class="label">{i.label}</span>
           {#if i.mitnahme}<span class="tag">{i.mitnahme}</span>{/if}
+          {#if pendingIds.has(i.id)}<span class="tag pending" title="Saved on this device; not on the Mac yet.">not synced</span>{/if}
+          {#if conflictIds.has(i.id)}<span class="tag conflict" title="The Mac changed this item too. Review it in the sync line at the top.">conflict</span>{/if}
         </div>
         {#if i.bild}
           <img class="shot" use:bridgedSrc={interior.mediaUrl(i.bild)} alt={i.label} loading="lazy" />
@@ -2503,6 +2527,14 @@
   }
   .tag.slot {
     background: var(--warning-soft);
+  }
+  .tag.pending {
+    background: var(--warning-soft);
+    color: var(--text-primary);
+  }
+  .tag.conflict {
+    background: var(--danger-soft, var(--warning-soft));
+    color: var(--text-primary);
   }
   .dims,
   .price {

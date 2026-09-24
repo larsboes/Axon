@@ -35,13 +35,21 @@
 //!
 //! The base URL is a house fact and this repository is public. It lives in the
 //! app-private settings file ([`SETTINGS_FILE`]), never in code or config.
+//!
+//! ## Offline
+//!
+//! Both commands go through `crate::sync` (sync step 2, PRD §10 A5): a C1 answer is kept,
+//! served from the device when the Mac cannot be reached, and an item edit made offline is
+//! queued. [`ReqwestTransport`] is the only code here that touches the network.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Manager, Runtime, State};
+
+use crate::sync::{self, LocalStore, Outgoing, Reply, SendError, SyncStatus, Transport};
 
 /// The Mac paths the app may reach. An entry that ends in `/` admits every
 /// path below it. Any other entry admits that exact path, optionally with a
@@ -110,6 +118,11 @@ pub const SETTINGS_FILE: &str = "mac-bridge.json";
 /// A request that is not answered in this time fails.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
+/// A connection that is not open in this time fails, and an offline read falls back to the
+/// device's copy. Shorter than [`TIMEOUT`] so the fallback does not wait 30 s. A tailnet
+/// connection through a DERP relay usually opens in well under this (not measured here).
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Settings {
     /// For example `https://<name>.ts.net`. `None` until the operator sets it.
@@ -131,6 +144,21 @@ pub struct MacResponse {
     pub status: u16,
     pub content_type: Option<String>,
     pub body: String,
+    /// True when the Mac was not reached and this is the device's copy (`crate::sync`).
+    pub stale: bool,
+    /// For a stale answer: when the copy was fetched, unix milliseconds.
+    pub fetched_at: Option<i64>,
+}
+
+impl From<MacRequest> for Outgoing {
+    fn from(r: MacRequest) -> Self {
+        Outgoing {
+            method: r.method,
+            path: r.path,
+            headers: r.headers,
+            body: r.body,
+        }
+    }
 }
 
 /// The prefix the TypeScript side matches to tell "no base URL" from a
@@ -305,35 +333,80 @@ pub async fn mac_settings_set<R: Runtime>(
     Ok(settings)
 }
 
-/// Checks one request and builds it. Every command goes through here, so
+/// The Mac as a [`Transport`]. Every request is checked here, whichever command sent it, so
 /// every command applies the same rules.
-fn build_request<R: Runtime>(
-    app: &AppHandle<R>,
-    method: &str,
-    path: &str,
-    headers: &[(String, String)],
-) -> Result<reqwest::RequestBuilder, String> {
+pub struct ReqwestTransport {
+    base: Url,
+    client: reqwest::Client,
+}
+
+impl ReqwestTransport {
+    pub fn new(base: Url) -> Result<Self, String> {
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(TIMEOUT)
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()
+            .map_err(|e| format!("mac-bridge: {e}"))?;
+        Ok(Self { base, client })
+    }
+}
+
+/// Connect, DNS and timeout errors mean the Mac was not reached; anything else is a failure
+/// that the offline path must not hide.
+fn classify(error: reqwest::Error, what: &str) -> SendError {
+    let message = format!("mac-bridge: {what}: {error}");
+    if error.is_connect() || error.is_timeout() {
+        SendError::Unreachable(message)
+    } else {
+        SendError::Failed(message)
+    }
+}
+
+impl Transport for ReqwestTransport {
+    async fn send(&self, request: &Outgoing, max_bytes: usize) -> Result<Reply, SendError> {
+        let url = target_url(&self.base, &request.path).map_err(SendError::Failed)?;
+        let method = validate_method(&request.method).map_err(SendError::Failed)?;
+        let headers = filter_headers(&request.headers).map_err(SendError::Failed)?;
+        let mut builder = self.client.request(method, url);
+        for (name, value) in headers {
+            builder = builder.header(name, value);
+        }
+        if let Some(body) = &request.body {
+            builder = builder.body(body.clone());
+        }
+        let mut response = builder
+            .send()
+            .await
+            .map_err(|e| classify(e, "the Mac did not answer"))?;
+        check_declared_length(response.content_length(), max_bytes).map_err(SendError::Failed)?;
+        let status = response.status().as_u16();
+        let content_type = content_type_of(&response);
+        let mut body = Vec::new();
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| classify(e, "reading the answer failed"))?
+        {
+            append_capped(&mut body, &chunk, max_bytes).map_err(SendError::Failed)?;
+        }
+        Ok(Reply {
+            status,
+            content_type,
+            body,
+        })
+    }
+}
+
+/// The transport to the configured Mac, or the "not configured" error.
+pub fn transport<R: Runtime>(app: &AppHandle<R>) -> Result<ReqwestTransport, String> {
     let settings = read_settings(app)?;
     let Some(base) = settings.base_url.filter(|b| !b.trim().is_empty()) else {
         return Err(format!(
             "{NOT_CONFIGURED}: set the Mac address in Settings, Mac connection"
         ));
     };
-    let base = validate_base(&base, allow_loopback())?;
-    let url = target_url(&base, path)?;
-    let method = validate_method(method)?;
-    let headers = filter_headers(headers)?;
-
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(TIMEOUT)
-        .build()
-        .map_err(|e| format!("mac-bridge: {e}"))?;
-    let mut builder = client.request(method, url);
-    for (name, value) in headers {
-        builder = builder.header(name, value);
-    }
-    Ok(builder)
+    ReqwestTransport::new(validate_base(&base, allow_loopback())?)
 }
 
 fn content_type_of(response: &reqwest::Response) -> Option<String> {
@@ -344,30 +417,62 @@ fn content_type_of(response: &reqwest::Response) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The app's local store, opened once at start. `store` is `None` when the database could not
+/// be opened; the bridge then works as it did before step 2, and `error` says why.
+pub struct Local {
+    pub store: Option<LocalStore>,
+    pub error: Option<String>,
+}
+
+impl Local {
+    pub fn open<R: Runtime>(app: &AppHandle<R>) -> Self {
+        let opened = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("app data directory is not available: {e}"))
+            .and_then(|dir| LocalStore::open(&dir.join(sync::DB_FILE)));
+        match opened {
+            Ok(store) => Self {
+                store: Some(store),
+                error: None,
+            },
+            Err(error) => {
+                log::error!("{error}");
+                Self {
+                    store: None,
+                    error: Some(error),
+                }
+            }
+        }
+    }
+
+    fn store(&self) -> Result<&LocalStore, String> {
+        self.store.as_ref().ok_or_else(|| {
+            format!(
+                "local store: {}",
+                self.error.as_deref().unwrap_or("not open")
+            )
+        })
+    }
+}
+
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
+}
+
 #[tauri::command]
 pub async fn mac_request<R: Runtime>(
     app: AppHandle<R>,
+    local: State<'_, Local>,
     request: MacRequest,
 ) -> Result<MacResponse, String> {
-    let mut builder = build_request(&app, &request.method, &request.path, &request.headers)?;
-    if let Some(body) = request.body {
-        builder = builder.body(body);
+    let t = transport(&app)?;
+    match &local.store {
+        Some(store) => sync::request_text(store, &t, request.into(), now_ms()).await,
+        None => sync::plain_text(&t, request.into()).await,
     }
-    let response = builder
-        .send()
-        .await
-        .map_err(|e| format!("mac-bridge: the Mac did not answer: {e}"))?;
-    let status = response.status().as_u16();
-    let content_type = content_type_of(&response);
-    let body = response
-        .text()
-        .await
-        .map_err(|e| format!("mac-bridge: reading the answer failed: {e}"))?;
-    Ok(MacResponse {
-        status,
-        content_type,
-        body,
-    })
 }
 
 /// Refuses an answer whose declared length is above `cap`.
@@ -419,35 +524,102 @@ pub fn frame_bytes(status: u16, content_type: Option<&str>, body: &[u8]) -> Vec<
 }
 
 /// Fetches one path as bytes, for pictures and the RoomPlan USDZ. GET only,
-/// same path, header and base rules as [`mac_request`].
+/// same path, header and base rules as [`mac_request`]. An answer from the device's copy
+/// carries status [`sync::STALE_BYTES_STATUS`] (203).
 #[tauri::command]
 pub async fn mac_request_bytes<R: Runtime>(
     app: AppHandle<R>,
+    local: State<'_, Local>,
     path: String,
     headers: Option<Vec<(String, String)>>,
 ) -> Result<tauri::ipc::Response, String> {
-    let headers = headers.unwrap_or_default();
-    let builder = build_request(&app, "GET", &path, &headers)?;
-    let mut response = builder
-        .send()
-        .await
-        .map_err(|e| format!("mac-bridge: the Mac did not answer: {e}"))?;
-    check_declared_length(response.content_length(), MAX_RESPONSE_BYTES)?;
-    let status = response.status().as_u16();
-    let content_type = content_type_of(&response);
-    let mut body = Vec::new();
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| format!("mac-bridge: reading the answer failed: {e}"))?
-    {
-        append_capped(&mut body, &chunk, MAX_RESPONSE_BYTES)?;
-    }
+    let t = transport(&app)?;
+    let request = Outgoing {
+        method: "GET".into(),
+        path,
+        headers: headers.unwrap_or_default(),
+        body: None,
+    };
+    let reply = match &local.store {
+        Some(store) => {
+            sync::request_bytes(store, &t, request, MAX_RESPONSE_BYTES, now_ms())
+                .await?
+                .reply
+        }
+        None => t
+            .send(&request, MAX_RESPONSE_BYTES)
+            .await
+            .map_err(SendError::message)?,
+    };
     Ok(tauri::ipc::Response::new(frame_bytes(
-        status,
-        content_type.as_deref(),
-        &body,
+        reply.status,
+        reply.content_type.as_deref(),
+        &reply.body,
     )))
+}
+
+fn status_of(local: &Local) -> Result<SyncStatus, String> {
+    match &local.store {
+        Some(store) => store.status(),
+        None => Ok(SyncStatus {
+            offline: false,
+            offline_since: None,
+            showing_from: None,
+            pending: 0,
+            conflicts: 0,
+            failed: 0,
+            store_error: local.error.clone(),
+        }),
+    }
+}
+
+/// Counts for the sync status line, and whether the Mac answered the last request.
+#[tauri::command]
+pub async fn sync_status(local: State<'_, Local>) -> Result<SyncStatus, String> {
+    status_of(&local)
+}
+
+/// Every queued edit, oldest first, for the conflicts view.
+#[tauri::command]
+pub async fn sync_entries(local: State<'_, Local>) -> Result<Vec<sync::OutboxEntry>, String> {
+    local.store()?.entries()
+}
+
+/// Sends pending edits now ("Sync now", app start, foreground). Without a Mac address it
+/// sends nothing and answers the status.
+#[tauri::command]
+pub async fn sync_flush<R: Runtime>(
+    app: AppHandle<R>,
+    local: State<'_, Local>,
+) -> Result<SyncStatus, String> {
+    let store = local.store()?;
+    if let Ok(t) = transport(&app) {
+        sync::flush(store, &t, now_ms()).await;
+    }
+    status_of(&local)
+}
+
+/// Resolves one entry. `keep_mine` re-queues it against the Mac's current revision and sends
+/// it; `discard` drops it and the Mac's value stands.
+#[tauri::command]
+pub async fn sync_resolve<R: Runtime>(
+    app: AppHandle<R>,
+    local: State<'_, Local>,
+    id: i64,
+    action: String,
+) -> Result<SyncStatus, String> {
+    let store = local.store()?;
+    match action.as_str() {
+        "keep_mine" => {
+            store.keep_mine(id, now_ms())?;
+            if let Ok(t) = transport(&app) {
+                sync::flush(store, &t, now_ms()).await;
+            }
+        }
+        "discard" => store.discard(id)?,
+        other => return Err(format!("unknown action `{other}` (keep_mine or discard)")),
+    }
+    status_of(&local)
 }
 
 #[cfg(test)]

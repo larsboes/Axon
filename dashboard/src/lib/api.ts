@@ -863,11 +863,24 @@ export interface InteriorItem {
   revision: number;
 }
 
-/** What `PUT`/`PATCH /api/items/:id` answer on success. */
-export interface InteriorWriteResult {
-  id: string;
-  ok: boolean;
-  revision: number;
+/**
+ * What `PUT`/`PATCH /api/items/:id` answer on success. In the app, an edit made while the Mac
+ * cannot be reached is queued on the device instead (`src-tauri/src/sync.rs`): the answer then
+ * carries `queued: true`, and `revision` only once the queue has sent it (`state: 'sent'`).
+ */
+export type InteriorWriteResult =
+  | { id: string; ok: boolean; revision: number; queued?: undefined }
+  | { queued: true; outbox_id: number; state: 'pending' | 'sent' | 'conflict' | 'failed'; revision?: number };
+
+/**
+ * One inventory row. `pending` and `conflict` are set only in the app, by the device's outbox:
+ * `pending` means the item shows an edit that has not reached the Mac yet.
+ */
+export interface InteriorInventoryRow {
+  item: InteriorItem;
+  state: InteriorState | null;
+  pending?: boolean;
+  conflict?: boolean;
 }
 
 /**
@@ -1224,8 +1237,7 @@ export const interior = {
   layouts: () => request<InteriorLayoutSummary[]>('/interior/api/layouts'),
   layout: (name: string) =>
     request<InteriorLayoutDetail>(`/interior/api/layouts/${encodeURIComponent(name)}`),
-  inventory: () =>
-    request<{ item: InteriorItem; state: InteriorState | null }[]>('/interior/api/inventory'),
+  inventory: () => request<InteriorInventoryRow[]>('/interior/api/inventory'),
   wishlist: () => request<InteriorWishlist>('/interior/api/wishlist'),
   /**
    * Replace an entry. Pass the `revision` you read: a stale one throws `InteriorConflict`.

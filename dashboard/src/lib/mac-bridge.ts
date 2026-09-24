@@ -20,7 +20,17 @@ export interface MacResponse {
   status: number;
   content_type: string | null;
   body: string;
+  /** True when the Mac was not reached and this is the device's copy (`src-tauri/src/sync.rs`). */
+  stale?: boolean;
+  /** For a stale answer: when the copy was fetched, unix milliseconds. */
+  fetched_at?: number | null;
 }
+
+/** Mirrors `STALE_BYTES_STATUS` in `src-tauri/src/sync.rs`: a byte answer from the device's copy. */
+export const STALE_BYTES_STATUS = 203;
+
+/** Mirrors `QUEUED_STATUS` in `src-tauri/src/sync.rs`: an item edit went into the outbox. */
+export const QUEUED_STATUS = 202;
 
 export interface MacSettings {
   base_url: string | null;
@@ -64,6 +74,35 @@ export interface MacBytes {
   bytes: Uint8Array;
 }
 
+/** Mirrors `SyncStatus` in `src-tauri/src/sync.rs`. Times are unix milliseconds. */
+export interface SyncStatus {
+  offline: boolean;
+  offline_since: number | null;
+  /** The oldest fetch time among the copies shown since the Mac stopped answering. */
+  showing_from: number | null;
+  pending: number;
+  conflicts: number;
+  failed: number;
+  store_error: string | null;
+}
+
+/** Mirrors `OutboxEntry` in `src-tauri/src/sync.rs`: one queued item edit. */
+export interface OutboxEntry {
+  id: number;
+  item_id: string;
+  method: 'PUT' | 'PATCH';
+  path: string;
+  body: Record<string, unknown>;
+  if_match: string;
+  state: 'pending' | 'conflict' | 'failed';
+  error: string | null;
+  /** On a conflict: the Mac's `current` from the 409 body. */
+  current: { item: Record<string, unknown>; state: string | null } | null;
+  attempts: number;
+  created_at: number;
+  updated_at: number;
+}
+
 /**
  * Reads the frame `frame_bytes` in `src-tauri/src/mac_bridge.rs` writes:
  * status (u16 BE), content-type length (u16 BE), content-type, body.
@@ -93,6 +132,24 @@ export async function macRequestBytes(path: string): Promise<MacBytes> {
     headers: null,
   });
   return decodeBytesFrame(raw);
+}
+
+export function syncStatus(): Promise<SyncStatus> {
+  return invoke<SyncStatus>('sync_status');
+}
+
+export function syncEntries(): Promise<OutboxEntry[]> {
+  return invoke<OutboxEntry[]>('sync_entries');
+}
+
+/** Sends pending edits now. Without a Mac address it sends nothing. */
+export function syncFlush(): Promise<SyncStatus> {
+  return invoke<SyncStatus>('sync_flush');
+}
+
+/** `keep_mine` re-sends against the Mac's current revision; `discard` drops the edit. */
+export function syncResolve(id: number, action: 'keep_mine' | 'discard'): Promise<SyncStatus> {
+  return invoke<SyncStatus>('sync_resolve', { id, action });
 }
 
 export function getMacSettings(): Promise<MacSettings> {

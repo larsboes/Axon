@@ -11,6 +11,10 @@
     "allow-mac-request",
     "allow-mac-request-bytes",
     "allow-mac-settings-get",
-    "allow-mac-settings-set"
+    "allow-mac-settings-set",
+    "allow-sync-status",
+    "allow-sync-entries",
+    "allow-sync-flush",
+    "allow-sync-resolve"
   ]
 }

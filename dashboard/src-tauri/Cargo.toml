@@ -31,3 +31,7 @@ tauri-plugin-roomplan = { path = "../../plugins/roomplan" }
 # workspace, so it cannot inherit it. Default features bring rustls, which the
 # https call to `<name>.ts.net` needs.
 reqwest = "0.13"
+# The phone's local store (src/sync.rs): snapshot and outbox, PRD §10 A5 and the
+# "Library research" table's A4 row. Same requirement as the root workspace's
+# `[workspace.dependencies]` rusqlite; bundled, so iOS links its own SQLite.
+rusqlite = { version = "0.40", features = ["bundled"] }
