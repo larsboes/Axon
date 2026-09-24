@@ -28,6 +28,32 @@ Expose offline native RoomPlan capture controls.
 <tr>
 <td>
 
+`roomplan:allow-acceptPending`
+
+</td>
+<td>
+
+Enables the acceptPending command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`roomplan:deny-acceptPending`
+
+</td>
+<td>
+
+Denies the acceptPending command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `roomplan:allow-cancelCapture`
 
 </td>
@@ -80,6 +106,58 @@ Denies the checkPermissions command without any pre-configured scope.
 <tr>
 <td>
 
+`roomplan:allow-currentCapture`
+
+</td>
+<td>
+
+Enables the currentCapture command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`roomplan:deny-currentCapture`
+
+</td>
+<td>
+
+Denies the currentCapture command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`roomplan:allow-importLegacyReference`
+
+</td>
+<td>
+
+Enables the importLegacyReference command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`roomplan:deny-importLegacyReference`
+
+</td>
+<td>
+
+Denies the importLegacyReference command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `roomplan:allow-isAvailable`
 
 </td>
@@ -99,6 +177,58 @@ Enables the isAvailable command without any pre-configured scope.
 <td>
 
 Denies the isAvailable command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`roomplan:allow-previewReference`
+
+</td>
+<td>
+
+Enables the previewReference command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`roomplan:deny-previewReference`
+
+</td>
+<td>
+
+Denies the previewReference command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`roomplan:allow-rejectPending`
+
+</td>
+<td>
+
+Enables the rejectPending command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`roomplan:deny-rejectPending`
+
+</td>
+<td>
+
+Denies the rejectPending command without any pre-configured scope.
 
 </td>
 </tr>

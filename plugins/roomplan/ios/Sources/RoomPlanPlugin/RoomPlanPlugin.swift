@@ -588,6 +588,16 @@ final class RoomPlanPlugin: Plugin, RoomCaptureSessionDelegate, QLPreviewControl
     let finished = Date()
     let directory = try captureDirectory(for: draftID)
     let assets = try export(room: room, draftID: draftID, directory: directory)
+    // Apple's own serialization, kept beside the draft as raw evidence (PRD §10, "Native semantic
+    // capture": preserve CapturedRoom, not only the normalized draft). It is not a draft asset:
+    // whether it becomes one is A2's decision, and the asset contract only admits USDZ today.
+    // A failure here must not lose the capture, so it is logged rather than thrown.
+    do {
+      try JSONEncoder().encode(room).write(
+        to: directory.appendingPathComponent("captured-room.json"), options: [.atomic])
+    } catch {
+      NSLog("RoomPlan: captured-room.json not written: \(error.localizedDescription)")
+    }
     let payload = CaptureDraftPayload(
       draftID: draftID,
       createdAt: ISO8601DateFormatter().string(from: finished),

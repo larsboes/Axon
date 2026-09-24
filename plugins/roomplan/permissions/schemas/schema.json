@@ -295,6 +295,18 @@
       "type": "string",
       "oneOf": [
         {
+          "description": "Enables the acceptPending command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-acceptPending",
+          "markdownDescription": "Enables the acceptPending command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the acceptPending command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-acceptPending",
+          "markdownDescription": "Denies the acceptPending command without any pre-configured scope."
+        },
+        {
           "description": "Enables the cancelCapture command without any pre-configured scope.",
           "type": "string",
           "const": "allow-cancelCapture",
@@ -319,6 +331,30 @@
           "markdownDescription": "Denies the checkPermissions command without any pre-configured scope."
         },
         {
+          "description": "Enables the currentCapture command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-currentCapture",
+          "markdownDescription": "Enables the currentCapture command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the currentCapture command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-currentCapture",
+          "markdownDescription": "Denies the currentCapture command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the importLegacyReference command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-importLegacyReference",
+          "markdownDescription": "Enables the importLegacyReference command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the importLegacyReference command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-importLegacyReference",
+          "markdownDescription": "Denies the importLegacyReference command without any pre-configured scope."
+        },
+        {
           "description": "Enables the isAvailable command without any pre-configured scope.",
           "type": "string",
           "const": "allow-isAvailable",
@@ -329,6 +365,30 @@
           "type": "string",
           "const": "deny-isAvailable",
           "markdownDescription": "Denies the isAvailable command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the previewReference command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-previewReference",
+          "markdownDescription": "Enables the previewReference command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the previewReference command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-previewReference",
+          "markdownDescription": "Denies the previewReference command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the rejectPending command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-rejectPending",
+          "markdownDescription": "Enables the rejectPending command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the rejectPending command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-rejectPending",
+          "markdownDescription": "Denies the rejectPending command without any pre-configured scope."
         },
         {
           "description": "Enables the requestPermissions command without any pre-configured scope.",
