@@ -15,6 +15,7 @@
   import {
     axonStatus,
     interior,
+    InteriorConflict,
     type InteriorItem,
     type InteriorLayoutDetail,
     type InteriorLayoutSummary,
@@ -548,6 +549,10 @@
   let impactBusy = $state(false);
   let saving = $state(false);
   let saveError = $state<string | null>(null);
+  /** The revision the open form was read at; sent as If-Match so a newer save elsewhere is not overwritten. */
+  let editingRevision = $state<number | undefined>(undefined);
+  /** A save that lost the race (409): what this form tried to change, and the values that stand now. */
+  let conflict = $state<{ patch: Record<string, unknown>; current: InteriorItem | null } | null>(null);
   let history = $state<{ state: InteriorState; since: string; note: string | null }[]>([]);
   let creating = $state(false);
   let draftNew = $state({ id: "", label: "", kind: "piece" as "piece" | "slot", state: "wanted" as InteriorState, b: "", t: "", h: "", preis: "" });
@@ -579,8 +584,10 @@
     if (!row) return;
     editing = id;
     saveError = null;
+    conflict = null;
     impact = null;
     const i = row.item;
+    editingRevision = i.revision;
     draft = {
       label: i.label,
       b: i.b ?? "",
@@ -660,13 +667,24 @@
     }
     saving = true;
     saveError = null;
+    conflict = null;
     try {
-      await interior.patchItem(editing, patch);
+      await interior.patchItem(editing, patch, editingRevision);
       editing = null;
       impact = null;
       await load();
     } catch (caught) {
       saveError = caught instanceof Error ? caught.message : String(caught);
+      if (caught instanceof InteriorConflict) {
+        // Show what stands now and keep the form open. Nothing is retried: saving again is a
+        // deliberate overwrite, measured against the fresh values and their revision.
+        conflict = { patch, current: caught.current?.item ?? null };
+        const fresh = caught.current;
+        if (fresh) {
+          inventory = inventory.map((r) => (r.item.id === fresh.item.id ? fresh : r));
+          editingRevision = fresh.item.revision;
+        }
+      }
     } finally {
       saving = false;
     }
@@ -1658,6 +1676,21 @@
       <h4>{row?.item.label ?? editing} <span class="mono id">{editing}</span></h4>
 
       {#if saveError}<p class="err">{saveError}</p>{/if}
+      {#if conflict}
+        <div class="err conflict">
+          <p>Saved on another device meanwhile. Nothing was written. Values now:</p>
+          <ul>
+            {#each Object.entries(conflict.patch) as [key, mine]}
+              <li>
+                <span class="mono">{key}</span>: now
+                <strong>{JSON.stringify((conflict.current as Record<string, unknown> | null)?.[key] ?? null)}</strong>,
+                yours {JSON.stringify(mine)}
+              </li>
+            {/each}
+          </ul>
+          <p>Save again to overwrite with yours.</p>
+        </div>
+      {/if}
 
       <div class="grid">
         <label>label <input bind:value={draft.label} /></label>

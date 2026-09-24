@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-mac-settings-get"
+description = "Enables the mac_settings_get command without any pre-configured scope."
+commands.allow = ["mac_settings_get"]
+
+[[permission]]
+identifier = "deny-mac-settings-get"
+description = "Denies the mac_settings_get command without any pre-configured scope."
+commands.deny = ["mac_settings_get"]

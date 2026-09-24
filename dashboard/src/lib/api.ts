@@ -1,3 +1,5 @@
+import { bridgeErrorText, inTauri, macRequest, NOT_CONFIGURED, type MacResponse } from './mac-bridge';
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -52,13 +54,43 @@ export function describeFailure(status: number, body: string, path: string): str
   return capability ? `${capability}: request failed (${status})` : `Request failed (${status})`;
 }
 
-export async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, init);
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new ApiError(res.status, describeFailure(res.status, body, path));
+/** Status and body text of one answer, whichever way it travelled. */
+interface Answer {
+  ok: boolean;
+  status: number;
+  text: string;
+}
+
+/**
+ * In the Tauri app a relative path has no server behind it, so a Mac path goes
+ * through the native bridge (`./mac-bridge.ts`). An absolute URL, such as the
+ * Wikipedia lookups below, is not a Mac path and stays a plain fetch.
+ */
+async function send(path: string, init?: RequestInit): Promise<Answer> {
+  if (inTauri() && path.startsWith('/')) {
+    let answer: MacResponse;
+    try {
+      answer = await macRequest(path, init);
+    } catch (error) {
+      const message = bridgeErrorText(error);
+      if (message.startsWith(NOT_CONFIGURED)) {
+        throw new ApiError(0, 'The Mac address is not set. Set it in Mac connection (footer).');
+      }
+      throw new ApiError(0, message);
+    }
+    return { ok: answer.status >= 200 && answer.status < 300, status: answer.status, text: answer.body };
   }
-  const text = await res.text();
+  const res = await fetch(path, init);
+  if (!res.ok) return { ok: false, status: res.status, text: await res.text().catch(() => '') };
+  return { ok: true, status: res.status, text: await res.text() };
+}
+
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await send(path, init);
+  if (!res.ok) {
+    throw new ApiError(res.status, describeFailure(res.status, res.text, path));
+  }
+  const text = res.text;
   if (!text) return undefined as T;
 
   let parsed: unknown;
@@ -823,6 +855,54 @@ export interface InteriorItem {
    * sit in a public repository is that the bundle carries no photograph.
    */
   bild: string | null;
+  /**
+   * How often the row was written; the server owns it (PRD §10 A5). Send the value you read as
+   * `revision` to `saveItem`/`patchItem`, and a write that raced another device fails with
+   * `InteriorConflict` instead of overwriting it.
+   */
+  revision: number;
+}
+
+/** What `PUT`/`PATCH /api/items/:id` answer on success. */
+export interface InteriorWriteResult {
+  id: string;
+  ok: boolean;
+  revision: number;
+}
+
+/**
+ * A write carried a stale revision: another device changed the entry after this page read it.
+ *
+ * `current` is the entry as it stands now, so the page can show it instead of retrying and
+ * overwriting. It is read again after the 409 because `request()` keeps only the message of an
+ * error body; `null` if that re-read fails.
+ */
+export class InteriorConflict extends ApiError {
+  current: { item: InteriorItem; state: InteriorState | null } | null;
+  constructor(message: string, current: InteriorConflict['current']) {
+    super(409, message);
+    this.name = 'InteriorConflict';
+    this.current = current;
+  }
+}
+
+/** `init` with `If-Match: "<revision>"` added, or unchanged when no revision is known. */
+function ifMatch(init: RequestInit, revision: number | undefined): RequestInit {
+  if (revision === undefined) return init;
+  return { ...init, headers: { ...(init.headers as Record<string, string>), 'If-Match': `"${revision}"` } };
+}
+
+/** One conditional item write. A 409 becomes `InteriorConflict`; it is never retried. */
+async function writeItem(id: string, init: RequestInit, revision: number | undefined): Promise<InteriorWriteResult> {
+  try {
+    return await request<InteriorWriteResult>(`/interior/api/items/${encodeURIComponent(id)}`, ifMatch(init, revision));
+  } catch (caught) {
+    if (!(caught instanceof ApiError) || caught.status !== 409) throw caught;
+    const current = await request<{ item: InteriorItem; state: InteriorState | null }[]>('/interior/api/inventory')
+      .then((rows) => rows.find((row) => row.item.id === id) ?? null)
+      .catch(() => null);
+    throw new InteriorConflict(caught.message, current);
+  }
 }
 
 export type InteriorState = 'owned' | 'wanted' | 'gone';
@@ -1147,11 +1227,12 @@ export const interior = {
   inventory: () =>
     request<{ item: InteriorItem; state: InteriorState | null }[]>('/interior/api/inventory'),
   wishlist: () => request<InteriorWishlist>('/interior/api/wishlist'),
-  saveItem: (id: string, item: InteriorItem) =>
-    request<{ id: string; ok: boolean }>(
-      `/interior/api/items/${encodeURIComponent(id)}`,
-      jsonInit('PUT', item),
-    ),
+  /**
+   * Replace an entry. Pass the `revision` you read: a stale one throws `InteriorConflict`.
+   * Without it the later write wins, which a client that can be offline must not rely on.
+   */
+  saveItem: (id: string, item: InteriorItem, revision?: number) =>
+    writeItem(id, jsonInit('PUT', item), revision),
 
   /**
    * Change named fields and leave the rest alone.
@@ -1160,12 +1241,12 @@ export const interior = {
    * fields while a form shows six — everything it does not send would be blanked. An explicit
    * `null` clears a field; an absent key leaves it. An unknown key is refused rather than
    * ignored, which is the same stance `deny_unknown_fields` takes on import.
+   *
+   * Pass the `revision` the form was opened with. If another device saved in between, this
+   * throws `InteriorConflict` with the current values and writes nothing.
    */
-  patchItem: (id: string, patch: Partial<InteriorItem>) =>
-    request<{ id: string; ok: boolean }>(
-      `/interior/api/items/${encodeURIComponent(id)}`,
-      jsonInit('PATCH', patch),
-    ),
+  patchItem: (id: string, patch: Partial<InteriorItem>, revision?: number) =>
+    writeItem(id, jsonInit('PATCH', patch), revision),
 
   /** Create an entry. `state` is required: without it the row joins to nothing and is invisible. */
   createItem: (item: Partial<InteriorItem> & { id: string; kind: 'piece' | 'slot'; label: string; state: InteriorState; note?: string }) =>

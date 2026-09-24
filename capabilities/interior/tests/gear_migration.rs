@@ -108,6 +108,9 @@ fn der_umbau_haelt_zeilen_zustand_und_platzierung() {
         ("Regal", Some(80), Some(200))
     );
     assert_eq!(zustand, Some(State::Owned));
+    // Eine Zeile aus der Zeit vor der Revisionsspalte beginnt bei 1 (PRD §10 A5). Die Spalte
+    // kommt NACH dem Umbau dazu; stuende sie davor, verloere der Umbau sie wieder.
+    assert_eq!(regal.revision, 1);
     // Und die Kindtabellen auch — ein DROP mit eingeschalteten Fremdschluesseln haette sie
     // mitgenommen, was der eigentliche Grund fuer diesen Test ist.
     assert_eq!(store.placements("wohnung").unwrap().len(), 1);

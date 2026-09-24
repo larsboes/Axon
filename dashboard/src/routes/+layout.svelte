@@ -10,6 +10,7 @@
   import { axonStatus } from "$lib/api";
   import SoundscapeDock from "$lib/SoundscapeDock.svelte";
   import AssistantDrawer from "$lib/assistant/AssistantDrawer.svelte";
+  import MacConnection from "$lib/MacConnection.svelte";
 
   let { children, data } = $props();
 
@@ -278,6 +279,7 @@
     <div class="inner">
       <span>Axon</span>
       <span class="mono">{capabilities.items.length} capabilities</span>
+      <MacConnection />
     </div>
   </footer>
 

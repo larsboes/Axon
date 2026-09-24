@@ -202,6 +202,8 @@ impl Roh {
             quick_dry: None,
             pack_location: None,
             trip_types: Vec::new(),
+            // Der Server vergibt sie beim Schreiben; ein Wert hier wuerde nie geschrieben.
+            revision: 0,
         }
     }
 }

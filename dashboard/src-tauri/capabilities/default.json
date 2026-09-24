@@ -7,6 +7,9 @@
   ],
   "permissions": [
     "core:default",
-    "roomplan:default"
+    "roomplan:default",
+    "allow-mac-request",
+    "allow-mac-settings-get",
+    "allow-mac-settings-set"
   ]
 }

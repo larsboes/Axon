@@ -474,3 +474,40 @@ Er ist **keine Empfehlung und nicht wirkungsfrei**: die Namensfassung prüft an 
 beiden Längsseiten, die deklarierte Fassung zählt jede Seite, die tief genug ist. Das ist
 nicht dieselbe Frage, und deshalb steht bei jedem Eintrag, was sich bewegt. Wer die Zeile
 übernimmt, übernimmt eine Entscheidung — und darum schreibt diese Maschine nichts.
+
+## Gleichzeitiges Bearbeiten
+
+Telefon und Mac bearbeiten dieselben Einträge (PRD §10 A5, Q110). Bis 2026-09-24 hatten
+`PUT` und `PATCH /api/items/:id` keine Versionsprüfung, und der spätere Schreiber gewann still.
+
+Jeder Eintrag trägt deshalb `revision`, eine ganze Zahl. Bestehende Zeilen beginnen bei 1, jedes
+Schreiben erhöht sie im selben Statement, auch der Import. Sie steht in jeder Antwort, die einen
+Eintrag zeigt (`/api/inventory`, `/api/wishlist`), und nach jedem Schreiben im
+Rumpf und als `ETag`. Sie gehört dem Server: ein `revision` im Rumpf wird nie geschrieben.
+
+Wer gegen den gelesenen Stand schreiben will, schickt die Revision mit:
+
+| | |
+|---|---|
+| `If-Match: "3"` oder `If-Match: 3` | der Hauptweg, wie ein ETag |
+| `"expected_revision": 3` im Rumpf | Ersatz für einen Client ohne eigene Header |
+
+Nennen beide eine Zahl und nicht dieselbe, antwortet der Server 400.
+
+| Fall | Antwort |
+|---|---|
+| Revision passt | 200, `{id, ok, revision}` mit der neuen Revision |
+| Revision veraltet | 409, `{error, current: {item, state}}` mit dem Stand, der jetzt gilt. Geschrieben wird nichts |
+| Eintrag fehlt | 404, bei `PUT` mit Revision auch: angelegt wird nur ohne Bedingung |
+| keine Revision | wie vor A5, der spätere Schreiber gewinnt |
+
+Vergleich und Schreiben sind ein Statement, `UPDATE … WHERE id = ? AND revision = ?`
+(`store::Store::update_item_if_revision`). Erst wenn es keine Zeile trifft, liest der Server
+nach, ob der Eintrag fehlt oder veraltet ist. Von zwei Schreibern mit derselben Revision gewinnt
+genau einer; `tests/revision.rs` prüft das mit echten Threads gegen eine SQLite-Datei.
+
+**Ein Client, der offline sein kann, muss die Revision schicken.** Ohne sie überschreibt er
+beim Wiederverbinden alles, was inzwischen auf einem anderen Gerät geschah. Auf 409 zeigt er den
+aktuellen Stand und lässt den Menschen entscheiden; ein automatisches Wiederholen mit der neuen
+Revision wäre dasselbe stille Überschreiben, nur einen Umweg später. Das Dashboard hält sich
+daran (`dashboard/src/lib/api.ts`, `InteriorConflict`).

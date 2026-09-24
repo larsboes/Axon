@@ -239,6 +239,14 @@ pub struct Item {
     /// jede. Liste und keine Tabelle, aus demselben Grund wie `ersetzt` daneben.
     #[serde(default)]
     pub trip_types: Vec<String>,
+
+    /// Wie oft diese Zeile geschrieben wurde; bestehende Zeilen beginnen bei 1 (PRD §10 A5).
+    ///
+    /// Gehoert dem Server. Jedes Schreiben erhoeht sie im selben Statement, und ein Wert im
+    /// Rumpf von `PUT`/`PATCH` wird nie geschrieben. Wer sie als Bedingung schicken will,
+    /// schickt sie als `If-Match` — siehe README, Abschnitt Gleichzeitiges Bearbeiten.
+    #[serde(default)]
+    pub revision: i64,
 }
 
 impl Item {
@@ -320,6 +328,128 @@ pub struct Placement {
     pub x: i32,
     pub y: i32,
     pub rot: i32,
+}
+
+/// Die Spalten, die ein Schreiben aus einem `Item` setzt, in der Reihenfolge der Parameter
+/// `?1` bis `?48` von [`write_params`]. `id` steht vorn und wird nie ueberschrieben.
+///
+/// Nicht dabei: `revision`, `created_at`, `updated_at`. Die drei setzt der Server, nie der
+/// Rumpf — ein Client, der seine gelesene Revision zurueckschickt, darf damit nichts setzen.
+const WRITE_COLUMNS: [&str; 48] = [
+    "id",
+    "kind",
+    "label",
+    "b",
+    "t",
+    "h",
+    "h_min",
+    "b_aufgeklappt",
+    "t_ausgeklappt",
+    "laenge",
+    "anzahl",
+    "zustaende",
+    "unsicher",
+    "platzbedarf_zone",
+    "platzbedarf_block",
+    "preis_cent",
+    "kosten_min_cent",
+    "kosten_max_cent",
+    "link",
+    "artikelnummer",
+    "quelle",
+    "gemessen_am",
+    "mitnahme",
+    "prioritaet",
+    "basiert_auf",
+    "ersetzt",
+    "varianten",
+    "ziel",
+    "hinweis",
+    "begruendung",
+    "entscheidung_offen",
+    "opens",
+    "open_clear",
+    "wall_ok",
+    "expands_dir",
+    "expands_to",
+    "access_sides",
+    "access_clear",
+    "raumtrenner",
+    "bild",
+    "zerlegbar",
+    "weight_g",
+    "category",
+    "packable",
+    "waterproof",
+    "quick_dry",
+    "pack_location",
+    "trip_types",
+];
+
+/// Die Werte zu [`WRITE_COLUMNS`], Stelle fuer Stelle.
+fn write_params(it: &Item) -> Result<Vec<Box<dyn rusqlite::ToSql>>, Fehler> {
+    Ok(vec![
+        Box::new(it.id.clone()),
+        Box::new(it.kind.as_str()),
+        Box::new(it.label.clone()),
+        Box::new(it.b),
+        Box::new(it.t),
+        Box::new(it.h),
+        Box::new(it.h_min),
+        Box::new(it.b_aufgeklappt),
+        Box::new(it.t_ausgeklappt),
+        Box::new(it.laenge),
+        Box::new(it.anzahl),
+        Box::new(serde_json::to_string(&it.zustaende)?),
+        Box::new(serde_json::to_string(&it.unsicher)?),
+        Box::new(it.platzbedarf_zone),
+        Box::new(it.platzbedarf_block),
+        Box::new(it.preis_cent),
+        Box::new(it.kosten_min_cent),
+        Box::new(it.kosten_max_cent),
+        Box::new(it.link.clone()),
+        Box::new(it.artikelnummer.clone()),
+        Box::new(it.quelle.clone()),
+        Box::new(it.gemessen_am.clone()),
+        Box::new(it.mitnahme.clone()),
+        Box::new(it.prioritaet.clone()),
+        Box::new(it.basiert_auf.clone()),
+        Box::new(serde_json::to_string(&it.ersetzt)?),
+        Box::new(serde_json::to_string(&it.varianten)?),
+        Box::new(it.ziel.clone()),
+        Box::new(it.hinweis.clone()),
+        Box::new(it.begruendung.clone()),
+        Box::new(it.entscheidung_offen.clone()),
+        Box::new(it.opens.map(|s| s.as_str())),
+        Box::new(it.open_clear),
+        Box::new(it.wall_ok),
+        Box::new(it.expands_dir.map(|s| s.as_str())),
+        Box::new(it.expands_to),
+        Box::new(it.access_sides),
+        Box::new(it.access_clear),
+        Box::new(it.raumtrenner),
+        Box::new(it.bild.clone()),
+        Box::new(it.zerlegbar),
+        Box::new(it.weight_g),
+        Box::new(it.category.clone()),
+        Box::new(it.packable),
+        Box::new(it.waterproof),
+        Box::new(it.quick_dry),
+        Box::new(it.pack_location.clone()),
+        Box::new(serde_json::to_string(&it.trip_types)?),
+    ])
+}
+
+/// Was ein Schreiben mit erwarteter Revision ergab.
+#[derive(Debug)]
+pub enum Schreibergebnis {
+    /// Geschrieben; die Zeile traegt jetzt diese Revision.
+    Geschrieben(i64),
+    /// Den Eintrag gibt es nicht.
+    Fehlt,
+    /// Jemand hat inzwischen geschrieben. Der aktuelle Stand, damit der Aufrufer ihn zeigen
+    /// kann statt ihn zu ueberschreiben.
+    Veraltet(Box<Item>, Option<State>),
 }
 
 pub struct Store {
@@ -426,7 +556,8 @@ impl Store {
                 pack_location      TEXT,
                 trip_types         TEXT NOT NULL DEFAULT '[]',
                 created_at         TEXT NOT NULL,
-                updated_at         TEXT NOT NULL
+                updated_at         TEXT NOT NULL,
+                revision           INTEGER NOT NULL DEFAULT 1
             );
             CREATE TABLE IF NOT EXISTS {prefix}_item_state (
                 id      INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -465,6 +596,10 @@ impl Store {
         Self::add_column_if_missing(conn, prefix, "pack_location", "TEXT")?;
         Self::add_column_if_missing(conn, prefix, "trip_types", "TEXT NOT NULL DEFAULT '[]'")?;
         Self::widen_kind_check(conn, prefix)?;
+        // Nach dem Umbau und nicht davor: `widen_kind_check` kopiert nur `ITEM_COLUMNS`, und
+        // eine Datei, die den Umbau noch braucht, hat diese Spalte ohnehin nicht. `DEFAULT 1`
+        // gibt jeder bestehenden Zeile die Revision 1 (PRD §10 A5).
+        Self::add_column_if_missing(conn, prefix, "revision", "INTEGER NOT NULL DEFAULT 1")?;
         Ok(())
     }
 
@@ -605,116 +740,89 @@ impl Store {
 
     /// Anlegen oder aktualisieren. `created_at` ueberlebt ein Update — wann eine Zeile
     /// entstanden ist, ist eine andere Tatsache als wann sie zuletzt stimmte.
-    pub fn upsert_item(&self, it: &Item) -> Result<(), Fehler> {
+    ///
+    /// Bedingungslos: der spaetere Schreiber gewinnt. Das ist der Weg fuer den Import und fuer
+    /// jeden Aufrufer, der keine Revision nennt. Die Revision steigt trotzdem, im selben
+    /// Statement, damit ein Client mit einer aelteren Revision danach sicher abgewiesen wird.
+    /// Zurueck kommt die Revision, die die Zeile jetzt traegt.
+    pub fn upsert_item(&self, it: &Item) -> Result<i64, Fehler> {
         let p = &self.prefix;
+        let now = axon_store::now_offset("'+0 seconds'");
+        let spalten = WRITE_COLUMNS.join(", ");
+        let platzhalter = (1..=WRITE_COLUMNS.len())
+            .map(|i| format!("?{i}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let uebernehmen = WRITE_COLUMNS[1..]
+            .iter()
+            .map(|c| format!("{c}=excluded.{c}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         let conn = self.conn()?;
-        conn.execute(
+        let revision = conn.query_row(
             &format!(
-                "INSERT INTO {p}_item (
-                    id, kind, label, b, t, h, h_min, b_aufgeklappt, t_ausgeklappt, laenge,
-                    anzahl, zustaende, unsicher, platzbedarf_zone, platzbedarf_block,
-                    preis_cent, kosten_min_cent, kosten_max_cent, link, artikelnummer,
-                    quelle, gemessen_am, mitnahme, prioritaet, basiert_auf, ersetzt,
-                    varianten, ziel, hinweis, begruendung, entscheidung_offen,
-                    opens, open_clear, wall_ok, expands_dir, expands_to,
-                    access_sides, access_clear, raumtrenner, bild, zerlegbar,
-                    weight_g, category, packable, waterproof, quick_dry, pack_location,
-                    trip_types,
-                    created_at, updated_at
-                 ) VALUES (
-                    ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                    ?11, ?12, ?13, ?14, ?15,
-                    ?16, ?17, ?18, ?19, ?20,
-                    ?21, ?22, ?23, ?24, ?25, ?26,
-                    ?27, ?28, ?29, ?30, ?31,
-                    ?32, ?33, ?34, ?35, ?36, ?37, ?38, ?39, ?40, ?41,
-                    ?42, ?43, ?44, ?45, ?46, ?47, ?48, {now}, {now}
-                 )
-                 ON CONFLICT(id) DO UPDATE SET
-                    kind=excluded.kind, label=excluded.label, b=excluded.b, t=excluded.t,
-                    h=excluded.h, h_min=excluded.h_min,
-                    b_aufgeklappt=excluded.b_aufgeklappt,
-                    t_ausgeklappt=excluded.t_ausgeklappt, laenge=excluded.laenge,
-                    anzahl=excluded.anzahl, zustaende=excluded.zustaende,
-                    unsicher=excluded.unsicher,
-                    platzbedarf_zone=excluded.platzbedarf_zone,
-                    platzbedarf_block=excluded.platzbedarf_block,
-                    preis_cent=excluded.preis_cent,
-                    kosten_min_cent=excluded.kosten_min_cent,
-                    kosten_max_cent=excluded.kosten_max_cent, link=excluded.link,
-                    artikelnummer=excluded.artikelnummer, quelle=excluded.quelle,
-                    gemessen_am=excluded.gemessen_am, mitnahme=excluded.mitnahme,
-                    prioritaet=excluded.prioritaet, basiert_auf=excluded.basiert_auf,
-                    ersetzt=excluded.ersetzt,
-                    varianten=excluded.varianten, ziel=excluded.ziel,
-                    hinweis=excluded.hinweis, begruendung=excluded.begruendung,
-                    entscheidung_offen=excluded.entscheidung_offen,
-                    opens=excluded.opens, open_clear=excluded.open_clear,
-                    wall_ok=excluded.wall_ok, expands_dir=excluded.expands_dir,
-                    expands_to=excluded.expands_to, access_sides=excluded.access_sides,
-                    access_clear=excluded.access_clear,
-                    raumtrenner=excluded.raumtrenner, bild=excluded.bild,
-                    zerlegbar=excluded.zerlegbar,
-                    weight_g=excluded.weight_g, category=excluded.category,
-                    packable=excluded.packable, waterproof=excluded.waterproof,
-                    quick_dry=excluded.quick_dry, pack_location=excluded.pack_location,
-                    trip_types=excluded.trip_types,
-                    updated_at={now}",
-                p = p,
-                now = axon_store::now_offset("'+0 seconds'")
+                "INSERT INTO {p}_item ({spalten}, revision, created_at, updated_at)
+                 VALUES ({platzhalter}, 1, {now}, {now})
+                 ON CONFLICT(id) DO UPDATE SET {uebernehmen},
+                    revision = {p}_item.revision + 1, updated_at = {now}
+                 RETURNING revision"
             ),
-            params![
-                it.id,
-                it.kind.as_str(),
-                it.label,
-                it.b,
-                it.t,
-                it.h,
-                it.h_min,
-                it.b_aufgeklappt,
-                it.t_ausgeklappt,
-                it.laenge,
-                it.anzahl,
-                serde_json::to_string(&it.zustaende)?,
-                serde_json::to_string(&it.unsicher)?,
-                it.platzbedarf_zone,
-                it.platzbedarf_block,
-                it.preis_cent,
-                it.kosten_min_cent,
-                it.kosten_max_cent,
-                it.link,
-                it.artikelnummer,
-                it.quelle,
-                it.gemessen_am,
-                it.mitnahme,
-                it.prioritaet,
-                it.basiert_auf,
-                serde_json::to_string(&it.ersetzt)?,
-                serde_json::to_string(&it.varianten)?,
-                it.ziel,
-                it.hinweis,
-                it.begruendung,
-                it.entscheidung_offen,
-                it.opens.map(|s| s.as_str()),
-                it.open_clear,
-                it.wall_ok,
-                it.expands_dir.map(|s| s.as_str()),
-                it.expands_to,
-                it.access_sides,
-                it.access_clear,
-                it.raumtrenner,
-                it.bild,
-                it.zerlegbar,
-                it.weight_g,
-                it.category,
-                it.packable,
-                it.waterproof,
-                it.quick_dry,
-                it.pack_location,
-                serde_json::to_string(&it.trip_types)?,
-            ],
+            rusqlite::params_from_iter(write_params(it)?.iter()),
+            |row| row.get(0),
         )?;
-        Ok(())
+        Ok(revision)
+    }
+
+    /// Ueberschreiben, aber nur, wenn die Zeile noch die Revision traegt, die der Aufrufer
+    /// gelesen hat (PRD §10 A5, Q110: Telefon und Mac bearbeiten dieselben Eintraege).
+    ///
+    /// Vergleich und Schreiben sind EIN Statement: `UPDATE ... WHERE id = ? AND revision = ?`.
+    /// Ein Lesen vorher und ein Schreiben danach waere genau das Fenster, in dem der zweite
+    /// Schreiber still gewinnt. Ein einzelnes Statement im Autocommit nimmt die Schreibsperre
+    /// schon beim Start, bevor es liest; das Upgrade-Problem der verzoegerten Transaktion
+    /// (`axon_store::write_transaction`, PRD 0.19) entsteht erst mit einem zweiten Statement
+    /// davor und tritt hier nicht auf.
+    ///
+    /// Trifft das Statement keine Zeile, sagt erst das Lesen danach, warum: gibt es den Eintrag
+    /// nicht, oder traegt er eine andere Revision. Dieses Lesen schreibt nichts und braucht
+    /// deshalb keine Transaktion; es liefert den Stand, den der Aufrufer sehen muss.
+    pub fn update_item_if_revision(
+        &self,
+        it: &Item,
+        erwartet: i64,
+    ) -> Result<Schreibergebnis, Fehler> {
+        let p = &self.prefix;
+        let now = axon_store::now_offset("'+0 seconds'");
+        let setzen = WRITE_COLUMNS
+            .iter()
+            .enumerate()
+            .skip(1)
+            .map(|(i, c)| format!("{c} = ?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let mut werte = write_params(it)?;
+        werte.push(Box::new(erwartet));
+        let conn = self.conn()?;
+        let neu: Option<i64> = conn
+            .query_row(
+                &format!(
+                    "UPDATE {p}_item SET {setzen}, revision = revision + 1, updated_at = {now}
+                     WHERE id = ?1 AND revision = ?{n}
+                     RETURNING revision",
+                    n = WRITE_COLUMNS.len() + 1
+                ),
+                rusqlite::params_from_iter(werte.iter()),
+                |row| row.get(0),
+            )
+            .optional()?;
+        drop(conn);
+        if let Some(revision) = neu {
+            return Ok(Schreibergebnis::Geschrieben(revision));
+        }
+        Ok(match self.item(&it.id)? {
+            Some((aktuell, zustand)) => Schreibergebnis::Veraltet(Box::new(aktuell), zustand),
+            None => Schreibergebnis::Fehlt,
+        })
     }
 
     /// Einen Zustandswechsel festhalten. Schreibt NICHT, wenn der aktuelle Zustand schon
@@ -852,7 +960,7 @@ impl Store {
                     i.opens, i.open_clear, i.wall_ok, i.expands_dir, i.expands_to,
                     i.access_sides, i.access_clear, i.raumtrenner, i.bild, i.zerlegbar,
                     i.weight_g, i.category, i.packable, i.waterproof, i.quick_dry,
-                    i.pack_location, i.trip_types,
+                    i.pack_location, i.trip_types, i.revision,
                     (SELECT s.state FROM {p}_item_state s
                       WHERE s.item_id = i.id ORDER BY s.since DESC, s.id DESC LIMIT 1)
              FROM {p}_item i ORDER BY i.id"
@@ -865,7 +973,7 @@ impl Store {
                     .as_deref()
                     .and_then(Seite::parse))
             };
-            let state: Option<String> = row.get(48)?;
+            let state: Option<String> = row.get(49)?;
             Ok((
                 Item {
                     id: row.get(0)?,
@@ -916,6 +1024,7 @@ impl Store {
                     quick_dry: row.get(45)?,
                     pack_location: row.get(46)?,
                     trip_types: axon_store::json_column(row, 47)?,
+                    revision: row.get(48)?,
                 },
                 state.as_deref().and_then(State::parse),
             ))
