@@ -33,6 +33,7 @@
     { id: "yes", label: "Yes" },
     { id: "maybe", label: "Maybe" },
     { id: "no", label: "No" },
+    { id: "not_taken", label: "Not taken" },
   ];
 
   const centsToAmount = (cents: number | null): number | null =>

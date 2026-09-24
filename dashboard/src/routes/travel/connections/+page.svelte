@@ -4,10 +4,14 @@
   import PageHeader from "$lib/PageHeader.svelte";
   import RelatedTools from "$lib/RelatedTools.svelte";
   import StationField from "$lib/travel/StationField.svelte";
+  import JourneyOption from "$lib/travel/JourneyOption.svelte";
+  import TravelerProfileModal from "$lib/travel/TravelerProfileModal.svelte";
   import {
     axonStatus,
     transit,
+    JOURNEY_PRIORITIES,
     type Journey,
+    type JourneyOverride,
     type SplitResult,
     type Station,
     type TrainMatch,
@@ -35,6 +39,39 @@
   let split = $state<SplitResult | null>(null);
   let splitNote = $state<string | null>(null);
   let tab = $state<"direct" | "split">("direct");
+  let journeySort = $state<"ranked" | "price" | "duration" | "departure">("ranked");
+  let journeyPriority = $state("");
+  let journeyPhrase = $state("");
+  let expandedJourneyId = $state<string | null>(null);
+  let profileOpen = $state(false);
+
+  function journeyOverride(): JourneyOverride | undefined {
+    const phrase = journeyPhrase.trim();
+    if (phrase) return { phrase };
+    if (journeyPriority) return { priority: journeyPriority };
+    return undefined;
+  }
+
+  function orderedJourneys(list: Journey[]): Journey[] {
+    return [...list].sort((a, b) => {
+      if (journeySort === "ranked") {
+        return (
+          (a.ranking?.rank ?? Number.POSITIVE_INFINITY) -
+          (b.ranking?.rank ?? Number.POSITIVE_INFINITY)
+        );
+      }
+      if (journeySort === "duration") {
+        return a.total_duration_minutes - b.total_duration_minutes;
+      }
+      if (journeySort === "departure") {
+        return (a.legs[0]?.departure_time ?? "").localeCompare(b.legs[0]?.departure_time ?? "");
+      }
+      return (
+        (a.total_price ?? Number.POSITIVE_INFINITY) -
+        (b.total_price ?? Number.POSITIVE_INFINITY)
+      );
+    });
+  }
 
   // transit declares itself on-demand, and this page is the only surface that uses it —
   // the station fields above resolve names through it and the search below queries it.
@@ -63,8 +100,9 @@
       // showing the first: transit answers 404 for a route with no cheaper combination,
       // which is an outcome to report rather than a failed search, and letting it reject
       // here would throw away the direct connections that did arrive.
+      const override = journeyOverride();
       const [direct, cheaper] = await Promise.all([
-        transit.search(from.id, to.id, when),
+        transit.search(from.id, to.id, when, override),
         transit.split(from.id, to.id, when).catch((e: unknown) => {
           splitNote = e instanceof Error ? e.message : String(e);
           return null;
@@ -149,7 +187,14 @@
 <nav class="travel-nav" aria-label="Travel sections">
   <a href={link("/travel")}><Icon name="map-pin" size={14} /> Trip plans</a>
   <a class="active" href={link("/travel/connections")}><Icon name="train" size={14} /> Connections</a>
+  <button type="button" class="nav-btn" onclick={() => (profileOpen = true)}>
+    <Icon name="compass" size={14} /> Profile & preferences
+  </button>
 </nav>
+
+{#if profileOpen}
+  <TravelerProfileModal onClose={() => (profileOpen = false)} />
+{/if}
 
 <form
   class="card controls"
@@ -211,36 +256,93 @@
   {#if tab === "direct"}
     {#if journeys.length === 0}
       <p class="empty card">No connections at this time.</p>
-    {:else}
-      <ul class="results">
-        {#each journeys as j (j.id)}
-          {@const r = risk(j.delay_risk_score)}
-          <li class="card journey">
-            <div class="body">
-              <p class="times">
-                <span class="mono">{hhmm(j.legs[0].departure_time)}</span>
-                <span class="dash">–</span>
-                <span class="mono">{hhmm(j.legs[j.legs.length - 1].arrival_time)}</span>
-                <span class="dur">{duration(j.total_duration_minutes)}</span>
-              </p>
-              <ul class="legs">
-                {#each j.legs as leg, i (i)}
-                  <li>
-                    <span class="tag train mono">{leg.train_name}</span>
-                    {leg.origin.name}
-                    <span class="arrow">→</span>
-                    {leg.destination.name}
-                  </li>
-                {/each}
-              </ul>
-            </div>
-            <div class="side">
-              <span class="fare mono">{price(j.total_price)}</span>
-              {#if r}<span class="tag risk mono {r.level}" title={r.title}>{r.text}</span>{/if}
-            </div>
-          </li>
+      <div class="direct-controls">
+        <div class="section-heading">
+          <div class="journey-sort" aria-label="Sort connections">
+            <button
+              class:active={journeySort === "ranked"}
+              type="button"
+              onclick={() => (journeySort = "ranked")}
+            >
+              Ranked
+            </button>
+            <button
+              class:active={journeySort === "price"}
+              type="button"
+              onclick={() => (journeySort = "price")}
+            >
+              Price
+            </button>
+            <button
+              class:active={journeySort === "duration"}
+              type="button"
+              onclick={() => (journeySort = "duration")}
+            >
+              Duration
+            </button>
+            <button
+              class:active={journeySort === "departure"}
+              type="button"
+              onclick={() => (journeySort = "departure")}
+            >
+              Departure
+            </button>
+          </div>
+        </div>
+        <div class="priority-bar">
+          <span class="priority-label">Rank by</span>
+          <div class="sort-options">
+            <button
+              class:active={!journeyPriority && !journeyPhrase.trim()}
+              type="button"
+              title="the weights stored on your profile"
+              onclick={() => {
+                journeyPriority = "";
+                journeyPhrase = "";
+                void search();
+              }}
+            >
+              My usual
+            </button>
+            {#each JOURNEY_PRIORITIES as preset (preset.id)}
+              <button
+                class:active={journeyPriority === preset.id && !journeyPhrase.trim()}
+                type="button"
+                title={preset.hint}
+                onclick={() => {
+                  journeyPriority = preset.id;
+                  journeyPhrase = "";
+                  void search();
+                }}
+              >
+                {preset.label}
+              </button>
+            {/each}
+          </div>
+          <input
+            class="input priority-phrase"
+            bind:value={journeyPhrase}
+            onkeydown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                void search();
+              }
+            }}
+            aria-label="Rank journeys by a sentence"
+            placeholder="or say it: cheapest, direct, schnell und zuverlässig"
+          />
+        </div>
+      </div>
+
+      <ol class="journey-list">
+        {#each orderedJourneys(journeys) as j (j.id)}
+          <JourneyOption
+            journey={j}
+            expanded={expandedJourneyId === j.id}
+            onToggle={() => (expandedJourneyId = expandedJourneyId === j.id ? null : j.id)}
+          />
         {/each}
-      </ul>
+      </ol>
     {/if}
   {:else if split}
     <section class="card panel">
@@ -335,19 +437,26 @@
     border-bottom: 1px solid var(--card-border);
   }
 
-  .travel-nav a {
+  .travel-nav a,
+  .travel-nav .nav-btn {
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
     padding: 0.45rem 0.65rem;
+    border: 0;
     border-radius: var(--radius-md);
+    background: transparent;
     color: var(--text-secondary);
+    font: inherit;
     font-size: var(--text-xs);
     font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
   }
 
   .travel-nav a:hover,
-  .travel-nav a.active {
+  .travel-nav a.active,
+  .travel-nav .nav-btn:hover {
     color: var(--primary);
     background: var(--primary-soft);
   }
@@ -464,103 +573,117 @@
     color: var(--text-tertiary);
   }
 
-  .results,
-  .legs,
   .segments {
     list-style: none;
     margin: 0;
     padding: 0;
   }
 
-  .results {
+  .direct-controls {
+    margin-bottom: 0.75rem;
+  }
+
+  .section-heading {
     display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-    animation: fade-up 0.3s ease-out both;
+    justify-content: flex-end;
+    margin-bottom: 0.5rem;
   }
 
-  .journey {
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-    padding: 0.9rem;
+  .journey-sort {
+    display: inline-flex;
+    padding: 0.15rem;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
   }
 
-  .body {
-    flex-grow: 1;
-  }
-
-  .times {
-    display: flex;
-    align-items: baseline;
-    gap: 0.4rem;
-    margin: 0 0 0.5rem;
-    font-size: var(--text-base);
-    font-weight: 600;
-    font-variant-numeric: tabular-nums;
-  }
-
-  .dash {
+  .journey-sort button {
+    padding: 0.25rem 0.5rem;
+    border: 0;
+    border-radius: calc(var(--radius-sm) - 2px);
+    background: transparent;
     color: var(--text-tertiary);
-  }
-
-  .dur {
-    font-size: var(--text-2xs);
-    font-weight: 500;
-    color: var(--text-tertiary);
-  }
-
-  .legs {
-    display: flex;
-    flex-direction: column;
-    gap: 0.3rem;
+    font: inherit;
     font-size: var(--text-xs);
-    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.15s ease;
   }
 
-  .legs li {
+  .journey-sort button:hover {
+    color: var(--text-primary);
+  }
+
+  .journey-sort button.active {
+    background: var(--card-bg);
+    color: var(--text-primary);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+  }
+
+  .priority-bar {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 0.4rem;
-  }
-
-  .train {
-    background-color: var(--primary-soft);
-    color: var(--primary);
-  }
-
-  .arrow {
-    color: var(--text-tertiary);
-  }
-
-  .side {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
     gap: 0.5rem;
-    padding-top: 0.6rem;
-    border-top: 1px solid var(--card-border);
+    margin-bottom: 0.75rem;
+  }
+
+  .priority-label {
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .sort-options {
+    display: inline-flex;
+    gap: 0.25rem;
+    padding: 0.15rem;
+    background: var(--surface);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+  }
+
+  .sort-options button {
+    padding: 0.25rem 0.5rem;
+    border: 0;
+    border-radius: calc(var(--radius-sm) - 2px);
+    background: transparent;
+    color: var(--text-tertiary);
+    font: inherit;
+    font-size: var(--text-xs);
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .sort-options button:hover {
+    color: var(--text-primary);
+  }
+
+  .sort-options button.active {
+    background: var(--card-bg);
+    color: var(--text-primary);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+  }
+
+  .priority-phrase {
+    flex: 1 1 16rem;
+    min-width: 12rem;
+  }
+
+  .journey-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    background: var(--card-bg);
   }
 
   .fare {
     font-size: 1rem;
     font-weight: 700;
     color: var(--primary);
-  }
-
-  .risk.low {
-    background-color: var(--success-soft);
-    color: var(--success);
-  }
-
-  .risk.mid {
-    background-color: var(--warning-soft);
-    color: var(--warning-ink);
-  }
-
-  .risk.high {
-    background-color: var(--danger-soft);
-    color: var(--danger);
   }
 
   .panel {
@@ -688,18 +811,6 @@
 
     .swap {
       margin-bottom: 0.25rem;
-    }
-
-    .journey {
-      flex-direction: row;
-      align-items: center;
-    }
-
-    .side {
-      flex-direction: column;
-      align-items: flex-end;
-      padding-top: 0;
-      border-top: 0;
     }
   }
 </style>

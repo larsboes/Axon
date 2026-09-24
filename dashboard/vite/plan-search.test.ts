@@ -12,7 +12,7 @@ import {
 } from "../src/lib/travel/plan-search";
 
 const emptyResult = (over: Partial<PlanSearchResult> = {}): PlanSearchResult => ({
-  revision: "plan-search-v1",
+  revision: "plan-search-v2",
   window_source: "calendar",
   windows: [],
   reach: { calendar: "ok", places: "ok", transit: "ok", scouting: "ok", climate: "ok" },

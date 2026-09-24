@@ -110,8 +110,25 @@ export interface TripStage {
   date: string | null;
   transport_modes: TransportMode[];
   travelers: string[];
-  status: 'planning' | 'option_selected' | 'booked' | 'completed';
+  status: 'planning' | 'option_selected' | 'booked' | 'completed' | 'open';
   selected_option_id: string | null;
+  branch_note?: string | null;
+}
+
+export interface IntentDraft {
+  draft: {
+    title: string;
+    origin: PlaceRef | null;
+    destinations: PlaceRef[];
+    date_start: string | null;
+    date_end: string | null;
+    interests: string;
+    transport_modes: TransportMode[];
+    travelers: string[];
+  };
+  unresolved: string[];
+  assumptions: string[];
+  source_text: string;
 }
 
 export interface PlanSource {
@@ -177,7 +194,7 @@ export interface Retrospective {
   plan_id: string;
   cost_cents: number | null;
   currency: string | null;
-  again: 'yes' | 'no' | 'maybe';
+  again: 'yes' | 'no' | 'maybe' | 'not_taken';
   change_note: string;
   filled_at: string;
 }
@@ -210,6 +227,131 @@ export interface ObsidianImportAllResult {
     title: string;
     issues: string[];
   }>;
+}
+
+export type Provenance = 'default' | 'stated' | 'derived' | 'vault';
+
+export interface HardConstraints {
+  earliest_departure: string | null;
+  latest_arrival: string | null;
+  max_changes: number | null;
+  min_transfer_buffer_min: number | null;
+  modes: string[];
+  avoid_overnight_travel: boolean;
+  home_stations: string[];
+  home_airports: string[];
+  cards: string[];
+}
+
+export interface SoftWeights {
+  budget_fit: number;
+  feasibility: number;
+  season: number;
+  events: number;
+  retrospective: number;
+}
+
+export interface JourneyWeights {
+  price: number;
+  duration: number;
+  changes: number;
+  reliability: number;
+}
+
+export type Pace = 'slow' | 'balanced' | 'packed';
+
+export interface TravelProfile {
+  id: string;
+  hard: HardConstraints;
+  soft: SoftWeights;
+  journey: JourneyWeights;
+  interests: string;
+  pace: Pace;
+  anchors: string[];
+  basis: Record<string, Provenance>;
+}
+
+export interface TravelProfileResponse {
+  profile: TravelProfile;
+  stored: boolean;
+  revision: number;
+}
+
+export interface DerivedTravelStats {
+  notes: string[];
+  counts: {
+    total_plans: number;
+    eligible_plans: number;
+    not_taken_plans: number;
+  };
+  basis: string[];
+  lead_time_days: {
+    min: number;
+    p25: number;
+    median: number;
+    p75: number;
+    max: number;
+  } | null;
+  trip_length_days: {
+    min: number;
+    p25: number;
+    median: number;
+    p75: number;
+    max: number;
+  } | null;
+  company_shape: {
+    solo: number;
+    pair: number;
+    group: number;
+    unrecorded: number;
+  };
+  modes: Record<string, number>;
+  popular_destinations: Array<{ name: string; count: number }>;
+}
+
+export interface BaseRequest {
+  from: PlaceRef;
+  anchor: PlaceRef;
+  from_date: string;
+  anchor_date: string;
+  max_candidates?: number;
+}
+
+export interface LegQuote {
+  cents: number;
+  currency: string;
+}
+
+export interface CompanionsNearBase {
+  count: number;
+  person_ids: string[];
+}
+
+export interface BaseCandidate {
+  place_id: string;
+  name: string;
+  latitude: number | null;
+  longitude: number | null;
+  reach: LegQuote | null;
+  onward: LegQuote | null;
+  travel_cents: number | null;
+  known_companions: number | null;
+  overlap_days: number | null;
+  stay_cents: number | null;
+  stay_reason: string;
+  why: string[];
+}
+
+export interface BaseResult {
+  from: string;
+  anchor: string;
+  from_date: string;
+  anchor_date: string;
+  candidates: BaseCandidate[];
+  considered: number;
+  priced: number;
+  degraded: string[];
+  observed_at: string;
 }
 
 export interface ScoredResult {
@@ -349,9 +491,11 @@ export const transit = {
   // the same serialized type on the server, start_station and end_station included. The
   // old client declared a second interface without those two fields, so a caller could
   // not name where a journey actually started.
-  search: (from: string, to: string, time: string, override?: JourneyOverride) =>
+  // `from` null omits the parameter, and transit then starts from the profile's first
+  // home station (`capabilities/transit/src/server.rs`, RouteQuery::origin).
+  search: (from: string | null, to: string, time: string, override?: JourneyOverride) =>
     request<Journey[]>(
-      `/api/search?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&time=${encodeURIComponent(time)}${overrideQuery(override)}`,
+      `/api/search?${from === null ? '' : `from=${encodeURIComponent(from)}&`}to=${encodeURIComponent(to)}&time=${encodeURIComponent(time)}${overrideQuery(override)}`,
     ),
   split: (from: string, to: string, time: string) =>
     request<SplitResult>(
@@ -430,6 +574,25 @@ export const trips = {
       '/trips/api/import/obsidian/all',
       jsonInit('POST', { origin }),
     ),
+  bases: (req: BaseRequest) =>
+    request<BaseResult>('/trips/api/bases', jsonInit('POST', req)),
+  setItemDay: (planId: string, itemId: string, day: string | null) =>
+    request<PlanItem>(
+      `/trips/api/plans/${encodeURIComponent(planId)}/items/${encodeURIComponent(itemId)}`,
+      jsonInit('PATCH', { day }),
+    ),
+  draftIntent: (sentence: string) =>
+    request<IntentDraft>('/trips/api/intent/draft', jsonInit('POST', { sentence })),
+};
+
+export const traveler = {
+  profile: () => request<TravelProfileResponse>('/traveler/api/profile'),
+  updateProfile: (profile: TravelProfile, expected_revision?: number) =>
+    request<TravelProfileResponse>(
+      '/traveler/api/profile',
+      jsonInit('PUT', { profile, expected_revision }),
+    ),
+  derived: () => request<DerivedTravelStats>('/traveler/api/profile/derived'),
 };
 
 export const wikimedia = {
@@ -654,7 +817,7 @@ export interface InteriorItem {
   /** Meant to stand free. Affects the search ranking only, never a verdict. */
   raumtrenner: boolean | null;
   /**
-   * A picture of this piece, as a path below the overlay's `media/` directory.
+   * A picture of this piece, as a path below the private interior asset root.
    *
    * Served by `GET /interior/api/media/<path>` on request only — the reason the capability may
    * sit in a public repository is that the bundle carries no photograph.

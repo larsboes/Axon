@@ -1672,8 +1672,8 @@
         picture <input bind:value={draft.bild} placeholder="produkt/…-01-….png" />
       </label>
       <p class="note">
-        A path below the overlay's <code>media/</code> directory. Kept out of the bundle and
-        fetched only when shown.
+        A path below the private interior asset root. Kept out of the bundle and fetched only
+        when shown.
       </p>
       {#if draft.bild}
         <img class="shot big" src={interior.mediaUrl(String(draft.bild))} alt="" />

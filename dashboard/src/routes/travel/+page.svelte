@@ -14,6 +14,9 @@
   import PlanEditor from "$lib/travel/PlanEditor.svelte";
   import PlanSearchPanel from "$lib/travel/PlanSearchPanel.svelte";
   import PlaceField from "$lib/travel/PlaceField.svelte";
+  import BaseFinderPanel from "$lib/travel/BaseFinderPanel.svelte";
+  import TravelerProfileModal from "$lib/travel/TravelerProfileModal.svelte";
+  import ItineraryTimeline from "$lib/travel/ItineraryTimeline.svelte";
   import MapSurface from "$lib/map/MapSurface.svelte";
   import {
     TRIP_LAYERS,
@@ -58,6 +61,7 @@
     type PersonPlaceProposal,
     type CalendarEntry,
     type CalendarCandidateVerdict,
+    type BaseCandidate,
     type Journey,
     type ObsidianTripCandidate,
     type PlanItem,
@@ -133,6 +137,7 @@
   /// A sentence. Beats the preset, because it is the more specific thing to say.
   let journeyPhrase = $state("");
   let expandedJourneyId = $state<string | null>(null);
+  let itineraryView = $state<"timeline" | "list">("timeline");
   let obsidianCandidates = $state<ObsidianTripCandidate[]>([]);
   let obsidianScanning = $state(false);
   let obsidianImporting = $state<string | null>(null);
@@ -151,6 +156,7 @@
   // created rarely, the board is what you come here to read.
   let plannerOpen = $state(false);
   let plannerNotice = $state<string | null>(null);
+  let profileOpen = $state(false);
   let openedPlanFromLink = "";
   // Seasonality for the open plan's destinations, keyed by "lat,lon" exactly as
   // sent so a result never has to be re-associated with its request.
@@ -196,6 +202,69 @@
     }
     return null;
   });
+
+  let planCalendarEntries = $state<CalendarEntry[]>([]);
+  let intentSentence = $state("");
+  let draftingIntent = $state(false);
+  let intentFeedback = $state<{ assumptions: string[]; unresolved: string[] } | null>(null);
+
+  async function updateItemDay(item: PlanItem, newDay: string | null) {
+    if (!activePlan) return;
+    try {
+      const updated = await trips.setItemDay(activePlan.id, item.id, newDay);
+      items = items.map((it) => (it.id === updated.id ? updated : it));
+      savedNotice = `Scheduled "${item.title}" ${newDay ? `for ${newDay}` : "as unscheduled"}`;
+      setTimeout(() => {
+        if (savedNotice?.includes(item.title)) savedNotice = null;
+      }, 3000);
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  async function loadCalendarEntries(plan: TripPlan): Promise<void> {
+    try {
+      planCalendarEntries = await calendar.entries.list(
+        plan.date_start,
+        dayAfter(plan.date_end),
+      );
+    } catch {
+      planCalendarEntries = [];
+    }
+  }
+
+  async function handleDraftIntent() {
+    if (!intentSentence.trim() || draftingIntent) return;
+    draftingIntent = true;
+    intentFeedback = null;
+    try {
+      const res = await trips.draftIntent(intentSentence);
+      const d = res.draft;
+      if (d.destinations && d.destinations.length > 0) {
+        firstDestination = d.destinations[0];
+        if (d.destinations.length > 1) {
+          secondDestination = d.destinations[1];
+          showSecondDestination = true;
+        }
+      }
+      if (d.date_start) startDate = d.date_start;
+      if (d.date_end) endDate = d.date_end;
+      if (d.interests) interests = d.interests;
+      if (d.travelers && d.travelers.length > 0) travelers = d.travelers.join(", ");
+      if (d.transport_modes && d.transport_modes.length > 0) {
+        transportModes = d.transport_modes;
+      }
+      intentFeedback = {
+        assumptions: res.assumptions,
+        unresolved: res.unresolved,
+      };
+      plannerNotice = "Trip drafted! Review and confirm fields below.";
+    } catch (e) {
+      plannerNotice = e instanceof Error ? e.message : String(e);
+    } finally {
+      draftingIntent = false;
+    }
+  }
 
   /**
    * The result this destination's coordinate was sent under, and nothing else.
@@ -247,8 +316,39 @@
     }
   }
 
-  /** Which half of the planner overlay is showing. */
-  let plannerTab = $state<"find" | "new">("new");
+  /** Which tab of the planner overlay is showing. */
+  let plannerTab = $state<"find" | "new" | "base">("new");
+
+  async function adoptBaseCandidate(
+    base: BaseCandidate,
+    from: PlaceRef,
+    anchor: PlaceRef,
+    fromDate: string,
+    anchorDate: string,
+  ): Promise<void> {
+    const basePlace: PlaceRef = {
+      id: base.place_id,
+      name: base.name,
+      kind: "city",
+      latitude: base.latitude,
+      longitude: base.longitude,
+    };
+    const title = `${placeName(from)} → ${base.name} → ${placeName(anchor)}`;
+    const plan = await trips.create({
+      title,
+      origin: from,
+      destinations: [basePlace, anchor],
+      date_start: fromDate,
+      date_end: anchorDate,
+      interests: `Intermediate base in ${base.name}`,
+      travelers: [],
+      transport_modes: ["train"],
+    });
+    plans = [plan, ...plans];
+    plannerOpen = false;
+    plannerNotice = null;
+    await openPlan(plan);
+  }
 
   /**
    * Create the plan the operator chose, then record the whole option space on
@@ -467,6 +567,8 @@
     if (creating) return;
     plannerOpen = false;
     plannerNotice = null;
+    intentSentence = "";
+    intentFeedback = null;
   }
 
   // Calendar materialisation names the new plan in the URL. Resolve it only
@@ -785,6 +887,7 @@
       items = details.items;
       planRetrospective = details.retrospective;
       void loadClimate(details);
+      void loadCalendarEntries(details);
       if (details.date_end < todayKey) {
         activePlan = details;
         selectedId = details.destinations[0]?.id ?? "";
@@ -1058,6 +1161,7 @@
       option_selected: "Option selected",
       booked: "Booked",
       completed: "Completed",
+      open: "Open branch",
     }[status];
   }
 
@@ -1145,6 +1249,7 @@
   function resetPlan(): void {
     activePlan = null;
     items = [];
+    planCalendarEntries = [];
     origin = null;
     firstDestination = null;
     secondDestination = null;
@@ -1215,6 +1320,9 @@
   <nav class="travel-nav" aria-label="Travel sections">
     <a class="active" href={link("/travel")}><Icon name="map-pin" size={14} /> Trip plans</a>
     <a href={link("/travel/connections")}><Icon name="train" size={14} /> Connections</a>
+    <button type="button" class="nav-btn" onclick={() => (profileOpen = true)}>
+      <Icon name="compass" size={14} /> Profile & preferences
+    </button>
   </nav>
 
   <!-- The board is the page; what is merely waiting for a decision sits in the rail
@@ -1530,6 +1638,10 @@
     </Rail>
   </div>
 
+  {#if profileOpen}
+    <TravelerProfileModal onClose={() => (profileOpen = false)} />
+  {/if}
+
   {#if plannerOpen}
     <Overlay
       title="New trip"
@@ -1555,6 +1667,13 @@
         <button
           type="button"
           role="tab"
+          aria-selected={plannerTab === "base"}
+          class:active={plannerTab === "base"}
+          onclick={() => (plannerTab = "base")}>Find a base</button
+        >
+        <button
+          type="button"
+          role="tab"
           aria-selected={plannerTab === "new"}
           class:active={plannerTab === "new"}
           onclick={() => (plannerTab = "new")}>New trip</button
@@ -1573,6 +1692,12 @@
           }}
           onAdopt={createPlanFromCandidate}
         />
+      {:else if plannerTab === "base"}
+        <BaseFinderPanel
+          initialFrom={origin}
+          initialAnchor={firstDestination}
+          onAdopt={adoptBaseCandidate}
+        />
       {:else}
       <form
         class="planner-form"
@@ -1581,6 +1706,53 @@
           void createPlan();
         }}
       >
+        <div class="intent-intake-box">
+          <div class="intent-header">
+            <span class="intent-title"><Icon name="compass" size={13} /> Draft with Natural Language</span>
+            <span class="intent-hint">Describe your idea in plain prose</span>
+          </div>
+          <div class="intent-input-row">
+            <input
+              class="input intent-sentence-input"
+              type="text"
+              placeholder="e.g. Somewhere warm in October under 300 euro by train..."
+              bind:value={intentSentence}
+              onkeydown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void handleDraftIntent();
+                }
+              }}
+            />
+            <button
+              class="btn btn-secondary intent-draft-btn"
+              type="button"
+              disabled={draftingIntent || !intentSentence.trim()}
+              onclick={handleDraftIntent}
+            >
+              {#if draftingIntent}
+                <Icon name="loader" size={13} /> Drafting…
+              {:else}
+                <Icon name="compass" size={13} /> Draft
+              {/if}
+            </button>
+          </div>
+          {#if intentFeedback}
+            <div class="intent-feedback">
+              {#if intentFeedback.assumptions.length > 0}
+                <p class="intent-assumption">
+                  <Icon name="check" size={11} /> {intentFeedback.assumptions.join(" · ")}
+                </p>
+              {/if}
+              {#if intentFeedback.unresolved.length > 0}
+                <p class="intent-unresolved">
+                  <Icon name="alert" size={11} /> Confirm: {intentFeedback.unresolved.join(", ")}
+                </p>
+              {/if}
+            </div>
+          {/if}
+        </div>
+
         <div class="route-fields">
           <PlaceField label="Origin" placeholder="Address, city, or station" bind:place={origin} />
           <PlaceField
@@ -2132,17 +2304,49 @@
 
     <aside class="itinerary">
       <div class="itinerary-heading">
-        <span class="eyebrow">Your itinerary</span>
-        <strong>{items.length} items</strong>
+        <div>
+          <span class="eyebrow">Your itinerary</span>
+          <strong>{items.length} items</strong>
+        </div>
+        <div class="itinerary-toggle" role="group" aria-label="Itinerary view mode">
+          <button
+            type="button"
+            class="view-pill"
+            class:active={itineraryView === "timeline"}
+            onclick={() => (itineraryView = "timeline")}
+            title="Timeline view"
+          >
+            <Icon name="calendar" size={12} />
+            <span>Timeline</span>
+          </button>
+          <button
+            type="button"
+            class="view-pill"
+            class:active={itineraryView === "list"}
+            onclick={() => (itineraryView = "list")}
+            title="List view"
+          >
+            <Icon name="layout" size={12} />
+            <span>List</span>
+          </button>
+        </div>
       </div>
       {#if savedNotice}
         <p class="saved-notice">{savedNotice}</p>
       {/if}
-      {#if items.length === 0}
+      {#if items.length === 0 && (!activePlan.stages || activePlan.stages.length === 0)}
         <div class="itinerary-empty">
           <Icon name="calendar" size={22} />
           <p>Select connections and events on the left. They remain saved with this plan.</p>
         </div>
+      {:else if itineraryView === "timeline"}
+        <ItineraryTimeline
+          plan={activePlan}
+          {items}
+          calendarEntries={planCalendarEntries}
+          onRemoveItem={removeItem}
+          onUpdateItemDay={updateItemDay}
+        />
       {:else}
         <ol class="itinerary-list">
           {#each items as item (item.id)}
@@ -2215,19 +2419,26 @@
     border-bottom: 1px solid var(--card-border);
   }
 
-  .travel-nav a {
+  .travel-nav a,
+  .travel-nav .nav-btn {
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
     padding: 0.45rem 0.65rem;
+    border: 0;
     border-radius: var(--radius-md);
+    background: transparent;
     color: var(--text-secondary);
+    font: inherit;
     font-size: var(--text-xs);
     font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
   }
 
   .travel-nav a:hover,
-  .travel-nav a.active {
+  .travel-nav a.active,
+  .travel-nav .nav-btn:hover {
     color: var(--primary);
     background: var(--primary-soft);
   }
@@ -2723,6 +2934,83 @@
 
   .planner-form {
     padding: 0;
+  }
+
+  .intent-intake-box {
+    margin-bottom: 1.15rem;
+    padding: 0.75rem 0.85rem;
+    background: var(--surface-1, rgba(255, 255, 255, 0.03));
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-md);
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .intent-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .intent-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--accent);
+  }
+
+  .intent-hint {
+    font-size: var(--text-2xs);
+    color: var(--text-tertiary);
+  }
+
+  .intent-input-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .intent-sentence-input {
+    flex: 1;
+    font-size: var(--text-xs);
+  }
+
+  .intent-draft-btn {
+    padding: 0.35rem 0.75rem;
+    font-size: var(--text-xs);
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  .intent-feedback {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    padding: 0.4rem 0.55rem;
+    border-radius: var(--radius-sm);
+    background: var(--surface-2, rgba(255, 255, 255, 0.05));
+    font-size: var(--text-2xs);
+  }
+
+  .intent-assumption {
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    color: var(--text-secondary);
+  }
+
+  .intent-unresolved {
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    color: var(--warning-ink, #f59e0b);
   }
 
   .route-fields,
@@ -3649,14 +3937,50 @@
 
   .itinerary-heading {
     display: flex;
-    align-items: flex-end;
+    align-items: center;
     justify-content: space-between;
+    gap: 0.5rem;
     padding-bottom: 0.75rem;
     border-bottom: 1px solid var(--card-border);
   }
 
   .itinerary-heading strong {
     font-size: var(--text-2xs);
+  }
+
+  .itinerary-toggle {
+    display: inline-flex;
+    align-items: center;
+    background: var(--surface-2, rgba(0, 0, 0, 0.05));
+    border: 1px solid var(--border, var(--card-border));
+    border-radius: var(--radius-full, 9999px);
+    padding: 0.15rem;
+    gap: 0.15rem;
+  }
+
+  .view-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    border: none;
+    background: transparent;
+    color: var(--text-tertiary);
+    font-size: var(--text-2xs);
+    font-weight: 500;
+    padding: 0.2rem 0.5rem;
+    border-radius: var(--radius-full, 9999px);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .view-pill:hover {
+    color: var(--text-primary);
+  }
+
+  .view-pill.active {
+    background: var(--surface-1, #fff);
+    color: var(--text-primary);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
   }
 
   .saved-notice {

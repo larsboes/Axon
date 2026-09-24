@@ -425,6 +425,43 @@ That 404 used to be a 500 carrying a bare sentence rather than the `{"error": ".
 every capability is supposed to answer with, so the reader got raw text on a perfectly
 normal "this route has no bargain". Fixed on the transit side, where it belonged.
 
+## The assistant drawer
+
+`src/lib/assistant/` is the drawer PRD Q111 put in the shell: a side panel on desktop, a
+bottom sheet on a phone, opened with ⌘K from any page. It answers three questions and says so
+for everything else. A train connection comes from `trips`' intent parser and then `transit`'s
+`/api/search`, the same search `/travel/connections` runs. A free calendar block is checked
+against `calendar`'s entries for that day. The interior layout list is `interior`'s own.
+
+Every value on a card comes from one of those responses. When a capability does not answer,
+the reply names it and shows no card. A field the intent parser left open is printed as
+unresolved. The defaults the drawer does choose (departure from 08:00, a 09:00 to 18:00
+window, a 60-minute block) are stated in the reply that uses them. This is the operator's
+ruling of 2026-09-24: an earlier version filled the gaps with sample journeys, prices and
+weather and rendered them as real.
+
+Routing is a whole-word keyword match in the page (`keyword-router.ts`), with the current
+route breaking ties. It is not Jev, and nothing is applied without a tap. Pinning a
+connection writes a `transport` item only into a draft plan the operator picks. Accepting a
+block sends naive local wall times (`2026-10-16T10:30:00`), the format
+`capabilities/calendar/src/date.rs::parse_instant` reads. A card shows success only after the
+write returned ok.
+
+Nothing the drawer calls leaves loopback, so it does no pseudonymization. That boundary
+lives in Rust (`libs/pseudonymize`, PRD Q112), where a cloud call would be made.
+
+### Installed as an app
+
+`static/manifest.webmanifest` makes the shell installable on iOS and Android. Its
+`start_url`, `scope` and icon paths are relative, so the demo build under `AXON_DEMO_BASE`
+installs from its subdirectory too. The 180, 192 and 512 px PNGs were rendered from
+`favicon.svg` with ImageMagick 7 (`magick -density 1536 favicon.svg -resize 192x192`); the
+180 px touch icon is flattened onto the tile colour because iOS fills transparency with black.
+
+`ItineraryTimeline` shows an item picture only when `image_url` is a same-origin path. A
+remote URL, such as the Wikimedia image a saved place carries, is not loaded: each load would
+tell that host which place is on the itinerary.
+
 ## Why this shape: capabilities expose HTTP, the shell only mounts
 
 Migrated from its dissolved `decisions/` entry on 2026-07-28: this governs one

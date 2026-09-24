@@ -5,15 +5,15 @@
   let {
     journey,
     expanded,
-    saved,
+    saved = false,
     onToggle,
     onSave,
   }: {
     journey: Journey;
     expanded: boolean;
-    saved: boolean;
+    saved?: boolean;
     onToggle: () => void;
-    onSave: () => void;
+    onSave?: () => void;
   } = $props();
 
   const time = (date: string) =>
@@ -70,6 +70,10 @@
   });
 
   const anyCancelled = $derived(journey.legs.some((leg) => leg.cancelled));
+  const hasRegional = $derived(journey.legs.some((leg) => leg.is_regional));
+  const allRegional = $derived(
+    journey.legs.length > 0 && journey.legs.every((leg) => leg.is_regional),
+  );
 </script>
 
 <li class:expanded>
@@ -79,7 +83,14 @@
       <span>{duration(journey.total_duration_minutes)}</span>
     </span>
     <span class="journey-route">
-      <strong>{journey.legs.map((leg) => leg.train_name || leg.train_number).join(" · ")}</strong>
+      <span class="trains-line">
+        <strong>{journey.legs.map((leg) => leg.train_name || leg.train_number).join(" · ")}</strong>
+        {#if allRegional}
+          <span class="d-ticket-pill full" title="All regional legs — fully covered by Deutschlandticket">D-Ticket</span>
+        {:else if hasRegional}
+          <span class="d-ticket-pill part" title="Includes regional legs eligible for Deutschlandticket">Part D-Ticket</span>
+        {/if}
+      </span>
       <span>
         {journey.legs.length - 1 === 0
           ? "direct"
@@ -105,16 +116,27 @@
         #{journey.ranking.rank}
       </span>
     {/if}
-    <strong>
-      {journey.total_price === null ? "price unknown" : `${journey.total_price.toFixed(2)} €`}
-    </strong>
-    <button class="save" type="button" disabled={saved} onclick={onSave}>
-      {#if saved}
-        <Icon name="check" size={13} /> Saved
+    <div class="price-stack">
+      {#if allRegional}
+        <strong class="d-ticket-free">0.00 €</strong>
+        {#if journey.total_price !== null && journey.total_price > 0}
+          <span class="price-strikethrough">{journey.total_price.toFixed(2)} €</span>
+        {/if}
       {:else}
-        <Icon name="plus" size={13} /> Add
+        <strong>
+          {journey.total_price === null ? "price unknown" : `${journey.total_price.toFixed(2)} €`}
+        </strong>
       {/if}
-    </button>
+    </div>
+    {#if onSave}
+      <button class="save" type="button" disabled={saved} onclick={onSave}>
+        {#if saved}
+          <Icon name="check" size={13} /> Saved
+        {:else}
+          <Icon name="plus" size={13} /> Add
+        {/if}
+      </button>
+    {/if}
   </div>
 
   {#if anyCancelled}
@@ -308,6 +330,59 @@
     font-size: var(--text-xs);
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .trains-line {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    overflow: hidden;
+  }
+
+  .d-ticket-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.05rem 0.35rem;
+    border-radius: 999px;
+    font-size: 0.5625rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    flex-shrink: 0;
+  }
+
+  .d-ticket-pill.full {
+    background: rgba(16, 185, 129, 0.15);
+    color: #10b981;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+  }
+
+  .d-ticket-pill.part {
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-tertiary);
+    border: 1px solid var(--card-border);
+  }
+
+  .price-stack {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+  }
+
+  .d-ticket-free {
+    color: #10b981;
+    font-family: var(--font-mono);
+  }
+
+  .price-strikethrough {
+    font-size: 0.5625rem;
+    text-decoration: line-through;
+    color: var(--text-tertiary);
+    font-family: var(--font-mono);
+  }
+
+  .leg-dticket {
+    color: #10b981;
+    font-weight: 600;
   }
 
   .dot,

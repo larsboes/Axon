@@ -250,7 +250,7 @@ export interface RetrospectiveSummary {
  *  either shape. */
 export interface RetrospectiveBody {
   cost_cents: number | null;
-  again: "yes" | "no" | "maybe";
+  again: "yes" | "no" | "maybe" | "not_taken";
   change_note: string;
 }
 

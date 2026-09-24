@@ -9,6 +9,7 @@
   import { createShellStarter } from "$lib/shell-start";
   import { axonStatus } from "$lib/api";
   import SoundscapeDock from "$lib/SoundscapeDock.svelte";
+  import AssistantDrawer from "$lib/assistant/AssistantDrawer.svelte";
 
   let { children, data } = $props();
 
@@ -281,6 +282,7 @@
   </footer>
 
   <SoundscapeDock />
+  <AssistantDrawer />
 </div>
 
 <style>
@@ -300,6 +302,7 @@
     position: sticky;
     top: 0;
     z-index: 50;
+    padding-top: env(safe-area-inset-top, 0px);
     background-color: var(--header-bg);
     -webkit-backdrop-filter: var(--glass-blur);
     backdrop-filter: var(--glass-blur);
