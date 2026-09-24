@@ -33,7 +33,7 @@ use serde_json::Value;
 
 use crate::jobs::JOB_DEADLINE_S;
 use crate::plan_search::{
-    CandidateEvent, DestinationCandidate, FeasibleWindow, SeasonScore, Sources,
+    CandidateEvent, DestinationCandidate, FeasibleWindow, SeasonScore, SoftWeights, Sources,
 };
 use crate::store::{PlaceKind, PlaceRef};
 
@@ -117,15 +117,33 @@ pub struct HttpSources {
     started: Instant,
     origin_eva: RefCell<Option<Option<String>>>,
     eva_cache: RefCell<HashMap<String, Option<String>>>,
+    retrospectives: HashMap<String, crate::retrospective::DestinationFactor>,
+    soft_weights: Option<SoftWeights>,
 }
 
 impl HttpSources {
     pub fn new(started: Instant) -> Self {
+        let soft_weights = crate::traveler_client::soft_weights();
         Self {
             started,
             origin_eva: RefCell::new(None),
             eva_cache: RefCell::new(HashMap::new()),
+            retrospectives: HashMap::new(),
+            soft_weights,
         }
+    }
+
+    pub fn with_retrospectives(
+        mut self,
+        retrospectives: HashMap<String, crate::retrospective::DestinationFactor>,
+    ) -> Self {
+        self.retrospectives = retrospectives;
+        self
+    }
+
+    pub fn with_soft_weights(mut self, soft_weights: Option<SoftWeights>) -> Self {
+        self.soft_weights = soft_weights;
+        self
     }
 
     /// A station code for a place name, resolved through transit's own suggest
@@ -361,6 +379,14 @@ impl Sources for HttpSources {
 
     fn observed_at(&self) -> String {
         now_iso()
+    }
+
+    fn soft_weights(&self) -> Option<SoftWeights> {
+        self.soft_weights
+    }
+
+    fn retrospectives(&self) -> HashMap<String, crate::retrospective::DestinationFactor> {
+        self.retrospectives.clone()
     }
 }
 

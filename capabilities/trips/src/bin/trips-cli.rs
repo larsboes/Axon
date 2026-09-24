@@ -3,9 +3,8 @@
 //! `draft-intent` turns a sentence into a plan draft nobody has submitted. It posts
 //! to the local model rung directly rather than depending on `libs/inference`, because
 //! this is one request to a loopback URL and a role lookup would be more machinery
-//! than the call it wraps. It has no HTTP route on purpose: the question it answers is
-//! "does a small local model turn a travel sentence into a valid form", and until that
-//! has started a real trip more than twice it does not need a surface.
+//! than the call it wraps. When the model is unreachable it says how to start it and
+//! prints the heuristic draft that `POST /api/intent/draft` would also return.
 //!
 //! `export-vault` writes the safety copy PRD Q47 requires. It has no HTTP route
 //! either, and for a different reason: the server already re-exports after every write
@@ -225,43 +224,20 @@ fn read_stdin() -> String {
     buffer
 }
 
+const CLI_MODEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 fn draft(sentence: &str) -> Result<(), String> {
     let sentence = sentence.trim();
     if sentence.is_empty() {
         return Err("give me a sentence to draft from".into());
     }
-    let url = std::env::var("AXON_INTENT_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:8091/v1/chat/completions".into());
-    let model =
-        std::env::var("AXON_INTENT_MODEL").unwrap_or_else(|_| "apple-foundationmodel".into());
-
-    let client = axon_http::client(
-        axon_http::Purpose::new("trips-cli"),
-        std::time::Duration::from_secs(60),
-    )
-    .map_err(|e| format!("client build: {e}"))?;
-    let response = client
-        .post(&url)
-        .json(&trips::intent::request_body(&model, sentence))
-        .send()
-        .map_err(|e| {
-            format!(
-                "could not reach the local model at {url} ({e}). Start it with \
-                 `tools/service-runner.sh start foundation-models`, or point \
-                 AXON_INTENT_URL somewhere else."
-            )
-        })?;
-    if !response.status().is_success() {
-        return Err(format!("{url} answered {}", response.status()));
-    }
-    let body: serde_json::Value = response
-        .json()
-        .map_err(|e| format!("unreadable reply: {e}"))?;
-    let content = body["choices"][0]["message"]["content"]
-        .as_str()
-        .ok_or("the reply carried no message content")?;
-
-    let drafted = trips::intent::draft_from_model_json(sentence, content)?;
+    // 60 s rather than the server's 10: a human at a terminal can wait for a cold
+    // on-device model, and a heuristic draft is a worse answer than a slow one.
+    let drafted = trips::intent::resolve_draft_or_heuristic_with(sentence, |text| {
+        trips::intent::query_model_within(text, CLI_MODEL_TIMEOUT).inspect_err(|error| {
+            eprintln!("trips: {error}\ntrips: drafting heuristically instead");
+        })
+    })?;
     println!(
         "{}",
         serde_json::to_string_pretty(&drafted).map_err(|e| e.to_string())?

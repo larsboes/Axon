@@ -244,6 +244,14 @@ const ROUTES: &[route_manifest::Route] = &[
                   item_ref holds an interior_item.id as a soft reference with no foreign key.",
         request_schema: Some(route_manifest::schema_of::<trips::pack::PutPackItems>),
     },
+    route_manifest::Route {
+        method: "POST",
+        path: "/api/intent/draft",
+        summary: "Turn a natural language sentence into a CreatePlan draft body using the local \
+                  foundation model if available, falling back to heuristic parsing if offline. \
+                  Body: { sentence }.",
+        request_schema: Some(route_manifest::schema_of::<trips::intent::IntentDraftRequest>),
+    },
 ];
 
 /// Shorthand so the table above reads as a table.
@@ -278,10 +286,10 @@ struct AppState {
 /// looks like nothing at all. Here the rule is one sentence in one place, and it
 /// covers routes that do not exist yet.
 ///
-/// Non-GET plus a 2xx status is the whole test. It exports on writes that touch no
-/// plan (a flight search is a GET, so none in practice), and that costs a listing and
-/// thirteen unchanged-file comparisons — cheaper than a second definition of which
-/// routes mutate.
+/// Non-GET plus a 2xx status is the test (`completes_a_write`), less 202 and less a
+/// response a handler marked `NotAWrite`. It exports on other writes that touch no
+/// plan, and that costs a listing and thirteen unchanged-file comparisons — cheaper
+/// than a second definition of which routes mutate.
 ///
 /// After the response, never before it: the export reads the store, so running it
 /// first would project the state the write is about to replace.
@@ -295,14 +303,9 @@ async fn project_after_write(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    let mutating = request.method() != axum::http::Method::GET;
+    let method = request.method().clone();
     let response = next.run(request).await;
-    // 202 is excluded because it means no write has COMPLETED yet -- a general
-    // property of the status code, not a per-route list, so this does not
-    // reintroduce the second definition of "which routes mutate" the comment
-    // above warns against. `POST /api/plan-search` answers 202 and would
-    // otherwise cost a listing and thirteen file comparisons per search.
-    if !mutating || !response.status().is_success() || response.status() == StatusCode::ACCEPTED {
+    if !completes_a_write(&method, &response) {
         return response;
     }
     let Some(vault) = state.obsidian.clone() else {
@@ -333,6 +336,29 @@ async fn project_after_write(
         }
     });
     response
+}
+
+/// Marks a non-GET response that wrote nothing, so `project_after_write` skips it.
+///
+/// A handler opts OUT, rather than every writing handler opting in, so a new
+/// mutation route still projects by default. `POST /api/intent/draft` is the one
+/// user: it answers 200 with a draft nobody has submitted, and without this every
+/// draft cost a full vault projection.
+#[derive(Debug, Clone, Copy)]
+struct NotAWrite;
+
+/// Whether a finished request completed a write that the vault copy must follow.
+///
+/// 202 is excluded because it means no write has COMPLETED yet -- a general
+/// property of the status code, not a per-route list, so this does not
+/// reintroduce the second definition of "which routes mutate" the note on
+/// `project_after_write` warns against. `POST /api/plan-search` answers 202 and
+/// would otherwise cost a listing and thirteen file comparisons per search.
+fn completes_a_write(method: &axum::http::Method, response: &axum::response::Response) -> bool {
+    *method != axum::http::Method::GET
+        && response.status().is_success()
+        && response.status() != StatusCode::ACCEPTED
+        && response.extensions().get::<NotAWrite>().is_none()
 }
 
 type ApiResponse = (StatusCode, Json<Value>);
@@ -1375,8 +1401,9 @@ async fn plan_search_start(
     let started = trips::jobs::start(move |started| {
         // Trips' own plan destinations are a candidate source and a local read,
         // so a database failure fails the job rather than degrading silently.
-        let plan_destinations = TripsStore::open(&database_path)
-            .and_then(|store| store.list_plans())
+        let store = TripsStore::open(&database_path).map_err(|error| error.to_string())?;
+        let plan_destinations = store
+            .list_plans()
             .map_err(|error| error.to_string())?
             .into_iter()
             .flat_map(|plan| plan.destinations)
@@ -1386,7 +1413,21 @@ async fn plan_search_start(
                 sources: vec!["plan".into()],
             })
             .collect();
-        let sources = trips::upstream::HttpSources::new(started);
+        // The same rule covers retrospectives: they are a local read, so a
+        // failure fails the job instead of ranking without the operator's history.
+        let plans: Vec<_> = store
+            .list_every_plan()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|detail| detail.plan)
+            .collect();
+        let rows = store.retrospectives().map_err(|error| error.to_string())?;
+        let retro_by_dest = trips::retrospective::summary(&rows, &plans)
+            .by_destination
+            .into_iter()
+            .map(|df| (df.key.clone(), df))
+            .collect();
+        let sources = trips::upstream::HttpSources::new(started).with_retrospectives(retro_by_dest);
         trips::plan_search::compose(&request, plan_destinations, &sources)
     });
     match started {
@@ -1687,6 +1728,33 @@ async fn put_pack_items(
     }
 }
 
+/// A draft persists nothing (`trips::intent`), so its 200 carries `NotAWrite`.
+async fn draft_intent(
+    Json(body): Json<trips::intent::IntentDraftRequest>,
+) -> axum::response::Response {
+    let sentence = body.sentence.clone();
+    let answer = match tokio::task::spawn_blocking(move || {
+        trips::intent::resolve_draft_or_heuristic(&sentence)
+    })
+    .await
+    {
+        Ok(Ok(draft)) => response(StatusCode::OK, draft),
+        Ok(Err(error)) => response(StatusCode::BAD_REQUEST, json!({ "error": error })),
+        Err(error) => response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    };
+    not_a_write(answer)
+}
+
+fn not_a_write(answer: ApiResponse) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let mut response = answer.into_response();
+    response.extensions_mut().insert(NotAWrite);
+    response
+}
+
 /// This capability's name, for the origin guard's env var
 /// (`AXON_TRIPS_ALLOWED_ORIGIN_HOSTS`).
 const CAPABILITY: &str = "trips";
@@ -1744,6 +1812,7 @@ fn build_router(state: AppState) -> Router {
         .route("/api/plans/:id/pack", get(list_pack).post(create_pack_list))
         .route("/api/plans/:id/pack/:list_id", delete(delete_pack_list))
         .route("/api/plans/:id/pack/:list_id/items", put(put_pack_items))
+        .route("/api/intent/draft", post(draft_intent))
         // ADD NEW ROUTES ABOVE THIS LINE. Below it they lose the origin guard.
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -1929,6 +1998,36 @@ mod calendar_url_tests {
             (ok.from.as_str(), ok.to.as_str()),
             ("2026-01-01", "2026-01-01")
         );
+    }
+}
+
+#[cfg(test)]
+mod projection_trigger_tests {
+    use super::*;
+    use axum::http::Method;
+    use axum::response::IntoResponse;
+
+    /// A draft answers 200 to a POST and writes nothing. Before the marker, every
+    /// draft cost a full vault projection.
+    #[test]
+    fn a_draft_response_does_not_trigger_a_projection() {
+        let draft = not_a_write(response(StatusCode::OK, json!({ "draft": {} })));
+        assert_eq!(draft.status(), StatusCode::OK);
+        assert!(!completes_a_write(&Method::POST, &draft));
+    }
+
+    /// The control: an unmarked 2xx write still projects, and a 202 or a GET does not.
+    #[test]
+    fn an_unmarked_write_still_triggers_a_projection() {
+        let write = response(StatusCode::CREATED, json!({})).into_response();
+        assert!(completes_a_write(&Method::POST, &write));
+        let ok = response(StatusCode::OK, json!({})).into_response();
+        assert!(completes_a_write(&Method::PATCH, &ok));
+        assert!(!completes_a_write(&Method::GET, &ok));
+        let accepted = response(StatusCode::ACCEPTED, json!({})).into_response();
+        assert!(!completes_a_write(&Method::POST, &accepted));
+        let refused = response(StatusCode::BAD_REQUEST, json!({})).into_response();
+        assert!(!completes_a_write(&Method::POST, &refused));
     }
 }
 

@@ -35,27 +35,63 @@ use crate::store::{PlaceRef, TransportMode};
 /// Bumped when a weight, a factor or the scoring arithmetic changes, so two
 /// responses are never silently compared across a change. Same mechanism, and
 /// the same reason, as `EVALUATOR_REVISION` in `capabilities/comms/src/evaluation.rs`.
-pub const PLAN_SEARCH_REVISION: &str = "plan-search-v1";
+///
+/// v3 (2026-09-24): weights are clamped to zero or above, and a measured weight
+/// total of zero falls back to the default weights. The default weights are v2's.
+pub const PLAN_SEARCH_REVISION: &str = "plan-search-v3";
 
-/// The weights of `plan-search-v1`. All factors for this revision sum to 1 —
-/// the sentence `capabilities/comms/src/evaluation.rs` states for the feed
-/// evaluator, whose `{key, label, score, weight, rationale}` shape this reuses
-/// rather than inventing a second vocabulary for the same idea.
-pub const WEIGHT_BUDGET_FIT: f64 = 0.35;
-pub const WEIGHT_FEASIBILITY: f64 = 0.30;
-pub const WEIGHT_SEASON: f64 = 0.20;
-pub const WEIGHT_EVENTS: f64 = 0.15;
+/// The default weights of `plan-search-v2`. All five factors sum to 1.
+pub const WEIGHT_BUDGET_FIT: f64 = 0.30;
+pub const WEIGHT_FEASIBILITY: f64 = 0.25;
+pub const WEIGHT_SEASON: f64 = 0.15;
+pub const WEIGHT_EVENTS: f64 = 0.20;
+pub const WEIGHT_RETROSPECTIVE: f64 = 0.10;
 
-/// The fifth factor slot, declared and NOT computed in v1.
+/// The fifth factor slot, computed in v2.
 ///
 /// travel-season-cost publishes `GET /api/retrospectives/summary` — how a past
-/// trip to this destination actually went — and states that the consumer is not
-/// theirs to build. When it is built, it takes this key and this label, weights
-/// are redistributed, and `PLAN_SEARCH_REVISION` becomes `plan-search-v2`.
-/// That is the whole revision rule: a scoring change that could move a rank
-/// bumps the revision, and a stored score from an older revision is not
-/// comparable to a new one.
+/// trip to this destination actually went. In v2, this takes this key and this label,
+/// weights are read from the traveler profile (or default SoftWeights), and
+/// `PLAN_SEARCH_REVISION` is `plan-search-v2`.
 pub const FACTOR_RETROSPECTIVE: (&str, &str) = ("retrospective", "How the last trip here went");
+
+/// The soft ranking weights, matching `capabilities/traveler` profile's `soft` section.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SoftWeights {
+    pub budget_fit: f64,
+    pub feasibility: f64,
+    pub season: f64,
+    pub events: f64,
+    pub retrospective: f64,
+}
+
+impl SoftWeights {
+    /// Every weight at `>= 0`, with a NaN read as 0. The traveler profile refuses
+    /// a negative weight, but this file also takes weights from a request.
+    pub fn clamped(self) -> Self {
+        let floor = |w: f64| if w > 0.0 { w } else { 0.0 };
+        Self {
+            budget_fit: floor(self.budget_fit),
+            feasibility: floor(self.feasibility),
+            season: floor(self.season),
+            events: floor(self.events),
+            retrospective: floor(self.retrospective),
+        }
+    }
+}
+
+impl Default for SoftWeights {
+    fn default() -> Self {
+        Self {
+            budget_fit: WEIGHT_BUDGET_FIT,
+            feasibility: WEIGHT_FEASIBILITY,
+            season: WEIGHT_SEASON,
+            events: WEIGHT_EVENTS,
+            retrospective: WEIGHT_RETROSPECTIVE,
+        }
+    }
+}
 
 /// The longest span a search may cover — the same bound `flight_when` already
 /// enforces, so a month and a hand-typed window cannot mean different things.
@@ -463,6 +499,14 @@ pub trait Sources {
     fn deadline_spent(&self) -> bool;
     /// Now, as an ISO instant, for `priced_at` and `observed_at`.
     fn observed_at(&self) -> String;
+    /// The soft ranking weights from traveler profile, if available.
+    fn soft_weights(&self) -> Option<SoftWeights> {
+        None
+    }
+    /// Past trip retrospectives summarized by destination key.
+    fn retrospectives(&self) -> HashMap<String, crate::retrospective::DestinationFactor> {
+        HashMap::new()
+    }
 }
 
 /// The whole search, with every network call behind `sources`.
@@ -641,6 +685,8 @@ pub fn compose(
     }
 
     let observed_at = sources.observed_at();
+    let weights = sources.soft_weights().unwrap_or_default();
+    let retrospectives = sources.retrospectives();
     let mut ranked: Vec<RankedCandidate> = candidates
         .iter()
         .map(|candidate| {
@@ -650,6 +696,8 @@ pub fn compose(
                 .cloned()
                 .unwrap_or_default();
             let season = climate.get(&candidate.place_id).cloned();
+            let normalized_name = crate::store::normalize_place_name(&candidate.destination.name);
+            let retro = retrospectives.get(&normalized_name).cloned();
             let inputs = ScoringInputs {
                 budget_cents: request.budget_cents,
                 estimated_cost_cents: cost,
@@ -657,6 +705,8 @@ pub fn compose(
                 season: season.clone(),
                 climate_reached: reach.climate == "ok",
                 events: opportunities.map(|_| events.len()),
+                retrospective: retro,
+                weights,
             };
             let factors = factors(&inputs);
             RankedCandidate {
@@ -871,13 +921,37 @@ pub struct ScoringInputs {
     pub climate_reached: bool,
     /// `None` when scouting was not reached. `Some(0)` is a measured zero.
     pub events: Option<usize>,
+    /// Past retrospective for this destination, if recorded.
+    pub retrospective: Option<crate::retrospective::DestinationFactor>,
+    /// The weights to apply to factors.
+    pub weights: SoftWeights,
 }
 
 /// The factors that could be measured, with their weights re-normalised to 1.
 ///
 /// A factor that could not be measured is ABSENT. It is never a neutral 0.5,
 /// because a reader cannot tell that apart from a measured 0.5.
+///
+/// The caller's weights are clamped to `>= 0` first; a NaN counts as 0. When the
+/// measured factors then carry no weight at all, the default weights stand in:
+/// a total of 0 would score every candidate 0, which reads as "all equally bad"
+/// rather than "the weights said nothing".
 pub fn factors(inputs: &ScoringInputs) -> Vec<ScoreFactor> {
+    let mut factors = unnormalised_factors(inputs, inputs.weights.clamped());
+    let mut total: f64 = factors.iter().map(|f| f.weight).sum();
+    if total.is_nan() || total <= 0.0 {
+        factors = unnormalised_factors(inputs, SoftWeights::default());
+        total = factors.iter().map(|f| f.weight).sum();
+    }
+    if total > 0.0 {
+        for factor in &mut factors {
+            factor.weight /= total;
+        }
+    }
+    factors
+}
+
+fn unnormalised_factors(inputs: &ScoringInputs, weights: SoftWeights) -> Vec<ScoreFactor> {
     let mut factors: Vec<ScoreFactor> = Vec::new();
 
     if let (Some(budget), Some(cost)) = (inputs.budget_cents, inputs.estimated_cost_cents) {
@@ -895,7 +969,7 @@ pub fn factors(inputs: &ScoringInputs) -> Vec<ScoreFactor> {
             key: "budget_fit".into(),
             label: "Fit to budget".into(),
             score,
-            weight: WEIGHT_BUDGET_FIT,
+            weight: weights.budget_fit,
             rationale: if ratio <= 1.0 {
                 format!("{}% of the budget", (ratio * 100.0).round() as i64)
             } else {
@@ -920,7 +994,7 @@ pub fn factors(inputs: &ScoringInputs) -> Vec<ScoreFactor> {
             key: "feasibility".into(),
             label: "Fits the calendar".into(),
             score,
-            weight: WEIGHT_FEASIBILITY,
+            weight: weights.feasibility,
             rationale: if travel_days == 0 {
                 format!("calendar verdict {}", window.verdict)
             } else {
@@ -938,7 +1012,7 @@ pub fn factors(inputs: &ScoringInputs) -> Vec<ScoreFactor> {
                 key: "season".into(),
                 label: "Right time of year".into(),
                 score: season.score.clamp(0.0, 1.0),
-                weight: WEIGHT_SEASON,
+                weight: weights.season,
                 rationale: match season.best_month {
                     Some(best) if best == season.month => "the best month here".into(),
                     Some(best) => format!("month {}; month {best} is the best here", season.month),
@@ -953,7 +1027,7 @@ pub fn factors(inputs: &ScoringInputs) -> Vec<ScoreFactor> {
             key: "events".into(),
             label: "Something is on".into(),
             score: (count as f64 / 3.0).clamp(0.0, 1.0),
-            weight: WEIGHT_EVENTS,
+            weight: weights.events,
             rationale: match count {
                 0 => "nothing scouting knows about in the window".into(),
                 1 => "1 event in the window".into(),
@@ -962,12 +1036,34 @@ pub fn factors(inputs: &ScoringInputs) -> Vec<ScoreFactor> {
         });
     }
 
-    let total: f64 = factors.iter().map(|f| f.weight).sum();
-    if total > 0.0 {
-        for factor in &mut factors {
-            factor.weight /= total;
+    if let Some(dest_factor) = &inputs.retrospective {
+        if dest_factor.n > 0 {
+            let (min, max) = crate::retrospective::BOUNDS;
+            let normalized_score = if max > min {
+                ((dest_factor.factor - min) / (max - min)).clamp(0.0, 1.0)
+            } else {
+                0.5
+            };
+            let rating_desc = if dest_factor.mean_again > 0.25 {
+                "favorably"
+            } else if dest_factor.mean_again < -0.25 {
+                "unfavorably"
+            } else {
+                "neutral"
+            };
+            factors.push(ScoreFactor {
+                key: FACTOR_RETROSPECTIVE.0.into(),
+                label: FACTOR_RETROSPECTIVE.1.into(),
+                score: normalized_score,
+                weight: weights.retrospective,
+                rationale: format!(
+                    "rated {} across {} past trip(s)",
+                    rating_desc, dest_factor.n
+                ),
+            });
         }
     }
+
     factors
 }
 
@@ -1062,6 +1158,9 @@ fn why(
     }
     if !factors.iter().any(|f| f.key == "season") {
         why.push("no climate normal for this place, so the season was not scored".into());
+    }
+    if let Some(retro) = factors.iter().find(|f| f.key == FACTOR_RETROSPECTIVE.0) {
+        why.push(retro.rationale.clone());
     }
     if candidate.sources.iter().any(|s| s == "plan") {
         why.push("already a destination on one of your plans".into());
@@ -1275,6 +1374,8 @@ mod tests {
         /// check the window that went on the wire rather than the one in the
         /// response.
         presence_asked: std::cell::RefCell<Vec<(String, String)>>,
+        soft_weights: Option<SoftWeights>,
+        retrospectives: HashMap<String, crate::retrospective::DestinationFactor>,
     }
 
     impl Default for Stub {
@@ -1288,6 +1389,8 @@ mod tests {
                 deadline_after: usize::MAX,
                 priced: std::cell::RefCell::new(Vec::new()),
                 presence_asked: std::cell::RefCell::new(Vec::new()),
+                soft_weights: None,
+                retrospectives: HashMap::new(),
             }
         }
     }
@@ -1330,6 +1433,12 @@ mod tests {
         }
         fn observed_at(&self) -> String {
             "2026-10-01T09:00:00Z".into()
+        }
+        fn soft_weights(&self) -> Option<SoftWeights> {
+            self.soft_weights
+        }
+        fn retrospectives(&self) -> HashMap<String, crate::retrospective::DestinationFactor> {
+            self.retrospectives.clone()
         }
     }
 
@@ -1406,29 +1515,43 @@ mod tests {
             for window in [None, Some(free_window())] {
                 for climate in [false, true] {
                     for events in [None, Some(0usize), Some(4)] {
-                        let inputs = ScoringInputs {
-                            budget_cents: budget,
-                            estimated_cost_cents: Some(4200),
-                            window: window.clone(),
-                            season: climate.then_some(SeasonScore {
-                                month: 10,
-                                score: 0.8,
-                                best_month: Some(6),
+                        for retro in [
+                            None,
+                            Some(crate::retrospective::DestinationFactor {
+                                key: "bonn".into(),
+                                n: 2,
+                                mean_again: 0.5,
+                                factor: 1.1,
+                                median_overrun_bp: None,
+                                basis: vec!["plan-1".into()],
                             }),
-                            climate_reached: climate,
-                            events,
-                        };
-                        let factors = factors(&inputs);
-                        if factors.is_empty() {
-                            continue;
+                        ] {
+                            let inputs = ScoringInputs {
+                                budget_cents: budget,
+                                estimated_cost_cents: Some(4200),
+                                window: window.clone(),
+                                season: climate.then_some(SeasonScore {
+                                    month: 10,
+                                    score: 0.8,
+                                    best_month: Some(6),
+                                }),
+                                climate_reached: climate,
+                                events,
+                                retrospective: retro,
+                                ..Default::default()
+                            };
+                            let factors = factors(&inputs);
+                            if factors.is_empty() {
+                                continue;
+                            }
+                            let total: f64 = factors.iter().map(|f| f.weight).sum();
+                            assert!(
+                                (total - 1.0).abs() < 1e-9,
+                                "weights summed to {total} for {factors:?}"
+                            );
+                            let score = weighted_score(&factors).expect("a measured factor scores");
+                            assert!((0.0..=1.0).contains(&score), "score out of range: {score}");
                         }
-                        let total: f64 = factors.iter().map(|f| f.weight).sum();
-                        assert!(
-                            (total - 1.0).abs() < 1e-9,
-                            "weights summed to {total} for {factors:?}"
-                        );
-                        let score = weighted_score(&factors).expect("a measured factor scores");
-                        assert!((0.0..=1.0).contains(&score), "score out of range: {score}");
                     }
                 }
             }
@@ -1537,6 +1660,7 @@ mod tests {
             season: None,
             climate_reached: false,
             events: Some(0),
+            ..Default::default()
         });
         let over = factors(&ScoringInputs {
             budget_cents: Some(30_000),
@@ -1545,6 +1669,7 @@ mod tests {
             season: None,
             climate_reached: false,
             events: Some(0),
+            ..Default::default()
         });
         assert!(
             weighted_score(&under) > weighted_score(&over),
@@ -1914,5 +2039,149 @@ mod tests {
             companion_hint(3, 5),
             "3 known companions are near this destination for 5 days of this window"
         );
+    }
+
+    #[test]
+    fn favorable_retrospective_boosts_candidate_score_and_rationale() {
+        let mut retrospectives = HashMap::new();
+        retrospectives.insert(
+            "berlin".to_string(),
+            crate::retrospective::DestinationFactor {
+                key: "berlin".into(),
+                n: 3,
+                mean_again: 1.0,
+                factor: 1.15,
+                median_overrun_bp: None,
+                basis: vec!["plan-1".into(), "plan-2".into(), "plan-3".into()],
+            },
+        );
+
+        let stub = Stub {
+            cities: Ok(vec![
+                candidate("place:berlin", "Berlin"),
+                candidate("place:munich", "Munich"),
+            ]),
+            fare_cents: Some(5000),
+            retrospectives,
+            ..Default::default()
+        };
+
+        let req = request_by(Some("2026-10"), None, vec![TransportMode::Train]);
+        let result = compose(&req, Vec::new(), &stub).expect("search composes");
+
+        assert_eq!(result.revision, "plan-search-v3");
+        let berlin = result
+            .candidates
+            .iter()
+            .find(|c| c.place_id == "place:berlin")
+            .expect("berlin candidate present");
+        let munich = result
+            .candidates
+            .iter()
+            .find(|c| c.place_id == "place:munich")
+            .expect("munich candidate present");
+
+        let berlin_retro = berlin
+            .factors
+            .iter()
+            .find(|f| f.key == FACTOR_RETROSPECTIVE.0);
+        assert!(
+            berlin_retro.is_some(),
+            "berlin must have retrospective factor"
+        );
+        assert!(berlin_retro
+            .unwrap()
+            .rationale
+            .contains("rated favorably across 3 past trip(s)"));
+        assert!(berlin
+            .why
+            .iter()
+            .any(|w| w.contains("rated favorably across 3 past trip(s)")));
+
+        let munich_retro = munich
+            .factors
+            .iter()
+            .find(|f| f.key == FACTOR_RETROSPECTIVE.0);
+        assert!(
+            munich_retro.is_none(),
+            "munich without past trips has no retrospective factor"
+        );
+
+        // Berlin has higher score than Munich due to favorable past retrospective
+        assert!(
+            berlin.score.unwrap() > munich.score.unwrap(),
+            "favorable retrospective should boost berlin above munich"
+        );
+    }
+
+    #[test]
+    fn custom_soft_weights_are_respected_in_scoring() {
+        let custom_weights = SoftWeights {
+            budget_fit: 0.70,
+            feasibility: 0.10,
+            season: 0.10,
+            events: 0.10,
+            retrospective: 0.0,
+        };
+
+        let stub = Stub {
+            cities: Ok(vec![candidate("place:berlin", "Berlin")]),
+            fare_cents: Some(3000),
+            soft_weights: Some(custom_weights),
+            ..Default::default()
+        };
+
+        let req = request_by(Some("2026-10"), None, vec![TransportMode::Train]);
+        let result = compose(&req, Vec::new(), &stub).expect("search composes");
+        let c = &result.candidates[0];
+        let budget_factor = c.factors.iter().find(|f| f.key == "budget_fit").unwrap();
+        // Budget weight dominates heavily when custom weight is 0.70
+        assert!(budget_factor.weight > 0.50);
+    }
+
+    fn budget_and_events(weights: SoftWeights) -> ScoringInputs {
+        ScoringInputs {
+            budget_cents: Some(30_000),
+            estimated_cost_cents: Some(15_000),
+            events: Some(3),
+            weights,
+            ..Default::default()
+        }
+    }
+
+    /// A negative weight is clamped to 0 rather than subtracting from the score.
+    #[test]
+    fn a_negative_soft_weight_counts_as_zero() {
+        let inputs = budget_and_events(SoftWeights {
+            budget_fit: -0.5,
+            events: 0.5,
+            ..SoftWeights::default()
+        });
+        let measured = factors(&inputs);
+        let budget = measured.iter().find(|f| f.key == "budget_fit").unwrap();
+        let events = measured.iter().find(|f| f.key == "events").unwrap();
+        assert_eq!(budget.weight, 0.0);
+        assert!((events.weight - 1.0).abs() < 1e-9);
+        assert!(weighted_score(&measured).unwrap() > 0.0);
+    }
+
+    /// When the measured factors carry no weight, the defaults stand in. Before,
+    /// a measured total of 0 scored every candidate 0.
+    #[test]
+    fn a_zero_measured_weight_total_falls_back_to_the_defaults() {
+        let zero = SoftWeights {
+            budget_fit: 0.0,
+            feasibility: 1.0,
+            season: 0.0,
+            events: -1.0,
+            retrospective: 0.0,
+        };
+        let measured = factors(&budget_and_events(zero));
+        let budget = measured.iter().find(|f| f.key == "budget_fit").unwrap();
+        let events = measured.iter().find(|f| f.key == "events").unwrap();
+        let expected = WEIGHT_BUDGET_FIT / (WEIGHT_BUDGET_FIT + WEIGHT_EVENTS);
+        assert!((budget.weight - expected).abs() < 1e-9, "{measured:?}");
+        assert!((budget.weight + events.weight - 1.0).abs() < 1e-9);
+        assert!(weighted_score(&measured).unwrap() > 0.0);
     }
 }

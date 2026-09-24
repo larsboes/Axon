@@ -23,8 +23,15 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+/// A request to turn a natural language sentence into a draft trip form.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IntentDraftRequest {
+    pub sentence: String,
+}
+
 /// A filled-in form, and what it could not settle.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
 pub struct IntentDraft {
     /// The `CreatePlan` body, ready for a human to review and submit.
     pub draft: Value,
@@ -150,7 +157,11 @@ pub fn draft_from_model_json_on(
             .map(str::to_string)
     };
 
-    let names: Vec<String> = strings("destinations").into_iter().take(4).collect();
+    let names: Vec<String> = strings("destinations")
+        .into_iter()
+        .filter(|name| !is_pseudonym_token(name))
+        .take(4)
+        .collect();
     let mut unresolved = strings("unresolved");
     if names.is_empty() && !unresolved.iter().any(|u| u == "destinations") {
         unresolved.push("destinations".into());
@@ -238,6 +249,346 @@ fn strip_fence(raw: &str) -> String {
 
 fn preview(raw: &str) -> String {
     raw.chars().take(160).collect()
+}
+
+/// The local model's chat-completions endpoint, `AXON_INTENT_URL` first.
+fn model_url() -> String {
+    std::env::var("AXON_INTENT_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8091/v1/chat/completions".into())
+}
+
+/// How long the server waits for the model before it drafts heuristically.
+pub const SERVER_MODEL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Queries the local foundation model with the server's timeout.
+pub fn query_model(sentence: &str) -> Result<IntentDraft, String> {
+    query_model_within(sentence, SERVER_MODEL_TIMEOUT)
+}
+
+/// Queries the local foundation model, waiting at most `timeout`.
+///
+/// An unreachable model names the command that starts it, because the usual cause
+/// is that `foundation-models` is not running.
+pub fn query_model_within(
+    sentence: &str,
+    timeout: std::time::Duration,
+) -> Result<IntentDraft, String> {
+    let url = model_url();
+    let model =
+        std::env::var("AXON_INTENT_MODEL").unwrap_or_else(|_| "apple-foundationmodel".into());
+
+    let client = axon_http::client(axon_http::Purpose::new("trips-intent"), timeout)
+        .map_err(|e| format!("client build: {e}"))?;
+
+    let response = client
+        .post(&url)
+        .json(&request_body(&model, sentence))
+        .send()
+        .map_err(|e| {
+            format!(
+                "could not reach the local model at {url} ({e}). Start it with \
+                 `tools/service-runner.sh start foundation-models`, or point \
+                 AXON_INTENT_URL somewhere else."
+            )
+        })?;
+
+    if !response.status().is_success() {
+        return Err(format!("{url} answered {}", response.status()));
+    }
+
+    let body: serde_json::Value = response
+        .json()
+        .map_err(|e| format!("unreadable reply: {e}"))?;
+    let content = body["choices"][0]["message"]["content"]
+        .as_str()
+        .ok_or_else(|| "the reply carried no message content".to_string())?;
+
+    draft_from_model_json(sentence, content)
+}
+
+/// Whether a word is a pseudonym token such as `<EMAIL_01>` or `<PERSON_02>`.
+///
+/// `axon_pseudonymize` mints tokens as `<PREFIX_NN>`. Trimmed like a place name, a
+/// token becomes `EMAIL`, a capitalised word that the heuristic would take as a
+/// destination. So a token is never a destination.
+pub fn is_pseudonym_token(word: &str) -> bool {
+    let word = word.trim_matches(|c: char| !(c.is_alphanumeric() || matches!(c, '<' | '>' | '_')));
+    let Some(inner) = word.strip_prefix('<').and_then(|w| w.strip_suffix('>')) else {
+        return false;
+    };
+    let Some((prefix, number)) = inner.rsplit_once('_') else {
+        return false;
+    };
+    !prefix.is_empty()
+        && prefix.chars().all(|c| c.is_ascii_uppercase() || c == '_')
+        && !number.is_empty()
+        && number.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Fallback heuristic parser when the local model is offline or unconfigured.
+pub fn heuristic_draft(sentence: &str) -> IntentDraft {
+    heuristic_draft_on(sentence, &civil_date::today())
+}
+
+/// Transport modes and the whole words that name them.
+///
+/// Whole words, not substrings: "ice" is inside Nice and Venice, "car" inside
+/// Oscar and Caribbean, "bus" inside business and "rail" inside trail.
+const MODE_WORDS: &[(&str, &[&str])] = &[
+    (
+        "train",
+        &["train", "trains", "bahn", "ice", "rail", "railway", "zug"],
+    ),
+    (
+        "flight",
+        &["flight", "flights", "fly", "flying", "plane", "flug"],
+    ),
+    ("bus", &["bus", "buses", "coach"]),
+    ("car", &["car", "drive", "driving", "auto"]),
+    ("ferry", &["ferry", "boat", "fähre"]),
+    ("bike", &["bike", "cycle", "cycling", "fahrrad"]),
+    ("walk", &["walk", "walking", "hike", "hiking", "wandern"]),
+];
+
+pub fn heuristic_draft_on(sentence: &str, today: &str) -> IntentDraft {
+    let lower = sentence.to_lowercase();
+    let lower_words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+
+    let modes: Vec<String> = MODE_WORDS
+        .iter()
+        .filter(|(_, words)| words.iter().any(|w| lower_words.contains(w)))
+        .map(|(mode, _)| mode.to_string())
+        .collect();
+
+    // Look for ISO dates YYYY-MM-DD
+    let mut dates = Vec::new();
+    for word in sentence.split_whitespace() {
+        let cleaned = word.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-');
+        if usable_date(Some(cleaned.to_string()), today).is_some() {
+            dates.push(cleaned.to_string());
+        }
+    }
+    let date_start = dates.first().cloned();
+    let date_end = dates.get(1).cloned();
+
+    // Destinations: capitalised words after a cue, never a pseudonym token.
+    let words: Vec<&str> = sentence.split_whitespace().collect();
+    let skip_words = [
+        "the",
+        "a",
+        "an",
+        "my",
+        "our",
+        "to",
+        "in",
+        "and",
+        "or",
+        "for",
+        "with",
+        "by",
+        "of",
+        "october",
+        "november",
+        "december",
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "spring",
+        "summer",
+        "autumn",
+        "fall",
+        "winter",
+        "weekend",
+        "monday",
+        "tuesday",
+        "wednesday",
+        "thursday",
+        "friday",
+        "saturday",
+        "sunday",
+        "train",
+        "flight",
+        "bus",
+        "car",
+        "euro",
+        "eur",
+        "day",
+        "days",
+        "trip",
+    ];
+    let place_word = |raw: &str| -> Option<String> {
+        if is_pseudonym_token(raw) {
+            return None;
+        }
+        let cleaned = raw.trim_matches(|c: char| !c.is_alphabetic());
+        let capitalised = cleaned.chars().next().is_some_and(char::is_uppercase);
+        (capitalised && !skip_words.contains(&cleaned.to_lowercase().as_str()))
+            .then(|| cleaned.to_string())
+    };
+    let mut destinations: Vec<String> = Vec::new();
+    let add = |name: String, destinations: &mut Vec<String>| {
+        if !destinations.contains(&name) && destinations.len() < 4 {
+            destinations.push(name);
+        }
+    };
+
+    for pair in words.windows(2) {
+        let cue = pair[0]
+            .trim_matches(|c: char| !c.is_alphabetic())
+            .to_lowercase();
+        if matches!(
+            cue.as_str(),
+            "to" | "in" | "visit" | "visiting" | "nach" | "and"
+        ) {
+            if let Some(name) = place_word(pair[1]) {
+                add(name, &mut destinations);
+            }
+        }
+    }
+
+    if destinations.is_empty() {
+        for word in words.iter().skip(1) {
+            if let Some(name) = place_word(word).filter(|n| n.chars().count() > 2) {
+                add(name, &mut destinations);
+            }
+        }
+    }
+
+    let mut unresolved = vec!["origin".to_string()];
+    if destinations.is_empty() {
+        unresolved.push("destinations".to_string());
+    }
+    if date_start.is_none() || date_end.is_none() {
+        unresolved.push("dates".to_string());
+    }
+
+    let dest_values: Vec<Value> = destinations
+        .iter()
+        .map(|name| {
+            serde_json::json!({
+                "id": place_slug(name),
+                "name": name,
+                "kind": "city",
+                "latitude": Value::Null,
+                "longitude": Value::Null
+            })
+        })
+        .collect();
+
+    let interests: Vec<&str> = [
+        "warm",
+        "beach",
+        "hiking",
+        "culture",
+        "museum",
+        "food",
+        "relaxation",
+        "nature",
+        "mountains",
+    ]
+    .into_iter()
+    .filter(|term| lower.contains(term))
+    .collect();
+
+    let draft = serde_json::json!({
+        "title": sentence.trim(),
+        "origin": Value::Null,
+        "destinations": dest_values,
+        "date_start": date_start,
+        "date_end": date_end,
+        "interests": interests.join(", "),
+        "transport_modes": modes,
+        "travelers": Vec::<String>::new(),
+    });
+
+    IntentDraft {
+        draft,
+        unresolved,
+        assumptions: vec![
+            "Heuristic draft: local model was unavailable or offline, extracted from text patterns."
+                .to_string(),
+        ],
+        source_text: sentence.to_string(),
+    }
+}
+
+/// Resolves an intent sentence to a draft, masking what `registry` and the
+/// pattern recognisers find before any model sees the sentence.
+///
+/// What is masked depends on `registry`. The session always masks pattern-shaped
+/// values (e-mail addresses, phone numbers, IBANs, URLs, secrets, long numbers) and
+/// names that a cue introduces ("Hi Anna", "Anna from Bonn"). A traveler's bare name
+/// is masked only when `registry` knows it. Tokens are rehydrated on the way out
+/// (PRD §6.2c).
+pub fn resolve_draft_pseudonymized(
+    sentence: &str,
+    registry: &axon_pseudonymize::EntityRegistry,
+    session: &mut axon_pseudonymize::PseudonymizerSession,
+) -> Result<IntentDraft, String> {
+    resolve_draft_pseudonymized_with(sentence, registry, session, query_model)
+}
+
+/// [`resolve_draft_pseudonymized`] with the model call injected, so a test does
+/// not depend on a live model on 127.0.0.1:8091.
+pub fn resolve_draft_pseudonymized_with(
+    sentence: &str,
+    registry: &axon_pseudonymize::EntityRegistry,
+    session: &mut axon_pseudonymize::PseudonymizerSession,
+    model: impl FnOnce(&str) -> Result<IntentDraft, String>,
+) -> Result<IntentDraft, String> {
+    let sentence = sentence.trim();
+    if sentence.is_empty() {
+        return Err("sentence cannot be empty".to_string());
+    }
+    let pseudo_text = session.tokenize_text(sentence, registry);
+    let mut draft = match model(&pseudo_text) {
+        Ok(d) => d,
+        Err(_) => heuristic_draft(&pseudo_text),
+    };
+
+    // Rehydrate any masked tokens in the JSON draft and string fields
+    session.rehydrate_json(&mut draft.draft);
+    draft.source_text = sentence.to_string();
+    draft.assumptions = draft
+        .assumptions
+        .into_iter()
+        .map(|a| session.rehydrate_text(&a))
+        .collect();
+    draft.unresolved = draft
+        .unresolved
+        .into_iter()
+        .map(|u| session.rehydrate_text(&u))
+        .collect();
+    Ok(draft)
+}
+
+/// Resolves an intent sentence to a draft by querying the model if reachable,
+/// or falling back to heuristic parsing.
+///
+/// The registry here is EMPTY: trips does not read the people registry. So only
+/// pattern-shaped values and cue-introduced names are masked, and a traveler's
+/// bare name reaches the model as typed. See [`resolve_draft_pseudonymized`].
+pub fn resolve_draft_or_heuristic(sentence: &str) -> Result<IntentDraft, String> {
+    resolve_draft_or_heuristic_with(sentence, query_model)
+}
+
+/// [`resolve_draft_or_heuristic`] with the model call injected.
+pub fn resolve_draft_or_heuristic_with(
+    sentence: &str,
+    model: impl FnOnce(&str) -> Result<IntentDraft, String>,
+) -> Result<IntentDraft, String> {
+    let registry = axon_pseudonymize::Pseudonymizer::builder().build();
+    let mut session = axon_pseudonymize::PseudonymizerSession::new();
+    resolve_draft_pseudonymized_with(sentence, &registry, &mut session, model)
 }
 
 #[cfg(test)]
@@ -365,5 +716,139 @@ mod tests {
         assert!(SYSTEM_PROMPT.contains("Never invent a date"));
         assert!(SYSTEM_PROMPT.contains("Never a station code"));
         assert!(request_body("apple-on-device", "hi")["messages"][1]["content"] == "hi");
+    }
+
+    #[test]
+    fn heuristic_draft_extracts_places_modes_and_dates() {
+        let sentence = "Weekend trip to Munich and Salzburg by train from 2026-10-05 to 2026-10-10";
+        let draft = heuristic_draft_on(sentence, "2026-09-01");
+        let dests = draft.draft["destinations"].as_array().unwrap();
+        assert_eq!(dests.len(), 2);
+        assert_eq!(dests[0]["name"], "Munich");
+        assert_eq!(dests[0]["id"], "place:munich");
+        assert_eq!(dests[1]["name"], "Salzburg");
+        assert_eq!(dests[1]["id"], "place:salzburg");
+        assert_eq!(draft.draft["transport_modes"][0], "train");
+        assert_eq!(draft.draft["date_start"], "2026-10-05");
+        assert_eq!(draft.draft["date_end"], "2026-10-10");
+        assert!(!draft.unresolved.contains(&"dates".to_string()));
+        assert!(draft.unresolved.contains(&"origin".to_string()));
+    }
+
+    #[test]
+    fn heuristic_draft_handles_missing_dates_and_interests() {
+        let sentence = "Somewhere warm with hiking by flight";
+        let draft = heuristic_draft_on(sentence, "2026-09-01");
+        assert!(draft.draft["date_start"].is_null());
+        assert!(draft.unresolved.contains(&"dates".to_string()));
+        assert!(draft.unresolved.contains(&"destinations".to_string()));
+        assert_eq!(draft.draft["transport_modes"][0], "flight");
+        let interests = draft.draft["interests"].as_str().unwrap();
+        assert!(interests.contains("warm"));
+        assert!(interests.contains("hiking"));
+    }
+
+    fn offline(_: &str) -> Result<IntentDraft, String> {
+        Err("model offline (test stub)".into())
+    }
+
+    #[test]
+    fn resolve_draft_or_heuristic_handles_fallback() {
+        let draft = resolve_draft_or_heuristic_with("Trip to Vienna by train", offline).unwrap();
+        assert_eq!(draft.draft["destinations"][0]["name"], "Vienna");
+        assert_eq!(draft.draft["transport_modes"][0], "train");
+        assert!(draft.assumptions[0].starts_with("Heuristic draft"));
+    }
+
+    #[test]
+    fn intent_pseudonymization_protects_entities_and_rehydrates_draft() {
+        let registry = axon_pseudonymize::Pseudonymizer::builder().build();
+        let mut session = axon_pseudonymize::PseudonymizerSession::new();
+        let sentence = "Trip to Berlin by train with traveler contact user@axon.local";
+        let seen = std::cell::RefCell::new(String::new());
+        let draft = resolve_draft_pseudonymized_with(sentence, &registry, &mut session, |text| {
+            *seen.borrow_mut() = text.to_string();
+            offline(text)
+        })
+        .unwrap();
+        // The model was handed the masked sentence, never the address.
+        assert!(
+            !seen.borrow().contains("user@axon.local"),
+            "{}",
+            seen.borrow()
+        );
+        assert!(seen.borrow().contains("<EMAIL_"), "{}", seen.borrow());
+        assert_eq!(draft.draft["destinations"][0]["name"], "Berlin");
+        assert_eq!(
+            draft.draft["destinations"].as_array().unwrap().len(),
+            1,
+            "the e-mail token is not a destination"
+        );
+        assert_eq!(draft.draft["transport_modes"][0], "train");
+        // Ensure source_text retains original sentence
+        assert_eq!(draft.source_text, sentence);
+    }
+
+    /// A model answer is used when the injected call succeeds, and its tokens rehydrate.
+    #[test]
+    fn a_stubbed_model_answer_is_used_and_rehydrated() {
+        let draft = resolve_draft_or_heuristic_with("Porto, mail me at a@b.example", |text| {
+            let token = text
+                .split_whitespace()
+                .find(|w| is_pseudonym_token(w))
+                .expect("the address was masked");
+            let raw = format!(
+                r#"{{"title":"Porto","destinations":["Porto"],"interests":"{token}","unresolved":[],"assumptions":[]}}"#
+            );
+            draft_from_model_json(text, &raw)
+        })
+        .unwrap();
+        assert_eq!(draft.draft["destinations"][0]["name"], "Porto");
+        assert_eq!(draft.draft["interests"], "a@b.example");
+    }
+
+    /// Whole words only: "ice" is inside Venice and Nice, "car" inside Oscar and
+    /// Caribbean, "bus" inside business, "rail" inside trail.
+    #[test]
+    fn transport_modes_match_whole_words_only() {
+        let modes = |sentence: &str| {
+            heuristic_draft_on(sentence, "2026-09-01").draft["transport_modes"].clone()
+        };
+        assert_eq!(modes("Trip to Venice"), serde_json::json!([]));
+        assert_eq!(modes("Nice with Oscar"), serde_json::json!([]));
+        assert_eq!(modes("Caribbean business trail"), serde_json::json!([]));
+        assert_eq!(modes("Venice by ICE"), serde_json::json!(["train"]));
+        assert_eq!(
+            modes("bus or car to Bonn"),
+            serde_json::json!(["bus", "car"])
+        );
+    }
+
+    /// `<EMAIL_01>` trimmed like a place name is `EMAIL`, which looked like a city.
+    #[test]
+    fn pseudonym_tokens_are_never_destinations() {
+        assert!(is_pseudonym_token("<EMAIL_01>"));
+        assert!(is_pseudonym_token("(<PERSON_12>),"));
+        assert!(!is_pseudonym_token("Porto"));
+        assert!(!is_pseudonym_token("<b>"));
+
+        let draft = heuristic_draft_on("Trip to <EMAIL_01> and Porto", "2026-09-01");
+        let names: Vec<_> = draft.draft["destinations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, vec!["Porto"]);
+
+        // The fallback scan skips tokens too.
+        let draft = heuristic_draft_on("Ask <PERSON_01> about <PHONE_01>", "2026-09-01");
+        assert!(draft.unresolved.contains(&"destinations".to_string()));
+
+        // And a model that echoes a token as a destination loses it.
+        let raw = r#"{"destinations":["<EMAIL_01>","Lisbon"],"unresolved":[]}"#;
+        let drafted = draft_from_model_json_on("x", raw, "2026-09-01").unwrap();
+        assert_eq!(drafted.draft["destinations"].as_array().unwrap().len(), 1);
+        assert_eq!(drafted.draft["destinations"][0]["name"], "Lisbon");
     }
 }

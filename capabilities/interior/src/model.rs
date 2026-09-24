@@ -29,6 +29,8 @@ pub enum ModelError {
         path: PathBuf,
         source: toml::de::Error,
     },
+    #[error("{path}: {detail}")]
+    Config { path: PathBuf, detail: String },
     #[error("AXON_PERSONAL_ROOT ist nicht gesetzt — ohne Overlay gibt es keine Wohnungsdaten")]
     NoOverlay,
     #[error("{0}")]
@@ -52,6 +54,54 @@ fn read_toml<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T, ModelErro
 /// erfundene Masse waere schlimmer als gar keine.
 pub fn data_dir() -> Result<PathBuf, ModelError> {
     axon_config::overlay_data_dir("interior").ok_or(ModelError::NoOverlay)
+}
+
+/// Private, human-facing interior assets such as photos and RoomPlan captures.
+///
+/// The machine model stays in `data/interior`; the asset root may be declared by the
+/// private overlay as `assets_root` in `config/interior.json`. A missing file, or a file
+/// without `assets_root`, falls back to `data/interior`, which keeps the public test
+/// shape self-contained. A file that exists but cannot be read or parsed is an error:
+/// the README's rule is "bricht ab statt zu raten", and a silent fallback would serve
+/// photos from a directory nobody chose.
+pub fn assets_dir() -> Result<PathBuf, ModelError> {
+    let fallback = data_dir()?;
+    match axon_config::overlay_config("interior.json") {
+        Some(config) => assets_dir_from(&config, fallback),
+        None => Ok(fallback),
+    }
+}
+
+/// `assets_dir` without the environment, so the refusals are testable.
+fn assets_dir_from(config: &Path, fallback: PathBuf) -> Result<PathBuf, ModelError> {
+    let text = match std::fs::read_to_string(config) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(fallback),
+        Err(source) => {
+            return Err(ModelError::Read {
+                path: config.to_path_buf(),
+                source,
+            })
+        }
+    };
+    let malformed = |detail: String| ModelError::Config {
+        path: config.to_path_buf(),
+        detail,
+    };
+    let value = serde_json::from_str::<serde_json::Value>(&text)
+        .map_err(|e| malformed(format!("kein gueltiges JSON: {e}")))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| malformed("erwartet ein JSON-Objekt".into()))?;
+    match object.get("assets_root") {
+        None => Ok(fallback),
+        Some(serde_json::Value::String(root)) if !root.trim().is_empty() => {
+            Ok(axon_config::expand_tilde(root))
+        }
+        Some(other) => Err(malformed(format!(
+            "assets_root muss ein nicht leerer Pfad sein, steht aber als {other}"
+        ))),
+    }
 }
 
 // ---------------------------------------------------------------- Wohnung
@@ -701,5 +751,77 @@ impl Model {
             .collect();
         v.sort_by_key(|(id, _, _)| *id);
         v
+    }
+}
+
+#[cfg(test)]
+mod assets_dir_tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("interior-assets-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// No file and no key both keep the default: an overlay without asset photos is legal.
+    #[test]
+    fn a_missing_file_or_key_keeps_the_default() {
+        let dir = scratch("missing");
+        let fallback = PathBuf::from("/overlay/data/interior");
+        assert_eq!(
+            assets_dir_from(&dir.join("interior.json"), fallback.clone()).unwrap(),
+            fallback
+        );
+        let config = dir.join("interior-no-key.json");
+        std::fs::write(&config, r#"{"obsidian": {}}"#).unwrap();
+        assert_eq!(
+            assets_dir_from(&config, fallback.clone()).unwrap(),
+            fallback
+        );
+    }
+
+    /// The overlay's key is `assets_root`; it wins over the default.
+    #[test]
+    fn the_declared_assets_root_is_used() {
+        let dir = scratch("declared");
+        let config = dir.join("interior.json");
+        std::fs::write(&config, r#"{"assets_root": "/private/assets"}"#).unwrap();
+        assert_eq!(
+            assets_dir_from(&config, PathBuf::from("/fallback")).unwrap(),
+            PathBuf::from("/private/assets")
+        );
+    }
+
+    /// "bricht ab statt zu raten": a file that exists and does not parse is an error.
+    #[test]
+    fn an_unparsable_or_malformed_file_is_an_error() {
+        let dir = scratch("malformed");
+        for (name, body) in [
+            ("broken.json", "{ assets_root = "),
+            ("array.json", "[]"),
+            ("number.json", r#"{"assets_root": 7}"#),
+            ("blank.json", r#"{"assets_root": "  "}"#),
+        ] {
+            let config = dir.join(name);
+            std::fs::write(&config, body).unwrap();
+            let outcome = assets_dir_from(&config, PathBuf::from("/fallback"));
+            assert!(
+                matches!(outcome, Err(ModelError::Config { .. })),
+                "{name} must be refused, got {outcome:?}"
+            );
+        }
+    }
+
+    /// A path that exists but is not readable as a file is an error, not the default.
+    #[test]
+    fn an_unreadable_file_is_an_error() {
+        let dir = scratch("unreadable");
+        let outcome = assets_dir_from(&dir, PathBuf::from("/fallback"));
+        assert!(
+            matches!(outcome, Err(ModelError::Read { .. })),
+            "{outcome:?}"
+        );
     }
 }

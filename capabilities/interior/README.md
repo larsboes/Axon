@@ -30,6 +30,13 @@ Jede Zahl kommt zur Laufzeit aus dem privaten Overlay, aufgelöst über
 `axon_config::overlay_data_dir("interior")`. Ohne `AXON_PERSONAL_ROOT` bricht sie ab statt zu
 raten: eine Planung gegen erfundene Maße wäre schlimmer als gar keine.
 
+Fotos und RoomPlan-Aufnahmen sind ebenfalls privat, aber keine Maschinenmodell-Daten. Ihr
+Verzeichnis kommt aus `assets_root` in der privaten `config/interior.json` und liegt auf dieser
+Maschine im Obsidian-Projekt `Projects/Apartment/Assets/Interior/`. Fehlen Datei oder Schlüssel,
+fällt der Prozess für Fixtures und ältere Overlays auf `data/interior/` zurück. Eine Datei, die
+existiert, aber nicht lesbar ist, kein JSON-Objekt ist oder `assets_root` nicht als Pfad führt,
+bricht ab (`model::assets_dir`).
+
 Welche Wohnung gemeint ist, entscheidet `AXON_INTERIOR_FLAT` oder `--flat`; liegt genau eine
 unter `flats/`, ist es die. Liegen mehrere und ist keine gewählt, ist das ein **Fehler und keine
 Vorauswahl** — ein stiller Standard ist der Weg, auf dem ein Plan der falschen Wohnung als der
@@ -66,6 +73,10 @@ Korrekturgeschichte ist, wie derselbe Fehler zweimal gemacht wird.
 `inventory/*.toml` im Overlay ist seit B25 die **Migrationsquelle** und keine zweite Wahrheit:
 `interior import` liest sie in die Tabellen, wiederholbar und ohne dabei Zustandsgeschichte zu
 erfinden. Nichts hier korrigiert Maße — die sind mit einem Bandmaß auf Papier entstanden.
+
+Die privaten Asset-Unterordner sind `media/` und `captures/`. Die Datenbank und die TOML-Dateien
+bleiben im Overlay, damit der Prüfer weiterhin ohne Obsidian-Index rechnen kann; nur die grossen
+bzw. visuellen Belege liegen beim menschlichen Projekt.
 
 ## Die Musterwohnung
 

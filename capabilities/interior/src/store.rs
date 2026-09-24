@@ -178,11 +178,11 @@ pub struct Item {
     pub access_sides: Option<i32>,
     /// Wie tief eine solche Seite sein muss, in cm.
     pub access_clear: Option<i32>,
-    /// Ein Bild zu diesem Stueck, als Pfad UNTERHALB von `<overlay>/data/interior/media/`.
+    /// Ein Bild zu diesem Stueck, als Pfad UNTERHALB des privaten Asset-Verzeichnisses.
     ///
     /// Nur der relative Pfad, nie ein absoluter: die Zeilen liegen in der geteilten Datenbank
-    /// und beschreiben ein Moebel, nicht diese Maschine. Wo `media/` liegt, weiss
-    /// `axon_config::overlay_data_dir` und sonst niemand.
+    /// und beschreiben ein Moebel, nicht diese Maschine. Wo `media/` liegt, erklaert die
+    /// private Interior-Konfiguration.
     ///
     /// Ausgeliefert wird es ueber `GET /api/media/*pfad` und nur auf Anfrage — service.toml
     /// nennt genau das als Grund, warum diese Capability oeffentlich stehen darf: im Bundle

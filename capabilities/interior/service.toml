@@ -5,8 +5,8 @@
 # er war seit 2026-08-20 fuer diese Capability vergeben und ist in capabilities/vault und
 # capabilities/places als belegt vermerkt.
 #
-# autostart = false und idle_timeout: die Seite zeigt Grundriss und Fotos einer Wohnung. Ein
-# Prozess, der das den ganzen Tag ausliefert, ist keine gute Idee — das Dashboard startet ihn,
+# autostart = false und idle_timeout: die Seite zeigt Grundriss und private Fotos einer Wohnung.
+# Ein Prozess, der das den ganzen Tag ausliefert, ist keine gute Idee — das Dashboard startet ihn,
 # wenn die Oberflaeche geoeffnet wird.
 #
 # Die Seite wird bei JEDER Anfrage aus dem Modell erzeugt, nicht beim Start gebaut. Ein
@@ -32,6 +32,9 @@ idle_timeout = "300"
 # Dashboard-Route liegt — die Seite waere durch ihre eigene API ersetzt. So mountet die
 # Capability nur `/interior/api`, und `/interior` bleibt die Shell. calendar, finance und
 # trips stehen aus demselben Grund so da.
+#
+# Private photos and RoomPlan captures are resolved from the overlay's interior.json assets_root;
+# they are never bundled into this public capability.
 proxy_api_only = "true"
 
 # `GET /` liefert weiterhin eine vollstaendige HTML-Seite. Sie ist der Weg ohne Shell — fuer

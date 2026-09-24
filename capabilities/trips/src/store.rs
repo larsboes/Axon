@@ -60,6 +60,7 @@ pub enum StageStatus {
     OptionSelected,
     #[default]
     Planning,
+    Open,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
@@ -77,6 +78,8 @@ pub struct TripStage {
     pub status: StageStatus,
     #[serde(default)]
     pub selected_option_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, schemars::JsonSchema)]
@@ -340,6 +343,7 @@ fn generated_stages(input: &CreatePlan) -> Vec<TripStage> {
                 travelers: input.travelers.clone(),
                 status: StageStatus::Planning,
                 selected_option_id: None,
+                branch_note: None,
             };
             previous = destination.clone();
             stage
@@ -1834,6 +1838,7 @@ mod tests {
             travelers: Vec::new(),
             status: StageStatus::Planning,
             selected_option_id: None,
+            branch_note: None,
         };
         let stages = propagate_default_transport_modes(
             vec![

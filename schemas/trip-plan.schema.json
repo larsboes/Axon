@@ -247,10 +247,17 @@
             "planning",
             "option_selected",
             "booked",
-            "completed"
+            "completed",
+            "open"
           ]
         },
         "selected_option_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "branch_note": {
           "type": [
             "string",
             "null"

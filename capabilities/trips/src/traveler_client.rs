@@ -33,6 +33,8 @@ pub fn traveler_base_url() -> String {
 /// makes a flight search feel broken.
 const TIMEOUT: Duration = Duration::from_secs(3);
 
+use crate::plan_search::SoftWeights;
+
 #[derive(Debug, Deserialize)]
 struct ProfileEnvelope {
     profile: ProfileBody,
@@ -41,6 +43,8 @@ struct ProfileEnvelope {
 #[derive(Debug, Deserialize)]
 struct ProfileBody {
     hard: HardBody,
+    #[serde(default)]
+    soft: Option<SoftWeights>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -62,6 +66,18 @@ pub fn home_airports() -> Option<Vec<String>> {
     Some(envelope.profile.hard.home_airports)
 }
 
+/// The soft ranking weights stated or derived in traveler profile, if available.
+pub fn soft_weights() -> Option<SoftWeights> {
+    let client = axon_http::client(axon_http::Purpose::new("trips-traveler"), TIMEOUT).ok()?;
+    let envelope: ProfileEnvelope = client
+        .get(format!("{}/api/profile", traveler_base_url()))
+        .send()
+        .and_then(|response| response.error_for_status())
+        .and_then(|response| response.json())
+        .ok()?;
+    envelope.profile.soft
+}
+
 /// The default flight origin: the first airport the traveller named.
 pub fn first_home_airport() -> Option<String> {
     home_airports()?.into_iter().next()
@@ -73,11 +89,21 @@ mod tests {
 
     #[test]
     fn the_body_shape_is_what_the_profile_serves() {
-        // The envelope and the two nested keys, pinned so a change on traveler's
+        // The envelope and the nested keys, pinned so a change on traveler's
         // side fails here rather than as an absent origin nobody can explain.
-        let body = r#"{"profile":{"hard":{"home_airports":["AAA","BBB"]}},"stored":true}"#;
+        let body = r#"{"profile":{"hard":{"home_airports":["AAA","BBB"]},"soft":{"budget_fit":0.3,"feasibility":0.25,"season":0.15,"events":0.2,"retrospective":0.1}},"stored":true}"#;
         let envelope: ProfileEnvelope = serde_json::from_str(body).unwrap();
         assert_eq!(envelope.profile.hard.home_airports, vec!["AAA", "BBB"]);
+        assert_eq!(
+            envelope.profile.soft,
+            Some(SoftWeights {
+                budget_fit: 0.3,
+                feasibility: 0.25,
+                season: 0.15,
+                events: 0.2,
+                retrospective: 0.1,
+            })
+        );
     }
 
     #[test]
@@ -88,5 +114,6 @@ mod tests {
         let body = r#"{"profile":{"hard":{}}}"#;
         let envelope: ProfileEnvelope = serde_json::from_str(body).unwrap();
         assert!(envelope.profile.hard.home_airports.is_empty());
+        assert!(envelope.profile.soft.is_none());
     }
 }

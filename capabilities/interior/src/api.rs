@@ -52,7 +52,7 @@ const ROUTES: &[route_manifest::Route] = &[
     r(
         "GET",
         "/api/media/*pfad",
-        "Ein Bild aus dem Medienverzeichnis des Overlays. Nur von dort, und nur auf Anfrage.",
+        "Ein Bild aus dem privaten Asset-Verzeichnis. Nur von dort, und nur auf Anfrage.",
     ),
     r(
         "GET",
@@ -693,7 +693,7 @@ async fn api_put_layout(
     ))
 }
 
-/// Ein Bild aus `<overlay>/data/interior/media/`, auf Anfrage und nur von dort.
+/// Ein Bild aus dem konfigurierten privaten Asset-Verzeichnis, auf Anfrage und nur von dort.
 ///
 /// **Der Pfad kommt vom Client, also wird er aufgeloest und geprueft, nicht zusammengesetzt.**
 /// `canonicalize` beidseitig und dann ein `starts_with`: ein `..`, ein absoluter Pfad oder ein
@@ -702,8 +702,8 @@ async fn api_put_layout(
 /// bei einem Symlink still versagt.
 ///
 /// `service.toml` nennt diese Trennung als den Grund, aus dem die Capability oeffentlich stehen
-/// darf: das Bundle enthaelt kein Foto, die Dateien liegen im Overlay, und geliefert wird erst
-/// auf Anfrage.
+/// darf: das Bundle enthaelt kein Foto, die privaten Assets liegen ausserhalb des Bundles, und
+/// geliefert wird erst auf Anfrage.
 ///
 /// Jeder Dateizugriff hier laeuft ueber `tokio::fs`, nicht ueber `std::fs`. Das ist der einzige
 /// Handler im Repo, der ein ganzes Bild liest, und ein `std::fs::read` in einem `async fn` haelt
@@ -712,7 +712,7 @@ async fn api_put_layout(
 async fn latest_roomplan_capture(
     flat: &str,
 ) -> Result<(PathBuf, PathBuf, PathBuf), (StatusCode, String)> {
-    let root = crate::model::data_dir()
+    let root = crate::model::assets_dir()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .join("captures")
         .join(flat);
@@ -793,7 +793,7 @@ async fn api_roomplan_asset(
 async fn roomplan_revision_drafts(
     flat: &str,
 ) -> Result<Vec<serde_json::Value>, (StatusCode, String)> {
-    let root = crate::model::data_dir()
+    let root = crate::model::assets_dir()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .join("captures")
         .join(flat);
@@ -871,7 +871,7 @@ async fn api_roomplan_review(
             "decision must be accept or reject".to_string(),
         ));
     }
-    let root = crate::model::data_dir()
+    let root = crate::model::assets_dir()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .join("captures")
         .join(&s.flat);
@@ -927,7 +927,7 @@ async fn api_roomplan_review(
 }
 
 async fn api_media(Path(pfad): Path<String>) -> Result<impl IntoResponse, (StatusCode, String)> {
-    let wurzel = crate::model::data_dir()
+    let wurzel = crate::model::assets_dir()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .join("media");
     let wurzel = tokio::fs::canonicalize(&wurzel)

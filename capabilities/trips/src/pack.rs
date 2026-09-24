@@ -453,6 +453,7 @@ mod tests {
             travelers: Vec::new(),
             status: StageStatus::default(),
             selected_option_id: None,
+            branch_note: None,
         }
     }
 

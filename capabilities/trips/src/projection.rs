@@ -41,7 +41,8 @@ pub const OWNER: &str = "trips";
 ///
 /// 1 -> 2 on 2026-09-05: the `## Retrospective` section joined the rendered
 /// shape.
-pub const VERSION: u32 = 2;
+/// 2 -> 3 on 2026-09-24: a stage's `branch_note` renders under its stage line.
+pub const VERSION: u32 = 3;
 
 /// Q31's home for a projection, plus one folder for this capability. Vault-relative
 /// and not configurable: a second declaration of where machine output goes is how two
@@ -283,6 +284,16 @@ fn stage_line(stage: &TripStage) -> String {
         line.push_str(&format!(" · selected `{selected}`"));
     }
     line.push('\n');
+    // The branch note is a human sentence that exists nowhere else, so it goes
+    // into the safety copy verbatim, indented so it stays inside the list item.
+    if let Some(note) = stage.branch_note.as_deref().map(str::trim) {
+        if !note.is_empty() {
+            line.push_str(&format!(
+                "   - Branch note: {}\n",
+                note.replace('\n', "\n     ")
+            ));
+        }
+    }
     line
 }
 
@@ -405,6 +416,7 @@ mod tests {
                 travelers: vec![],
                 status: StageStatus::Planning,
                 selected_option_id: None,
+                branch_note: None,
             }],
             cover_image_url: None,
             source: Some(PlanSource {
@@ -467,7 +479,7 @@ mod tests {
     /// the safety copy character for character — and the rendered shape changed,
     /// so VERSION moved with it.
     #[test]
-    fn the_projection_carries_the_retrospective_text_verbatim_at_version_2() {
+    fn the_projection_carries_the_retrospective_text_verbatim_at_version_3() {
         let note = "Booked the 06:12 rather than the 09:40 — worth the early start.";
         let mut with_retrospective = details("trip:plan:1", "Berlin", vec![]);
         with_retrospective.retrospective = Some(Retrospective {
@@ -489,12 +501,32 @@ mod tests {
         let fields = markdown_root::frontmatter(&rendered).unwrap();
         assert_eq!(
             fields.get("axon_projection_version").map(String::as_str),
-            Some("2")
+            Some("3")
         );
 
         // A plan with no retrospective renders no section at all.
         let bare = render(&details("trip:plan:2", "Berlin", vec![]));
         assert!(!bare.contains("## Retrospective"));
+    }
+
+    /// A stage's selected option and its branch note are both only-copy choices,
+    /// so both reach the safety copy. The branch note was missing until 2026-09-24.
+    #[test]
+    fn a_stage_carries_its_selected_option_and_branch_note() {
+        let note = "Split here if the night train is sold out.";
+        let mut chosen = details("trip:plan:1", "Berlin", vec![]);
+        chosen.plan.stages[0].selected_option_id = Some("option:ice-950".into());
+        chosen.plan.stages[0].branch_note = Some(note.into());
+        let rendered = render(&chosen);
+        assert!(rendered.contains("selected `option:ice-950`"), "{rendered}");
+        assert!(
+            rendered.contains(&format!("   - Branch note: {note}\n")),
+            "{rendered}"
+        );
+
+        // No note, no line.
+        let bare = render(&details("trip:plan:2", "Berlin", vec![]));
+        assert!(!bare.contains("Branch note"));
     }
 
     #[test]

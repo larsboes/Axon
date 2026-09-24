@@ -470,6 +470,7 @@ mod tests {
             travelers: Vec::new(),
             status: StageStatus::Planning,
             selected_option_id: selected.map(str::to_string),
+            branch_note: None,
         }
     }
 

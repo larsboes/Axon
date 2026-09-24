@@ -155,11 +155,12 @@ pub struct SoftWeights {
 }
 
 impl Default for SoftWeights {
-    /// The defaults are the shape a traveller who cares about being somewhere
-    /// specific would choose: what is on and what it costs outweigh the season.
-    /// Deliberately NOT `plan-search-v1`'s constants — those were the repo's
-    /// guess for everyone, and copying them here would make the first
-    /// personalised profile indistinguishable from the unpersonalised one.
+    /// The defaults equal `plan-search-v2`'s constants
+    /// (`capabilities/trips/src/plan_search.rs`, `WEIGHT_BUDGET_FIT` and the four
+    /// after it), so an unwritten profile ranks exactly as having no profile does.
+    /// The numbers do not tell a personalised profile from an unpersonalised one;
+    /// `basis` does, because it marks each of these `default` until a person
+    /// states a value.
     fn default() -> Self {
         Self {
             budget_fit: 0.30,
@@ -180,6 +181,25 @@ impl SoftWeights {
     pub fn is_normalised(&self) -> bool {
         (self.sum() - 1.0).abs() <= WEIGHT_SUM_TOLERANCE
     }
+
+    /// The first weight below 0 (or NaN), by key. A sum of 1 does not exclude
+    /// `-0.5` and `1.5`, and a negative weight turns a good factor into a penalty.
+    pub fn first_negative(&self) -> Option<(&'static str, f64)> {
+        first_negative(&[
+            ("budget_fit", self.budget_fit),
+            ("feasibility", self.feasibility),
+            ("season", self.season),
+            ("events", self.events),
+            ("retrospective", self.retrospective),
+        ])
+    }
+}
+
+fn first_negative(weights: &[(&'static str, f64)]) -> Option<(&'static str, f64)> {
+    weights
+        .iter()
+        .copied()
+        .find(|(_, value)| value.is_nan() || *value < 0.0)
 }
 
 /// How full a day is meant to be.
@@ -241,6 +261,16 @@ impl JourneyWeights {
 
     pub fn is_normalised(&self) -> bool {
         (self.sum() - 1.0).abs() <= WEIGHT_SUM_TOLERANCE
+    }
+
+    /// The first weight below 0 (or NaN), by key. See [`SoftWeights::first_negative`].
+    pub fn first_negative(&self) -> Option<(&'static str, f64)> {
+        first_negative(&[
+            ("price", self.price),
+            ("duration", self.duration),
+            ("changes", self.changes),
+            ("reliability", self.reliability),
+        ])
     }
 }
 
@@ -391,6 +421,14 @@ impl ProfileInput {
     }
 
     pub fn validate(&self) -> Result<(), ProfileError> {
+        for (block, negative) in [
+            ("soft", self.soft.first_negative()),
+            ("journey", self.journey.first_negative()),
+        ] {
+            if let Some((key, value)) = negative {
+                return Err(ProfileError::NegativeWeight { block, key, value });
+            }
+        }
         if !self.soft.is_normalised() {
             return Err(ProfileError::WeightSum {
                 block: "soft",
@@ -458,6 +496,13 @@ pub enum ProfileError {
         block: &'static str,
         sum: f64,
     },
+    /// A weight below 0, or NaN. Checked before the sum, because `-0.5` and `1.5`
+    /// sum to 1.
+    NegativeWeight {
+        block: &'static str,
+        key: &'static str,
+        value: f64,
+    },
     Clock {
         field: &'static str,
         value: String,
@@ -475,6 +520,9 @@ impl std::fmt::Display for ProfileError {
                     _ => "budget_fit, feasibility, season, events, retrospective",
                 };
                 write!(f, "{block} weights must sum to 1.0, got {sum:.6} ({keys})")
+            }
+            ProfileError::NegativeWeight { block, key, value } => {
+                write!(f, "{block}.{key} must be 0 or more, got {value}")
             }
             ProfileError::Clock { field, value } => write!(
                 f,
@@ -624,6 +672,40 @@ mod tests {
             }
             other => panic!("expected a weight-sum refusal, got {other:?}"),
         }
+    }
+
+    /// A sum of 1 is not enough: `-0.5` and `1.5` sum to 1 and make a factor a penalty.
+    #[test]
+    fn a_negative_weight_is_refused_even_when_the_sum_is_one() {
+        let mut input = ProfileInput::unstated();
+        input.soft.budget_fit = -0.30;
+        input.soft.events = 0.80;
+        assert!((input.soft.sum() - 1.0).abs() < 1e-9);
+        match input.validate() {
+            Err(ProfileError::NegativeWeight { block, key, value }) => {
+                assert_eq!((block, key), ("soft", "budget_fit"));
+                assert!((value + 0.30).abs() < 1e-9);
+            }
+            other => panic!("expected a negative-weight refusal, got {other:?}"),
+        }
+
+        let mut journey = ProfileInput::unstated();
+        journey.journey.price = -0.10;
+        journey.journey.reliability = 0.75;
+        assert!(matches!(
+            journey.validate(),
+            Err(ProfileError::NegativeWeight {
+                block: "journey",
+                key: "price",
+                ..
+            })
+        ));
+
+        // Zero is a legal weight: it switches a factor off.
+        let mut zero = ProfileInput::unstated();
+        zero.soft.retrospective = 0.0;
+        zero.soft.events = 0.30;
+        assert_eq!(zero.validate(), Ok(()));
     }
 
     #[test]
