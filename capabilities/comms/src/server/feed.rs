@@ -111,6 +111,7 @@ impl FeedbackContext {
                 item,
                 matches,
                 source_id: self.sources.get(&item.id).map(String::as_str),
+                now: None,
             },
         );
         self.model
@@ -202,6 +203,10 @@ pub(super) async fn model_train_handler(Json(body): Json<TrainBody>) -> HttpResp
         let matches = store
             .feed_relevance_map(&ids)
             .map_err(|error| error.to_string())?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs() as i64)
+            .unwrap_or(0);
         let rows = training
             .labels
             .iter()
@@ -216,15 +221,12 @@ pub(super) async fn model_train_handler(Json(body): Json<TrainBody>) -> HttpResp
                             .map(Vec::as_slice)
                             .unwrap_or(&[]),
                         source_id: context.sources.get(&label.feed_id).map(String::as_str),
+                        now: Some(now),
                     },
                 );
                 Some(comms::feedback::TrainingRow::from_label(label, vector))
             })
             .collect::<Vec<_>>();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|elapsed| elapsed.as_secs() as i64)
-            .unwrap_or(0);
         let trained_at = chrono_free_stamp(now);
         let model = comms::feedback::train(
             &context.space,

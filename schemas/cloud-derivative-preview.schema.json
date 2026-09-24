@@ -30,7 +30,10 @@
     "preview_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
     "original_data_class": { "enum": ["c0", "c1", "c2", "c3"] },
     "derivative_data_class": { "enum": ["c0", "c1"] },
-    "transformation": { "enum": ["bounded-public-v1", "deterministic-entity-redaction-v3"] },
+    "transformation": {
+      "description": "bounded-public-v1 for c0; deterministic-entity-redaction-v3 (destructive markers) or reversible-pseudonymize-v1 (typed tokens, PRD §6.2c) for c1.",
+      "enum": ["bounded-public-v1", "deterministic-entity-redaction-v3", "reversible-pseudonymize-v1"]
+    },
     "document": { "type": "string", "maxLength": 16000 },
     "redaction_count": { "type": "integer", "minimum": 0 },
     "redactions": {
@@ -40,13 +43,21 @@
         "required": ["entity_type", "marker", "count"],
         "properties": {
           "entity_type": { "type": "string", "minLength": 1 },
-          "marker": { "type": "string", "pattern": "^\\[.+\\]$" },
+          "marker": {
+            "description": "A destructive marker such as [person], or a reversible token family such as <TRAVELER_nn>.",
+            "type": "string",
+            "pattern": "^(\\[.+\\]|<[A-Z]+_nn>)$"
+          },
           "count": { "type": "integer", "minimum": 1 }
         },
         "additionalProperties": false
       }
     },
-    "entity_detection": { "enum": ["not-required", "local-deterministic-v3"] },
+    "redaction_receipt": {
+      "description": "PRD Q9b: the sentence shown on a reduced call; null when nothing was removed.",
+      "type": ["string", "null"]
+    },
+    "entity_detection": { "enum": ["not-required", "local-deterministic-v3", "local-reversible-v1"] },
     "truncated": { "type": "boolean" },
     "approval_required": { "const": true },
     "provider_calls": { "const": 0 },

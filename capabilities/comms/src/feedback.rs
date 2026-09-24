@@ -156,6 +156,8 @@ pub struct FeatureInput<'a> {
     pub matches: &'a [RelevanceMatch],
     /// The collector source this item arrived from, when it has one.
     pub source_id: Option<&'a str>,
+    /// Optional epoch seconds to evaluate freshness against. When None, current wall-clock is used.
+    pub now: Option<i64>,
 }
 
 fn one_hot(vector: &mut [f64], base: usize, index: Option<usize>, fallback: usize) {
@@ -165,8 +167,12 @@ fn one_hot(vector: &mut [f64], base: usize, index: Option<usize>, fallback: usiz
     }
 }
 
-fn freshness_bucket(day: &str) -> usize {
-    match crate::evaluation::age_days(day) {
+fn freshness_bucket(day: &str, now: Option<i64>) -> usize {
+    let days = match now {
+        Some(secs) => crate::evaluation::age_days_at(day, secs),
+        None => crate::evaluation::age_days(day),
+    };
+    match days {
         Some(days) if days <= 1 => 0,
         Some(days) if days <= 7 => 1,
         Some(days) if days <= 30 => 2,
@@ -270,7 +276,7 @@ pub fn features(space: &FeatureSpace, input: &FeatureInput) -> Vec<f64> {
     );
     cursor += CONTENT_STATUSES.len();
 
-    vector[cursor + freshness_bucket(&input.item.day)] = 1.0;
+    vector[cursor + freshness_bucket(&input.item.day, input.now)] = 1.0;
     cursor += FRESHNESS_BUCKETS.len();
 
     vector[cursor + author_bucket(input.item.author.as_deref())] = 1.0;
@@ -671,6 +677,7 @@ mod tests {
                         item: &item,
                         matches: &matches,
                         source_id: Some(&row.source),
+                        now: Some(1_788_000_000),
                     },
                 );
                 TrainingRow {
@@ -834,6 +841,7 @@ mod tests {
                 item: &item,
                 matches: &[],
                 source_id: Some("invented-source"),
+                now: None,
             },
         );
         assert_eq!(vector.len(), space.len());

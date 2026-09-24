@@ -10,6 +10,11 @@
 //! reports what it removed. What it cannot report is what it missed, which is the whole reason a
 //! labelled corpus exists.
 //!
+//! Two modes, one gate. [`Mode::Destructive`] measures `prepare` (`[person]` markers);
+//! [`Mode::Pseudonymized`] measures `prepare_pseudonymized` (typed tokens, PRD §6.2c) with the
+//! operator's people registry as rung 0. Same corpus, same containment test, same floor: a
+//! reversible token is judged by what it leaves in the document, exactly like a marker.
+//!
 //! `false_positive_markers` is counted but not gated. Over-redaction costs summary quality and
 //! is worth watching; it is not a privacy failure, and a gate that fails on it would push the
 //! next person to loosen the recognizers.
@@ -130,15 +135,34 @@ impl EvaluationReport {
     }
 }
 
+/// Which transformation the corpus is run through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    /// `cloud_derivative::prepare`, `REDACTION_VERSION`.
+    #[default]
+    Destructive,
+    /// `cloud_derivative::prepare_pseudonymized` with `people_registry::entity_registry()`,
+    /// `PSEUDONYMIZE_VERSION`.
+    Pseudonymized,
+}
+
 pub fn evaluate_file(path: &Path) -> Result<EvaluationReport> {
+    evaluate_file_with(path, Mode::Destructive)
+}
+
+pub fn evaluate_file_with(path: &Path, mode: Mode) -> Result<EvaluationReport> {
     let body = fs::read_to_string(path)
         .map_err(|e| CommsError::Config(format!("{}: {e}", path.display())))?;
     let corpus: Corpus = serde_json::from_str(&body)
         .map_err(|e| CommsError::Config(format!("{}: {e}", path.display())))?;
-    evaluate(corpus)
+    evaluate(corpus, mode, crate::people_registry::entity_registry())
 }
 
-fn evaluate(corpus: Corpus) -> Result<EvaluationReport> {
+fn evaluate(
+    corpus: Corpus,
+    mode: Mode,
+    registry: &axon_pseudonymize::EntityRegistry,
+) -> Result<EvaluationReport> {
     let mut report = EvaluationReport {
         minimum_recall_percent: corpus.acceptance.minimum_recall_percent,
         ..Default::default()
@@ -160,7 +184,13 @@ fn evaluate(corpus: Corpus) -> Result<EvaluationReport> {
         // Corpora therefore carry c0/c1 fixtures — a stricter class measures the gate above, not
         // the redaction below it. The refusal is counted by class all the same, because the one
         // failure this gate cannot survive is measuring nothing and reporting it as clean.
-        let Ok(preview) = cloud_derivative::prepare(&input) else {
+        let prepared = match mode {
+            Mode::Destructive => cloud_derivative::prepare(&input),
+            Mode::Pseudonymized => {
+                cloud_derivative::prepare_pseudonymized(&input, registry).map(|p| p.preview)
+            }
+        };
+        let Ok(preview) = prepared else {
             *report
                 .skipped
                 .entry(fixture.data_class.clone())
@@ -272,6 +302,34 @@ mod tests {
         assert_eq!(report.skipped_fixtures(), 0);
         assert_eq!(report.total(), 1);
         assert_eq!(report.caught(), 1, "the IBAN is removed");
+        assert!(report.passed());
+    }
+
+    /// The reversible mode reads the same corpus through the same containment test, and the
+    /// author field no longer leaks its display name there.
+    #[test]
+    fn the_pseudonymized_mode_measures_the_same_labels() {
+        let corpus: Corpus = serde_json::from_str(
+            r#"{
+              "acceptance": { "minimum_recall_percent": 90.0 },
+              "fixtures": [
+                { "id": "p-1", "language": "en", "data_class": "c1",
+                  "author": "Alice Example <alice@example.com>",
+                  "title": "Hello Bob", "content": "Ref #1234567, write to bob@example.com",
+                  "must_remove": [
+                    { "type": "person", "value": "Alice Example" },
+                    { "type": "email", "value": "alice@example.com" },
+                    { "type": "person", "value": "Bob" },
+                    { "type": "identifier", "value": "1234567" },
+                    { "type": "email", "value": "bob@example.com" } ] }
+              ]
+            }"#,
+        )
+        .unwrap();
+        let empty = axon_pseudonymize::EntityRegistry::builder().build();
+        let report = evaluate(corpus, Mode::Pseudonymized, &empty).unwrap();
+        assert_eq!(report.total(), 5);
+        assert_eq!(report.caught(), 5, "{:?}", report.leaks);
         assert!(report.passed());
     }
 }

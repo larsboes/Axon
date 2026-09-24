@@ -24,6 +24,7 @@ members = [
     "libs/extraction",
     "libs/inference",
     "libs/markdown-root",
+    "libs/pseudonymize",
     "libs/route-manifest",
     "libs/roomplan-contract",
     "libs/station-time",
@@ -80,6 +81,7 @@ license = "MIT"
 # before this entry existed — 0.5.3 arrives through axum 0.7 and reqwest 0.13 — so the six
 # `dev-dependencies` that point here add an edge and no package.
 [workspace.dependencies]
+aho-corasick = "1.1"
 axum = "0.7"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 reqwest = "0.13"

@@ -60,10 +60,19 @@ pub enum State {
 struct Registry {
     /// Single-word names, compared case-insensitively via lowercase storage.
     single: BTreeSet<String>,
+    /// Every entry of at least [`MIN_NAME_CHARS`] characters as written, phrases included,
+    /// for the reversible path. Its dictionary matcher scans the text rather than single
+    /// words, so a phrase can match there.
+    all: Vec<String>,
     state: State,
 }
 
+/// Shorter entries are skipped on both paths. `Jan` survives; a two-letter initial would
+/// match inside every other sentence.
+const MIN_NAME_CHARS: usize = 3;
+
 static REGISTRY: OnceLock<Registry> = OnceLock::new();
+static ENTITY_REGISTRY: OnceLock<axon_pseudonymize::EntityRegistry> = OnceLock::new();
 
 fn path() -> Option<PathBuf> {
     if let Ok(p) = std::env::var(ENV_PATH) {
@@ -88,24 +97,28 @@ fn load_from_path(p: Option<&std::path::Path>) -> Registry {
     let Some(p) = p else {
         return Registry {
             single: BTreeSet::new(),
+            all: Vec::new(),
             state: State::Absent,
         };
     };
     let Ok(text) = std::fs::read_to_string(p) else {
         return Registry {
             single: BTreeSet::new(),
+            all: Vec::new(),
             state: State::Absent,
         };
     };
     let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
         return Registry {
             single: BTreeSet::new(),
+            all: Vec::new(),
             state: State::Unreadable,
         };
     };
     let Some(tokens) = value.get("tokens").and_then(|t| t.as_array()) else {
         return Registry {
             single: BTreeSet::new(),
+            all: Vec::new(),
             state: State::Unreadable,
         };
     };
@@ -119,11 +132,25 @@ fn load_from_path(p: Option<&std::path::Path>) -> Registry {
         .filter(|t| !t.contains(' '))
         .map(|t| t.to_ascii_lowercase())
         .collect();
+    let all: Vec<String> = tokens
+        .iter()
+        .filter_map(|t| t.as_str())
+        .map(str::trim)
+        .filter(|t| t.chars().count() >= MIN_NAME_CHARS)
+        .map(str::to_string)
+        .collect();
     let n = single.len();
     Registry {
         single,
+        all,
         state: State::Loaded(n),
     }
+}
+
+fn entity_registry_from(registry: &Registry) -> axon_pseudonymize::EntityRegistry {
+    axon_pseudonymize::EntityRegistry::builder()
+        .add_people(registry.all.iter().cloned())
+        .build()
 }
 
 fn registry() -> &'static Registry {
@@ -138,13 +165,24 @@ pub fn state() -> State {
     registry().state
 }
 
+/// Rung 0 for the reversible path (PRD §6.2c, Q112): the same names as
+/// [`is_known_person`], as the dictionary `libs/pseudonymize` matches.
+///
+/// Built once per process from the same file. Every comms caller of
+/// `cloud_derivative::prepare_pseudonymized` passes this, so the two paths protect the same
+/// set of people. Empty when the registry is absent or unreadable, exactly as rung 0 of the
+/// destructive path is; [`state`] tells the two cases apart.
+pub fn entity_registry() -> &'static axon_pseudonymize::EntityRegistry {
+    ENTITY_REGISTRY.get_or_init(|| entity_registry_from(registry()))
+}
+
 /// Is this token a person this operator knows?
 ///
 /// Surrounding punctuation is stripped before the comparison because the caller
 /// splits on whitespace, so a name at the end of a sentence arrives as `Erika,`.
 pub fn is_known_person(token: &str) -> bool {
     let cleaned = token.trim_matches(|c: char| !c.is_alphanumeric());
-    if cleaned.chars().count() < 3 {
+    if cleaned.chars().count() < MIN_NAME_CHARS {
         return false;
     }
     registry().single.contains(&cleaned.to_ascii_lowercase())
@@ -174,6 +212,23 @@ mod tests {
         );
         assert!(r.single.contains("erika"));
         assert!(r.single.contains("mustermann"));
+    }
+
+    /// The reversible path gets the same people, phrases included, and matches them in any
+    /// case — the gap `is_known_person` closes by lowercasing, closed by folding there.
+    #[test]
+    fn the_reversible_dictionary_holds_the_same_names() {
+        let r = load_json("entity", r#"{"tokens":["Erika","Erika Mustermann","Jo"]}"#);
+        let registry = entity_registry_from(&r);
+        assert_eq!(
+            registry.len(),
+            2,
+            "names under three characters are skipped"
+        );
+        let mut session = axon_pseudonymize::PseudonymizerSession::new();
+        let out = session.tokenize_text("ERIKA MUSTERMANN und Erika", &registry);
+        assert!(!out.to_lowercase().contains("erika"), "{out}");
+        assert!(!out.to_lowercase().contains("mustermann"), "{out}");
     }
 
     #[test]

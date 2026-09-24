@@ -494,6 +494,11 @@ fn interpolate(value: i64, start: i64, end: i64, high: f64, low: f64) -> f64 {
 }
 
 pub(crate) fn age_days(day: &str) -> Option<i64> {
+    let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64;
+    age_days_at(day, now_secs)
+}
+
+pub(crate) fn age_days_at(day: &str, now_secs: i64) -> Option<i64> {
     let mut parts = day.split('-');
     let year = parts.next()?.parse::<i64>().ok()?;
     let month = parts.next()?.parse::<i64>().ok()?;
@@ -502,7 +507,7 @@ pub(crate) fn age_days(day: &str) -> Option<i64> {
         return None;
     }
     let item_days = days_from_civil(year, month, date);
-    let now_days = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs() as i64 / 86_400;
+    let now_days = now_secs / 86_400;
     Some((now_days - item_days).max(0))
 }
 

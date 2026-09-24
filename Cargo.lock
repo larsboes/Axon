@@ -584,6 +584,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "axon-pseudonymize"
+version = "0.1.0"
+dependencies = [
+ "aho-corasick",
+ "axon-extraction",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "axon-server"
 version = "0.1.0"
 dependencies = [
@@ -1094,6 +1105,7 @@ dependencies = [
  "axon-extraction",
  "axon-http",
  "axon-inference",
+ "axon-pseudonymize",
  "axon-server",
  "axon-store",
  "axon-summarize",
@@ -5437,6 +5449,7 @@ version = "0.1.0"
 dependencies = [
  "axon-config",
  "axon-http",
+ "axon-pseudonymize",
  "axon-server",
  "axon-store",
  "axum",

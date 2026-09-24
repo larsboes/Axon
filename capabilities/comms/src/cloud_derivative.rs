@@ -22,7 +22,10 @@ use sha2::{Digest, Sha256};
 
 pub const PREVIEW_SCHEMA_VERSION: &str = "cloud-derivative-preview-v1";
 pub const REDACTION_VERSION: &str = "deterministic-entity-redaction-v3";
+pub const PSEUDONYMIZE_VERSION: &str = axon_pseudonymize::PSEUDONYMIZE_VERSION;
 pub const PASSTHROUGH_VERSION: &str = "bounded-public-v1";
+/// `entity_detection` of a [`prepare_pseudonymized`] preview.
+pub const PSEUDONYMIZE_DETECTION: &str = "local-reversible-v1";
 const MAX_DOCUMENT_CHARS: usize = 16_000;
 
 #[derive(Debug, Clone)]
@@ -116,7 +119,10 @@ pub fn tier_allows(
 ) -> bool {
     let representation_pinned = match original_data_class {
         "c0" => transformation == PASSTHROUGH_VERSION,
-        "c1" => transformation == REDACTION_VERSION,
+        // Both c1 transformations clear the same recall floor on the frozen corpus (PRD
+        // §6.2, `comms-redaction-eval` and `--pseudonymized`). No stage or queue path writes
+        // a PSEUDONYMIZE_VERSION job today; the server re-prepares with `prepare` only.
+        "c1" => transformation == REDACTION_VERSION || transformation == PSEUDONYMIZE_VERSION,
         // Unreachable behind the admission check below, which refuses every
         // other class outright. Written as a refusal anyway: this is the arm a
         // vocabulary change lands in, and it has landed in one already.
@@ -295,6 +301,150 @@ pub fn prepare(input: &CloudDocumentInput) -> Result<CloudDerivativePreview, Loc
     })
 }
 
+/// A reversible derivative and the symbol table that reverses it.
+///
+/// The session is the only way back from `<TRAVELER_01>` to a name, so it travels with the
+/// preview it produced rather than being threaded in by the caller. It is personal data
+/// (C2 by construction, PRD §6.1) and has no `Serialize`: it stays on this host.
+#[derive(Debug, Clone)]
+pub struct PseudonymizedPreview {
+    pub preview: CloudDerivativePreview,
+    pub session: axon_pseudonymize::PseudonymizerSession,
+}
+
+/// Build the reviewable, reversible pseudonymized derivative for one stored item.
+///
+/// Unlike destructive masking (`[person]`), this assigns typed tokens (`<TRAVELER_01>`,
+/// `<EMAIL_01>`) so a cloud evaluator can reason over which person is which, and a reply can
+/// be rehydrated locally (PRD §6.2c, Q112).
+///
+/// The same gates as [`prepare`], held to the same floor:
+/// - **Class.** `c2` and `c3` get `Err(LocalOnlyRefused)`, the same refusal as [`prepare`]
+///   (Q27). The tokens are reversible, so the refusal matters more here, not less.
+/// - **Recall.** Measured on the frozen corpus by `comms-redaction-eval --pseudonymized`
+///   against the ratified 91.7% floor (PRD §6.2). Rung 0 is `registry`; comms callers pass
+///   [`crate::people_registry::entity_registry`], the same names the destructive path
+///   consults through `is_known_person`.
+/// - **Author.** The whole field becomes one `<SENDER_nn>` token, as the destructive path
+///   writes `[identity removed]` for the whole field. Tokenizing it word by word left the
+///   display name: `Alice <alice@example.com>` became `Alice <EMAIL_01>`.
+/// - **Receipt (Q9b).** Every call starts a fresh session, so `redactions` and
+///   `redaction_receipt` describe this call only, counted in occurrences like [`prepare`].
+/// - **Hash.** Token numbers depend on session state. A fresh session per call makes the
+///   same input produce the same document and the same `preview_hash`, which the
+///   approve-then-requeue comparison needs.
+pub fn prepare_pseudonymized(
+    input: &CloudDocumentInput,
+    registry: &axon_pseudonymize::EntityRegistry,
+) -> Result<PseudonymizedPreview, LocalOnlyRefused> {
+    if !crate::content_item::has_cloud_lane(&input.data_class) {
+        return Err(LocalOnlyRefused);
+    }
+    let source_revision = source_revision(input);
+    let needs_redaction = input.data_class != "c0";
+    let transformation = if needs_redaction {
+        PSEUDONYMIZE_VERSION
+    } else {
+        PASSTHROUGH_VERSION
+    };
+    let derivative_data_class = if needs_redaction { "c1" } else { "c0" };
+
+    let mut session = axon_pseudonymize::PseudonymizerSession::new();
+    let field = |value: &str, session: &mut axon_pseudonymize::PseudonymizerSession| {
+        if needs_redaction {
+            session.tokenize_text(value, registry)
+        } else {
+            value.trim().to_string()
+        }
+    };
+    let present = |value: &Option<String>| {
+        value
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+    };
+
+    let mut sections = Vec::new();
+    if let Some(title) = present(&input.title) {
+        sections.push(format!("Title\n{}", field(&title, &mut session)));
+    }
+    if let Some(author) = present(&input.author) {
+        let value = if needs_redaction {
+            session.tokenize_whole(&author, axon_pseudonymize::EntityType::Identity)
+        } else {
+            author.trim().to_string()
+        };
+        sections.push(format!("Author\n{value}"));
+    }
+    if let Some(summary) = present(&input.summary) {
+        sections.push(format!("Summary\n{}", field(&summary, &mut session)));
+    }
+    if let Some(content) = present(&input.content) {
+        sections.push(format!("Source content\n{}", field(&content, &mut session)));
+    }
+
+    let unbounded_document = sections.join("\n\n");
+    let (document, truncated) = bounded_chars(&unbounded_document, MAX_DOCUMENT_CHARS);
+    let preview_hash = digest(&[
+        PREVIEW_SCHEMA_VERSION,
+        &source_revision,
+        transformation,
+        derivative_data_class,
+        &document,
+    ]);
+
+    // The comms receipt vocabulary, not the library's, so both transformations read the
+    // same way to the person approving them.
+    let redactions: Vec<RedactionFinding> = session
+        .findings()
+        .iter()
+        .map(|finding| RedactionFinding {
+            entity_type: finding.entity_type.as_str(),
+            marker: finding.entity_type.marker(),
+            count: finding.count,
+        })
+        .collect();
+
+    let limitations = if needs_redaction {
+        vec![
+            "Only the bounded reader document is included; attachments and linked pages are excluded.",
+            "Local reversible pseudonymization replaces the author field, people the operator's registry names, people after a salutation or a self-introduction, a person named as being from an organisation, login handles, email addresses, links, phone or account numbers, long numbers and token-like secrets with typed tokens; unrecognized names and contextual clues may remain.",
+            "The token table stays on this host and restores the original values in a reply.",
+            "Human review is required before this derivative becomes cloud-eligible.",
+        ]
+    } else {
+        vec![
+            "Only the bounded reader document is included; attachments and linked pages are excluded.",
+            "Public classification permits cloud use but does not select a provider or send the document.",
+        ]
+    };
+
+    let preview = CloudDerivativePreview {
+        schema_version: PREVIEW_SCHEMA_VERSION,
+        source: input.source.clone(),
+        id: input.id.clone(),
+        source_revision,
+        preview_hash,
+        original_data_class: input.data_class.clone(),
+        derivative_data_class: derivative_data_class.into(),
+        transformation,
+        document,
+        redaction_count: redactions.iter().map(|finding| finding.count).sum(),
+        redaction_receipt: redaction_receipt(&redactions),
+        redactions,
+        entity_detection: if needs_redaction {
+            PSEUDONYMIZE_DETECTION
+        } else {
+            "not-required"
+        },
+        truncated,
+        approval_required: true,
+        provider_calls: 0,
+        limitations,
+    };
+    Ok(PseudonymizedPreview { preview, session })
+}
+
 /// Run one stored review field — a subject, a snippet — through the same
 /// deterministic entity detection the cloud preview uses.
 ///
@@ -345,9 +495,11 @@ pub fn redaction_receipt(findings: &[RedactionFinding]) -> Option<String> {
     // order a reader cares about: who, then how to reach them, then what
     // unlocks something. A kind missing from this table would be dropped from
     // the sentence silently, so the test below asserts the table is complete.
-    const KINDS: [(&str, &str, &str); 8] = [
+    const KINDS: [(&str, &str, &str); 9] = [
         ("person", "mention of a person", "mentions of people"),
         ("identity", "identity", "identities"),
+        // Only the reversible path records places (a registry of places, PRD §6.2c).
+        ("place", "mention of a place", "mentions of places"),
         ("email", "email address", "email addresses"),
         ("phone_number", "phone number", "phone numbers"),
         ("financial_identifier", "account number", "account numbers"),
@@ -422,7 +574,17 @@ pub fn source_revision(input: &CloudDocumentInput) -> String {
     ])
 }
 
+/// Rung 1 and rung 2 of PRD §6.2, destructive form: each recognised word becomes a fixed
+/// marker. The detectors are `axon_pseudonymize::pattern` — the same functions the
+/// reversible path calls — so the two transformations cannot disagree about what a phone
+/// number or a self-introduction looks like. Their rationale (the D14 gaps, the `i'm`/`im`
+/// apostrophe, the gated handle rule) is documented there.
 fn transform_text(value: &str, redact: bool, redactions: &mut Vec<RedactionFinding>) -> String {
+    use axon_pseudonymize::pattern::{
+        introduces_person, looks_like_email, looks_like_handle, looks_like_iban,
+        looks_like_person_name, looks_like_phone, looks_like_sensitive_number, looks_like_token,
+        looks_like_url, names_a_person_in_apposition,
+    };
     if !redact {
         return value.trim().to_string();
     }
@@ -496,142 +658,6 @@ fn record_redaction(
             count: 1,
         });
     }
-}
-
-fn looks_like_url(value: &str) -> bool {
-    value.starts_with("http://") || value.starts_with("https://") || value.starts_with("www.")
-}
-
-fn looks_like_email(value: &str) -> bool {
-    let trimmed = value.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '@' && c != '.');
-    let Some((local, domain)) = trimmed.split_once('@') else {
-        return false;
-    };
-    !local.is_empty() && domain.contains('.')
-}
-
-fn looks_like_iban(value: &str) -> bool {
-    let cleaned = value
-        .chars()
-        .filter(char::is_ascii_alphanumeric)
-        .collect::<String>();
-    (15..=34).contains(&cleaned.len())
-        && cleaned.chars().take(2).all(|c| c.is_ascii_alphabetic())
-        && cleaned.chars().skip(2).take(2).all(|c| c.is_ascii_digit())
-        && cleaned.chars().skip(4).all(|c| c.is_ascii_alphanumeric())
-}
-
-fn looks_like_phone(value: &str) -> bool {
-    let digit_count = value.chars().filter(char::is_ascii_digit).count();
-    digit_count >= 7
-        && (value.trim_start().starts_with('+')
-            || value.contains('-')
-            || value.contains('(')
-            || value.contains(')'))
-}
-
-fn looks_like_sensitive_number(value: &str) -> bool {
-    value.chars().filter(char::is_ascii_digit).count() >= 6
-}
-
-fn looks_like_token(value: &str) -> bool {
-    let cleaned: String = value.chars().filter(char::is_ascii_alphanumeric).collect();
-    cleaned.len() >= 16
-        && cleaned.chars().any(|c| c.is_ascii_alphabetic())
-        && cleaned.chars().any(|c| c.is_ascii_digit())
-}
-
-/// One token reduced to the word a cue test compares against: entities decoded,
-/// lowercased, surrounding punctuation dropped.
-///
-/// The decode is not decoration. Stored mail reaches this module still holding
-/// `&#39;`, so the token that carries the "I'm X" cue is literally `I&#39;m`, and
-/// a matcher written against `i'm` would never fire on the corpus it was written
-/// for. `extraction::decode_basic_entities` already owns that table; a second
-/// copy here is how the two drift apart.
-///
-/// The apostrophe survives the trim on purpose. It is the only thing separating
-/// the English cue `i'm` from the German preposition `im`, which precedes a
-/// capitalised noun in a language that capitalises every noun.
-fn cue_word(value: &str) -> String {
-    crate::extraction::decode_basic_entities(value)
-        .to_lowercase()
-        .trim_matches(|c: char| !c.is_alphanumeric() && c != '\'')
-        .to_string()
-}
-
-/// Whether the tokens before `index` announce that the next word names a person.
-///
-/// Two families, and the second one is PRD D14. A salutation gate sees `Dear X`
-/// and nothing else; the shadow evaluation
-/// (`<overlay>/config/comms-redaction-shadow.md`, 2026-08-30) found three of
-/// Presidio's four unique catches were English self-introductions mid-body, where
-/// there is no salutation to fire on.
-///
-/// German self-introduction (`ich bin X`, `mein Name ist X`) is deliberately
-/// absent. No labelled miss asked for it — that measurement put German person
-/// recall *above* English — and German capitalises every noun, so `ich bin Ihr
-/// Ansprechpartner` would redact a pronoun. The rule is added when a miss asks
-/// for it, not before.
-fn introduces_person(tokens: &[&str], index: usize) -> bool {
-    let word = |back: usize| index.checked_sub(back).map(|i| cue_word(tokens[i]));
-    let Some(previous) = word(1) else {
-        return false;
-    };
-    match previous.as_str() {
-        "dear" | "hello" | "hi" | "hallo" | "liebe" | "lieber" => true,
-        "i'm" => true,
-        "am" => word(2).as_deref() == Some("i"),
-        "is" => matches!(word(2).as_deref(), Some("this") | Some("name")),
-        _ => false,
-    }
-}
-
-/// Whether the token at `index` is a person named by the company they are from.
-///
-/// PRD D14's first gap, and the one with a price. `X from Y` is a person only
-/// when `Y` is a proper noun too — the shape of "co-hosted by Rayn from
-/// Scriptbee", not of "Regards from Berlin", where the first word is a common
-/// noun that happens to start a line. Nothing here can tell those apart by
-/// vocabulary, so the rule is kept to the narrow shape and the cost is measured
-/// rather than argued: it moves the marker count over the whole personal mail
-/// body by a number recorded in `<overlay>/config/comms-redaction-shadow.md`.
-///
-/// German is untouched by construction. `from` is not a German word, and the
-/// corpus's German half already scores full person recall without this.
-fn names_a_person_in_apposition(tokens: &[&str], index: usize) -> bool {
-    looks_like_person_name(tokens[index])
-        && tokens
-            .get(index + 1)
-            .is_some_and(|next| cue_word(next) == "from")
-        && tokens
-            .get(index + 2)
-            .is_some_and(|after| looks_like_person_name(after))
-}
-
-/// A login handle: letters and digits fused into one opaque word.
-///
-/// PRD D14's second gap. `labo2764` identifies its owner as surely as the name
-/// on the account, and it passes every other recognizer here — too short for
-/// `looks_like_token`, too few digits for `looks_like_sensitive_number`, and
-/// lowercase, so `looks_like_person_name` refuses it. Only reachable behind a
-/// person cue; see the call site.
-fn looks_like_handle(value: &str) -> bool {
-    let cleaned = value.trim_matches(|c: char| !c.is_ascii_alphanumeric());
-    let letters = cleaned.chars().filter(char::is_ascii_alphabetic).count();
-    let digits = cleaned.chars().filter(char::is_ascii_digit).count();
-    (4..=32).contains(&cleaned.len())
-        && cleaned.chars().all(|c| c.is_ascii_alphanumeric())
-        && letters >= 2
-        && digits >= 2
-}
-
-fn looks_like_person_name(value: &str) -> bool {
-    let cleaned = value.trim_matches(|c: char| !c.is_alphabetic() && c != '-' && c != '\'');
-    let mut chars = cleaned.chars();
-    cleaned.chars().filter(|c| c.is_alphabetic()).count() >= 2
-        && chars.next().is_some_and(char::is_uppercase)
-        && chars.all(|c| c.is_alphabetic() || c == '-' || c == '\'')
 }
 
 fn bounded_chars(value: &str, limit: usize) -> (String, bool) {
@@ -727,6 +753,7 @@ mod tests {
         for (kind, phrase) in [
             ("person", "1 mention of a person"),
             ("identity", "1 identity"),
+            ("place", "1 mention of a place"),
             ("email", "1 email address"),
             ("phone_number", "1 phone number"),
             ("financial_identifier", "1 account number"),
@@ -1078,5 +1105,184 @@ mod tests {
             "c1",
             REDACTION_VERSION
         ));
+    }
+
+    fn pseudonymized_input() -> CloudDocumentInput {
+        CloudDocumentInput {
+            source: "mail".into(),
+            id: "msg-123".into(),
+            title: Some("Project update from Alice".into()),
+            author: Some("Alice <alice@example.com>".into()),
+            summary: Some("Call +49-170-1234567 regarding invoice".into()),
+            content: Some("Transfer funds to DE89370400440532013000".into()),
+            data_class: "c1".into(),
+        }
+    }
+
+    fn alice_registry() -> axon_pseudonymize::EntityRegistry {
+        axon_pseudonymize::EntityRegistry::builder()
+            .add_person("Alice")
+            .build()
+    }
+
+    #[test]
+    fn prepare_pseudonymized_preserves_relational_tokens_and_receipt() {
+        let PseudonymizedPreview { preview, session } =
+            prepare_pseudonymized(&pseudonymized_input(), &alice_registry())
+                .expect("c1 input produces pseudonymized derivative");
+
+        assert_eq!(preview.transformation, PSEUDONYMIZE_VERSION);
+        assert_eq!(preview.derivative_data_class, "c1");
+        assert_eq!(preview.entity_detection, PSEUDONYMIZE_DETECTION);
+        // The author field is one identity token, never "Alice <EMAIL_01>".
+        assert!(
+            preview.document.contains("Author\n<SENDER_01>"),
+            "{}",
+            preview.document
+        );
+        assert!(!preview.document.contains("Alice"), "{}", preview.document);
+        assert!(!preview.document.contains("alice@example.com"));
+        assert!(preview.document.contains("<TRAVELER_01>"));
+        assert!(preview.document.contains("<PHONE_01>"));
+        assert!(preview.document.contains("<ACCOUNT_01>"));
+        assert!(preview.redaction_receipt.is_some());
+        assert_eq!(
+            session.rehydrate_text("<SENDER_01>"),
+            "Alice <alice@example.com>"
+        );
+        assert!(tier_allows(
+            Some("pseudonymized_personal"),
+            "c1",
+            "c1",
+            PSEUDONYMIZE_VERSION
+        ));
+    }
+
+    /// Q27 on the reversible path: the refusal is the return type here too, and no tier
+    /// admits a local-only class under the reversible transformation.
+    #[test]
+    fn the_reversible_path_refuses_c2_and_c3_like_the_destructive_one() {
+        for class in ["c2", "c3"] {
+            let mut value = pseudonymized_input();
+            value.data_class = class.into();
+            assert!(
+                matches!(
+                    prepare_pseudonymized(&value, &alice_registry()),
+                    Err(LocalOnlyRefused)
+                ),
+                "{class} produced a reversible preview"
+            );
+            for tier in [None, Some("public"), Some("pseudonymized_personal")] {
+                for derivative in ["c0", "c1", class] {
+                    assert!(
+                        !tier_allows(tier, class, derivative, PSEUDONYMIZE_VERSION),
+                        "{tier:?} admitted {class} as {derivative} under {PSEUDONYMIZE_VERSION}"
+                    );
+                }
+            }
+        }
+        assert!(!tier_allows(
+            Some("public"),
+            "c1",
+            "c1",
+            PSEUDONYMIZE_VERSION
+        ));
+    }
+
+    /// The approve-then-requeue check compares a fresh preparation's hash to the approved
+    /// one. That only works when preparing twice gives the same bytes, and the receipt must
+    /// describe one call, not the sum of every call before it (Q9b).
+    #[test]
+    fn a_reversible_preview_hashes_the_same_way_twice_and_its_receipt_is_per_call() {
+        let registry = alice_registry();
+        let first = prepare_pseudonymized(&pseudonymized_input(), &registry).unwrap();
+        let second = prepare_pseudonymized(&pseudonymized_input(), &registry).unwrap();
+        assert_eq!(first.preview.preview_hash, second.preview.preview_hash);
+        assert_eq!(first.preview.document, second.preview.document);
+        assert_eq!(
+            first.preview.redaction_receipt,
+            second.preview.redaction_receipt
+        );
+        assert_eq!(
+            first.preview.redaction_count,
+            second.preview.redaction_count
+        );
+    }
+
+    /// Occurrences, like the destructive receipt says: two mentions of the same person are
+    /// two, not one distinct entity.
+    #[test]
+    fn a_reversible_receipt_counts_occurrences() {
+        let mut value = pseudonymized_input();
+        value.title = None;
+        value.author = None;
+        value.summary = None;
+        value.content = Some("Alice said Alice would call.".into());
+        let preview = prepare_pseudonymized(&value, &alice_registry())
+            .unwrap()
+            .preview;
+        assert_eq!(preview.redaction_count, 2);
+        assert_eq!(
+            preview.redaction_receipt.as_deref(),
+            Some("Reduced 2 details before this call: 2 mentions of people.")
+        );
+        assert_eq!(preview.redactions[0].marker, "<TRAVELER_nn>");
+    }
+
+    /// The four probes the reversible path leaked before both paths shared
+    /// `axon_pseudonymize::pattern`. Both transformations must remove each of them.
+    #[test]
+    fn both_paths_remove_numbers_written_with_slashes_dots_or_a_hash() {
+        for (text, secret) in [
+            ("Ref #1234567", "1234567"),
+            ("Tel. 0721/1234567", "1234567"),
+            ("Konto 12.345.678", "12.345.678"),
+            ("geb. 01.02.1990", "01.02.1990"),
+        ] {
+            let mut value = pseudonymized_input();
+            value.content = Some(text.into());
+            let destructive = prepare(&value).unwrap();
+            assert!(
+                !destructive.document.contains(secret),
+                "prepare leaked {text}"
+            );
+            let reversible = prepare_pseudonymized(&value, &alice_registry())
+                .unwrap()
+                .preview;
+            assert!(
+                !reversible.document.contains(secret),
+                "prepare_pseudonymized leaked {text}"
+            );
+        }
+    }
+
+    /// Serialized, a reversible preview stays inside `schemas/cloud-derivative-preview.schema.json`:
+    /// the transformation, the detection label and the marker shape are values it lists.
+    #[test]
+    fn a_reversible_preview_uses_values_the_preview_schema_lists() {
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../schemas/cloud-derivative-preview.schema.json"
+        ))
+        .unwrap();
+        let listed = |property: &str, value: &str| {
+            schema["properties"][property]["enum"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|v| v == value)
+        };
+        let preview = prepare_pseudonymized(&pseudonymized_input(), &alice_registry())
+            .unwrap()
+            .preview;
+        assert!(listed("transformation", preview.transformation));
+        assert!(listed("entity_detection", preview.entity_detection));
+        assert!(listed("transformation", REDACTION_VERSION));
+        for finding in &preview.redactions {
+            let marker = finding.marker;
+            assert!(
+                marker.starts_with('<') && marker.ends_with("_nn>"),
+                "{marker}"
+            );
+        }
     }
 }

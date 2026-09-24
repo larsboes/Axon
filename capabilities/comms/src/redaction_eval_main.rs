@@ -1,12 +1,27 @@
 use std::path::Path;
 
-use comms::redaction_eval::evaluate_file;
+use comms::redaction_eval::{evaluate_file_with, Mode};
 
+/// `comms-redaction-eval [--pseudonymized] [corpus.json]`. The flag runs the corpus through
+/// `prepare_pseudonymized` instead of `prepare`; the gate is the same.
 fn main() {
-    let path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| "eval/redaction-corpus.json".to_string());
-    let report = match evaluate_file(Path::new(&path)) {
+    let mut mode = Mode::Destructive;
+    let mut path = None;
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "--pseudonymized" => mode = Mode::Pseudonymized,
+            _ => path = Some(arg),
+        }
+    }
+    let path = path.unwrap_or_else(|| "eval/redaction-corpus.json".to_string());
+    println!(
+        "mode: {}",
+        match mode {
+            Mode::Destructive => "prepare (destructive markers)",
+            Mode::Pseudonymized => "prepare_pseudonymized (reversible tokens)",
+        }
+    );
+    let report = match evaluate_file_with(Path::new(&path), mode) {
         Ok(report) => report,
         Err(error) => {
             eprintln!("redaction evaluation error: {error}");

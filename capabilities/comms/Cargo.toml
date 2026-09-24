@@ -56,6 +56,7 @@ axon-inference = { path = "../../libs/inference" }
 axon-server = { path = "../../libs/axon-server" }
 axon-store = { path = "../../libs/axon-store" }
 axon-summarize = { path = "../../libs/summarize" }
+axon-pseudonymize = { path = "../../libs/pseudonymize" }
 content-item = { path = "../../libs/content-item" }
 # The shared machine->vault projection mechanism (PRD Q49). comms declares the
 # shape of a saved link; libs/markdown-root does the writing, the containment and
