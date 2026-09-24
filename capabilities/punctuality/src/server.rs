@@ -185,8 +185,9 @@ async fn handle_health(State(state): State<AppState>) -> ApiResult {
         // A server that answers but has never ingested is up and useless. Saying which
         // window it holds is the difference between "no data for that train" meaning
         // "punctual" and meaning "nobody has run ingest".
-        "coverage": covered.map(|(from, to, cells)| json!({
-            "from_month": from, "to_month": to, "cells": cells
+        "coverage": covered.map(|(from, to, cells, ran_at)| json!({
+            "from_month": from, "to_month": to, "cells": cells,
+            "last_ingest_at": ran_at
         })),
     })))
 }

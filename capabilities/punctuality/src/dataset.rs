@@ -37,6 +37,9 @@ pub enum DatasetError {
 #[derive(Deserialize)]
 struct TreeEntry {
     path: String,
+    /// Hugging Face's blob identity lets ingest notice a corrected historical month
+    /// instead of treating an old filename as immutable forever.
+    oid: Option<String>,
 }
 
 /// A published monthly release: `2026-06` plus where it lives.
@@ -44,6 +47,8 @@ struct TreeEntry {
 pub struct Month {
     pub id: String,
     pub remote_path: String,
+    /// The upstream blob identity, when the listing exposes one.
+    pub oid: Option<String>,
 }
 
 impl Month {
@@ -89,6 +94,7 @@ pub fn list_months(client: &reqwest::blocking::Client) -> Result<Vec<Month>, Dat
             month_id(&e.path).map(|id| Month {
                 id,
                 remote_path: e.path,
+                oid: e.oid,
             })
         })
         .collect();
@@ -131,9 +137,10 @@ pub fn ensure_local(
     client: &reqwest::blocking::Client,
     month: &Month,
     raw_dir: &Path,
+    refresh: bool,
 ) -> Result<PathBuf, DatasetError> {
     let target = month.local_path(raw_dir);
-    if target.is_file() {
+    if target.is_file() && !refresh {
         return Ok(target);
     }
     std::fs::create_dir_all(raw_dir).map_err(|e| DatasetError::Write(raw_dir.to_path_buf(), e))?;
@@ -214,6 +221,7 @@ mod tests {
             .map(|id| Month {
                 id: (*id).to_string(),
                 remote_path: format!("{DIR}/data-{id}.parquet"),
+                oid: None,
             })
             .collect()
     }

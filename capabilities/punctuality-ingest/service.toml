@@ -1,0 +1,11 @@
+# Scheduled producer for the punctuality capability.
+#
+# `punctuality` itself is an always-on HTTP service, so its manifest cannot also carry
+# `schedule`. This job owns no data and writes only through punctuality's own CLI; the
+# capability remains the owner of the aggregate and its contract.
+kind     = "process"
+name     = "punctuality-ingest"
+command  = ["target/release/punctuality-cli", "ingest"]
+build    = ["cargo", "build", "--locked", "--release", "--bin", "punctuality-cli"]
+schedule = "24h"
+requires = ["punctuality"]

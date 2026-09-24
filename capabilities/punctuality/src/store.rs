@@ -10,7 +10,7 @@
 use crate::ingest::CellKey;
 use crate::stats::Cell;
 use axon_store::QueryAll;
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -27,7 +27,21 @@ pub struct Store {
     prefix: String,
 }
 
-pub type Coverage = (String, String, i32);
+pub type Coverage = (String, String, i32, String);
+
+#[derive(Debug, Clone)]
+pub struct MonthRecord {
+    pub month: String,
+    pub source_oid: Option<String>,
+    pub rows_read: i64,
+    pub rows_skipped: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct IngestedMonth {
+    pub month: String,
+    pub source_oid: Option<String>,
+}
 
 /// The projection `row_to_stat` reads, in its exact order.
 ///
@@ -37,7 +51,7 @@ pub type Coverage = (String, String, i32);
 /// so it surfaced as a panic at request time, and the panic poisoned the server's store
 /// lock for every later request (#175).
 const STAT_COLUMNS: &str = "s.eva, st.station_name, s.train_type, s.hour, s.weekend, s.n, \
-     s.canceled, s.mean_delay, s.p50, s.p90, s.share_late_6, s.cancel_rate, s.counts";
+     s.canceled, s.mean_delay, s.p50, s.p90, s.share_late_6, s.cancel_rate, s.sum_delay, s.counts";
 
 /// The dataset writes EVA numbers zero-padded to eight digits (`08000044`); HAFAS, and
 /// therefore `capabilities/transit`, returns them unpadded (`8000044`). Joining the two
@@ -62,6 +76,9 @@ pub struct StatRow {
     pub p90: i16,
     pub share_late_6: f32,
     pub cancel_rate: f32,
+    /// Exact running delay sum, kept so incremental merges do not round a mean back
+    /// into a sum on every monthly update.
+    pub sum_delay: i64,
     /// The stored histogram, one count per delay bucket.
     ///
     /// Whether it can answer an arbitrary threshold is
@@ -134,6 +151,7 @@ impl Store {
                 p90           INTEGER NOT NULL,
                 share_late_6  REAL    NOT NULL,
                 cancel_rate   REAL    NOT NULL,
+                sum_delay     INTEGER NOT NULL DEFAULT 0,
                 -- The histogram itself, one count per delay bucket, as a JSON array:
                 -- SQLite has no array type, and this is one of the two measured
                 -- Postgres columns that had no native equivalent (PRD Q45).
@@ -180,10 +198,37 @@ impl Store {
                 rows_skipped INTEGER NOT NULL,
                 cells        INTEGER NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS {prefix}_ingest_months (
+                month       TEXT PRIMARY KEY,
+                source_oid  TEXT,
+                rows_read   INTEGER NOT NULL,
+                rows_skipped INTEGER NOT NULL
+            );
             ",
             prefix = prefix,
             now = axon_store::NOW
         ))?;
+
+        // SQLite has no portable `ADD COLUMN IF NOT EXISTS`. Older deployments
+        // already have the aggregate table, so add the exact merge sum only when the
+        // migration sees that it is absent.
+        let has_sum_delay = conn
+            .prepare(&format!("PRAGMA table_info({prefix}_stop_stats)"))?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|name| name == "sum_delay");
+        if !has_sum_delay {
+            conn.execute(
+                &format!("ALTER TABLE {prefix}_stop_stats ADD COLUMN sum_delay INTEGER NOT NULL DEFAULT 0"),
+                [],
+            )?;
+            conn.execute(
+                &format!("UPDATE {prefix}_stop_stats SET sum_delay = CAST(ROUND(mean_delay * n) AS INTEGER)"),
+                [],
+            )?;
+        }
         Ok(())
     }
 
@@ -200,42 +245,128 @@ impl Store {
         let prefix = self.prefix.clone();
         let mut conn = self.conn()?;
         let tx = axon_store::write_transaction(&mut conn)?;
-        tx.execute(&format!("DELETE FROM {prefix}_stop_stats"), [])?;
-
-        {
-            let mut insert = tx.prepare(&format!(
-                "INSERT INTO {prefix}_stop_stats
-                   (eva, train_type, hour, weekend, n, canceled, mean_delay, p50, p90,
-                    share_late_6, cancel_rate, counts)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)"
-            ))?;
-            for (key, cell) in cells {
-                insert.execute(params![
-                    &key.eva,
-                    &key.train_type,
-                    key.hour as i16,
-                    key.weekend,
-                    cell.n as i64,
-                    cell.canceled as i64,
-                    cell.mean() as f32,
-                    cell.quantile(0.5) as i16,
-                    cell.quantile(0.9) as i16,
-                    cell.share_at_least(6) as f32,
-                    cell.cancel_rate() as f32,
-                    serde_json::to_string(&cell.counts_i32())?,
-                ])?;
-            }
-
-            let mut station_insert = tx.prepare(&format!(
-                "INSERT INTO {prefix}_stations (eva, station_name) VALUES (?1,?2)
-                 ON CONFLICT (eva) DO UPDATE SET station_name = excluded.station_name"
-            ))?;
-            for (eva, name) in stations {
-                station_insert.execute(params![eva, name])?;
-            }
-        }
+        replace_stats_tx(&tx, &prefix, cells, stations)?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Rebuilds the aggregate and replaces the source-month ledger in one transaction.
+    /// This is the correction path: a changed or removed upstream month cannot be
+    /// subtracted from a materialized histogram, so the safe fallback is a rebuild.
+    pub fn replace_stats_and_months(
+        &self,
+        cells: &HashMap<CellKey, Cell>,
+        stations: &HashMap<String, String>,
+        months: &[MonthRecord],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let prefix = self.prefix.clone();
+        let mut conn = self.conn()?;
+        let tx = axon_store::write_transaction(&mut conn)?;
+        replace_stats_tx(&tx, &prefix, cells, stations)?;
+        tx.execute(&format!("DELETE FROM {prefix}_ingest_months"), [])?;
+        insert_months(&tx, &prefix, months)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Merges only new monthly cells into the materialized aggregate and records the
+    /// source identities atomically. A retry cannot double-count a month because the
+    /// caller only passes months absent from the ledger.
+    pub fn merge_stats_and_months(
+        &self,
+        cells: &HashMap<CellKey, Cell>,
+        stations: &HashMap<String, String>,
+        months: &[MonthRecord],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let prefix = self.prefix.clone();
+        let mut conn = self.conn()?;
+        let tx = axon_store::write_transaction(&mut conn)?;
+        let mut select = tx.prepare(&format!(
+            "SELECT n, canceled, sum_delay, counts FROM {prefix}_stop_stats
+             WHERE eva = ?1 AND train_type = ?2 AND hour = ?3 AND weekend = ?4"
+        ))?;
+        let mut upsert = tx.prepare(&format!(
+            "INSERT INTO {prefix}_stop_stats
+               (eva, train_type, hour, weekend, n, canceled, mean_delay, p50, p90,
+                share_late_6, cancel_rate, sum_delay, counts)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
+             ON CONFLICT (eva, train_type, hour, weekend) DO UPDATE SET
+                n = excluded.n, canceled = excluded.canceled,
+                mean_delay = excluded.mean_delay, p50 = excluded.p50,
+                p90 = excluded.p90, share_late_6 = excluded.share_late_6,
+                cancel_rate = excluded.cancel_rate, sum_delay = excluded.sum_delay,
+                counts = excluded.counts"
+        ))?;
+        for (key, cell) in cells {
+            let old = select
+                .query_row(
+                    params![&key.eva, &key.train_type, key.hour as i16, key.weekend],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                            axon_store::json_column::<Vec<i32>>(row, 3)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            let mut merged = cell.clone();
+            if let Some((n, canceled, sum, counts)) = old {
+                let existing =
+                    Cell::from_parts(&counts, u64::try_from(n)?, u64::try_from(canceled)?, sum)
+                        .ok_or("malformed persisted punctuality histogram")?;
+                merged.merge(&existing);
+            }
+            upsert.execute(params![
+                &key.eva,
+                &key.train_type,
+                key.hour as i16,
+                key.weekend,
+                merged.n as i64,
+                merged.canceled as i64,
+                merged.mean() as f32,
+                merged.quantile(0.5) as i16,
+                merged.quantile(0.9) as i16,
+                merged.share_at_least(6) as f32,
+                merged.cancel_rate() as f32,
+                merged.sum_delay(),
+                serde_json::to_string(&merged.counts_i32())?,
+            ])?;
+        }
+        drop(select);
+        drop(upsert);
+        upsert_stations(&tx, &prefix, stations)?;
+        insert_months(&tx, &prefix, months)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn replace_month_manifest(
+        &self,
+        months: &[MonthRecord],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let prefix = self.prefix.clone();
+        let mut conn = self.conn()?;
+        let tx = axon_store::write_transaction(&mut conn)?;
+        tx.execute(&format!("DELETE FROM {prefix}_ingest_months"), [])?;
+        insert_months(&tx, &prefix, months)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn month_manifest(&self) -> Result<Vec<IngestedMonth>, Box<dyn std::error::Error>> {
+        let prefix = &self.prefix;
+        Ok(self.conn()?.query_all(
+            &format!("SELECT month, source_oid FROM {prefix}_ingest_months ORDER BY month"),
+            [],
+            |row| {
+                Ok(IngestedMonth {
+                    month: row.get(0)?,
+                    source_oid: row.get(1)?,
+                })
+            },
+        )?)
     }
 
     pub fn record_run(
@@ -324,11 +455,11 @@ impl Store {
             .conn()?
             .query_row(
                 &format!(
-                    "SELECT from_month, to_month, cells FROM {prefix}_ingest_runs
+                    "SELECT from_month, to_month, cells, ran_at FROM {prefix}_ingest_runs
                      ORDER BY id DESC LIMIT 1"
                 ),
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .optional()?)
     }
@@ -362,6 +493,77 @@ impl Store {
     }
 }
 
+fn replace_stats_tx(
+    tx: &Transaction<'_>,
+    prefix: &str,
+    cells: &HashMap<CellKey, Cell>,
+    stations: &HashMap<String, String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    tx.execute(&format!("DELETE FROM {prefix}_stop_stats"), [])?;
+    let mut insert = tx.prepare(&format!(
+        "INSERT INTO {prefix}_stop_stats
+           (eva, train_type, hour, weekend, n, canceled, mean_delay, p50, p90,
+            share_late_6, cancel_rate, sum_delay, counts)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"
+    ))?;
+    for (key, cell) in cells {
+        insert.execute(params![
+            &key.eva,
+            &key.train_type,
+            key.hour as i16,
+            key.weekend,
+            cell.n as i64,
+            cell.canceled as i64,
+            cell.mean() as f32,
+            cell.quantile(0.5) as i16,
+            cell.quantile(0.9) as i16,
+            cell.share_at_least(6) as f32,
+            cell.cancel_rate() as f32,
+            cell.sum_delay(),
+            serde_json::to_string(&cell.counts_i32())?,
+        ])?;
+    }
+    drop(insert);
+    upsert_stations(tx, prefix, stations)
+}
+
+fn upsert_stations(
+    tx: &Transaction<'_>,
+    prefix: &str,
+    stations: &HashMap<String, String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut station_insert = tx.prepare(&format!(
+        "INSERT INTO {prefix}_stations (eva, station_name) VALUES (?1,?2)
+         ON CONFLICT (eva) DO UPDATE SET station_name = excluded.station_name"
+    ))?;
+    for (eva, name) in stations {
+        station_insert.execute(params![eva, name])?;
+    }
+    Ok(())
+}
+
+fn insert_months(
+    tx: &Transaction<'_>,
+    prefix: &str,
+    months: &[MonthRecord],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut insert = tx.prepare(&format!(
+        "INSERT INTO {prefix}_ingest_months (month, source_oid, rows_read, rows_skipped)
+         VALUES (?1,?2,?3,?4)
+         ON CONFLICT (month) DO UPDATE SET source_oid = excluded.source_oid,
+           rows_read = excluded.rows_read, rows_skipped = excluded.rows_skipped"
+    ))?;
+    for month in months {
+        insert.execute(params![
+            &month.month,
+            &month.source_oid,
+            month.rows_read,
+            month.rows_skipped,
+        ])?;
+    }
+    Ok(())
+}
+
 fn row_to_stat(r: &Row) -> rusqlite::Result<StatRow> {
     Ok(StatRow {
         eva: r.get(0)?,
@@ -376,7 +578,8 @@ fn row_to_stat(r: &Row) -> rusqlite::Result<StatRow> {
         p90: r.get(9)?,
         share_late_6: r.get(10)?,
         cancel_rate: r.get(11)?,
-        counts: axon_store::json_column(r, 12)?,
+        sum_delay: r.get(12)?,
+        counts: axon_store::json_column(r, 13)?,
     })
 }
 
@@ -404,7 +607,7 @@ mod tests {
     /// compile error; it fails on the first request that reaches the missing index.
     #[test]
     fn the_projection_is_as_wide_as_row_to_stat_reads() {
-        assert_eq!(STAT_COLUMNS.split(',').count(), 13);
+        assert_eq!(STAT_COLUMNS.split(',').count(), 14);
     }
 
     #[test]
@@ -537,6 +740,47 @@ mod db_tests {
         assert_eq!(rows[0].station_name.as_deref(), Some("Frankfurt(Main)Hbf"));
     }
 
+    #[test]
+    fn incremental_months_merge_without_double_counting() {
+        let store = open_test_store("incremental");
+        let (key, first) = one_cell("08000105", "ICE", 7, &[0; 40]);
+        store
+            .replace_stats_and_months(
+                &HashMap::from([(key.clone(), first)]),
+                &HashMap::new(),
+                &[MonthRecord {
+                    month: "2026-01".into(),
+                    source_oid: Some("one".into()),
+                    rows_read: 40,
+                    rows_skipped: 0,
+                }],
+            )
+            .unwrap();
+
+        let (_, second) = one_cell("08000105", "ICE", 7, &[10; 40]);
+        store
+            .merge_stats_and_months(
+                &HashMap::from([(key, second)]),
+                &HashMap::new(),
+                &[MonthRecord {
+                    month: "2026-02".into(),
+                    source_oid: Some("two".into()),
+                    rows_read: 40,
+                    rows_skipped: 0,
+                }],
+            )
+            .unwrap();
+
+        let row = store
+            .stop_stats("8000105", "ICE", 7, false, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.n, 80);
+        assert_eq!(row.sum_delay, 400);
+        assert!((row.mean_delay - 5.0).abs() < 0.01);
+        assert_eq!(store.month_manifest().unwrap().len(), 2);
+    }
+
     /// `?2 IS NULL OR train_type = ?2` is the translation of Postgres's
     /// `$2::text IS NULL OR ...`, and it is the whole of the "no filter" path.
     #[test]
@@ -575,11 +819,12 @@ mod db_tests {
             .record_run("2026-01", "2026-06", 6, 2_000, 20, 84)
             .unwrap();
 
-        let (from, to, cells) = store.coverage().unwrap().unwrap();
+        let (from, to, cells, ran_at) = store.coverage().unwrap().unwrap();
         assert_eq!(
             (from.as_str(), to.as_str(), cells),
             ("2026-01", "2026-06", 84)
         );
+        assert!(!ran_at.is_empty());
     }
 
     /// The padded/unpadded EVA split is the bug that presented as "no data for that

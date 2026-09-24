@@ -22,14 +22,17 @@ punctuality stats "Bonn Hbf" --type ICE     # per hour, weekday and weekend
 punctuality stats 8000044 --min-n 100       # unpadded eva from HAFAS works too
 ```
 
-`ingest` replaces the whole aggregate rather than merging into it. The rows are a
-function of the ingested window, so merging a narrower run into a wider one would leave
-rows from months no longer covered with nothing in the table to show it. Every run
-records its window in `punctuality_ingest_runs`.
+`ingest` keeps one materialized aggregate, but does not rescan every parquet file on every
+run. It records each source month and its upstream blob identity in
+`punctuality_ingest_months`; a newly published month is folded and merged into the existing
+set. If an old month changes, disappears, or the ledger is being bootstrapped, ingest rebuilds
+the selected window atomically so no month is double-counted. Every run records its window
+and timestamp in `punctuality_ingest_runs`.
 
-The three tables live in the shared SQLite file — `AXON_DB_PATH`, else
+The four tables live in the shared SQLite file — `AXON_DB_PATH`, else
 `$AXON_PERSONAL_ROOT/data/axon/axon.db` — under the table prefix `punctuality`, so they are
-`punctuality_stop_stats`, `punctuality_stations` and `punctuality_ingest_runs`
+`punctuality_stop_stats`, `punctuality_stations`, `punctuality_ingest_months` and
+`punctuality_ingest_runs`
 (libs/axon-store/README.md). PRD Q45 (2026-08-27) moved them there from a Postgres schema.
 
 ## Where the numbers come from
@@ -83,7 +86,7 @@ rather than a nullable column's.
 
 ## One train, one day
 
-`ingest` projects six of the sixteen columns in each monthly file and folds the rest into
+`ingest` projects the seven columns it needs from each monthly file and folds the rest into
 histograms. That is the right shape for "how late is an ICE here at this hour" and cannot
 answer "how late was ICE 611 at Dortmund on the 14th", because the ride is gone by the time
 the aggregate exists. The columns to answer it were being decompressed and discarded on
@@ -147,7 +150,7 @@ never did.
 The schema-change path gets its own red: the fixture is rewritten five times, each
 missing one required column, and each must come back as `MissingColumn` naming that
 column rather than a panic or a silent zero. That path already fired once upstream in
-2026-05 (`upstreams.toml [deutsche-bahn-data]`).
+2026-05 and 2026-08 (`upstreams.toml [deutsche-bahn-data]`).
 
 ### The statistics, and why these
 
@@ -207,9 +210,10 @@ is the first consumer and reaches it over HTTP, never by linking this crate (REA
 | `GET /stations?q=` | eva lookup by name fragment |
 | `GET /stations?eva=&train_type=` | every hour cell for one station |
 
-`/health` reports coverage on purpose. A server that answers but has never ingested is
-up and useless, and without the window "no data for that train" reads the same as "that
-train is never late".
+`/health` reports coverage and the last ingest timestamp on purpose. A server that answers
+but has never ingested is up and useless, and without the window or timestamp "no data for
+that train" reads the same as "that train is never late". The scheduled producer is
+`capabilities/punctuality-ingest`, which runs the incremental ingest daily.
 
 `/lookup` answers `null` for a stop it knows nothing about, and for any cell thinner
 than 30 observations. It never falls back to a neighbouring hour or a station average:

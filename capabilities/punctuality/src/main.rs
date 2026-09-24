@@ -4,12 +4,12 @@ use punctuality::config::Config;
 use punctuality::dataset::{self, FIRST_FULL_COVERAGE_MONTH};
 use punctuality::ingest::{self, CellKey};
 use punctuality::stats::Cell;
-use punctuality::store::Store;
-use std::collections::HashMap;
+use punctuality::store::{MonthRecord, Store};
+use std::collections::{HashMap, HashSet};
 
 const USAGE: &str = "\
 Usage:
-  punctuality ingest [--from YYYY-MM] [--to YYYY-MM]   download + aggregate monthly releases
+  punctuality ingest [--from YYYY-MM] [--to YYYY-MM]   download + incrementally aggregate monthly releases
   punctuality stats <station|eva> [--type ICE] [--min-n N]
   punctuality stations <needle>                        eva lookup by name
   punctuality ride --type ICE --number 611 --date YYYY-MM-DD [--eva 8000044]
@@ -53,24 +53,61 @@ fn ingest_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         std::time::Duration::from_secs(1800),
     )?;
     let months = dataset::select(dataset::list_months(&client)?, &from, to.as_deref())?;
+    let store = Store::open(&cfg.database_path)?;
+    let previous = store.month_manifest()?;
+    let previous: HashMap<String, Option<String>> = previous
+        .into_iter()
+        .map(|month| (month.month, month.source_oid))
+        .collect();
+    let selected: HashSet<&str> = months.iter().map(|month| month.id.as_str()).collect();
+
+    // An existing deployment has an aggregate but no source ledger. Rebuild once to
+    // bootstrap the ledger; every later run can merge only new months.
+    let bootstrap = previous.is_empty() && store.coverage()?.is_some();
+    let removed = previous
+        .keys()
+        .any(|month| !selected.contains(month.as_str()));
+    let changed = months
+        .iter()
+        .any(|month| previous.get(&month.id).is_some_and(|old| old != &month.oid));
+    let new_months: Vec<_> = months
+        .iter()
+        .filter(|month| !previous.contains_key(&month.id))
+        .collect();
+    let rebuild = bootstrap || removed || changed;
+    let work: Vec<_> = if rebuild {
+        months.iter().collect()
+    } else {
+        new_months.clone()
+    };
 
     eprintln!(
-        "punctuality: {} month(s) {}..={}, cache {}",
+        "punctuality: {} month(s) {}..={}, {} to process ({}) cache {}",
         months.len(),
         months[0].id,
         months[months.len() - 1].id,
+        work.len(),
+        if rebuild { "rebuild" } else { "incremental" },
         cfg.raw_dir.display()
     );
 
     let mut cells: HashMap<CellKey, Cell> = HashMap::new();
     let mut stations: HashMap<String, String> = HashMap::new();
     let (mut rows, mut skipped) = (0u64, 0u64);
+    let mut processed = Vec::with_capacity(work.len());
 
-    for month in &months {
-        let path = dataset::ensure_local(&client, month, &cfg.raw_dir)?;
+    for month in work {
+        let refresh = previous.get(&month.id).is_some_and(|old| old != &month.oid);
+        let path = dataset::ensure_local(&client, month, &cfg.raw_dir, refresh)?;
         let counts = ingest::fold_file(&path, &mut cells, &mut stations)?;
         rows += counts.rows;
         skipped += counts.skipped;
+        processed.push(MonthRecord {
+            month: month.id.clone(),
+            source_oid: month.oid.clone(),
+            rows_read: counts.rows as i64,
+            rows_skipped: counts.skipped as i64,
+        });
         eprintln!(
             "  {}  {:>11} rows  {:>8} skipped  {:>8} cells so far",
             month.id,
@@ -80,23 +117,36 @@ fn ingest_cmd(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    eprintln!("punctuality: writing to {}", cfg.database_path.display());
-    let store = Store::open(&cfg.database_path)?;
-    store.replace_stats(&cells, &stations)?;
+    if rebuild {
+        store.replace_stats_and_months(&cells, &stations, &processed)?;
+    } else if !processed.is_empty() {
+        store.merge_stats_and_months(&cells, &stations, &processed)?;
+    }
+
+    let total_cells = store.coverage()?.map(|coverage| coverage.2).unwrap_or(0);
     store.record_run(
         &months[0].id,
         &months[months.len() - 1].id,
         months.len() as i32,
         rows as i64,
         skipped as i64,
-        cells.len() as i32,
+        if rebuild {
+            cells.len() as i32
+        } else {
+            total_cells
+        },
     )?;
 
     println!(
-        "{} cells from {} rows ({} skipped) across {} month(s), {} stations",
-        cells.len(),
+        "{} cells from {} rows ({} skipped), processed {} of {} month(s), {} stations",
+        if rebuild {
+            cells.len() as i32
+        } else {
+            total_cells
+        },
         rows,
         skipped,
+        processed.len(),
         months.len(),
         stations.len()
     );

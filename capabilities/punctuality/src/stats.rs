@@ -75,6 +75,34 @@ impl Cell {
         self.sum += delay as i64;
     }
 
+    /// Reconstructs a cell from a persisted histogram and exact running sum.
+    ///
+    /// Incremental ingest needs to merge a new month into the materialized aggregate
+    /// without reading every old parquet file again. Reject malformed persisted data
+    /// rather than turning a bad row into a plausible statistic.
+    pub fn from_parts(counts: &[i32], n: u64, canceled: u64, sum: i64) -> Option<Self> {
+        if counts.len() != BUCKETS || counts.iter().any(|count| *count < 0) {
+            return None;
+        }
+        let mut restored = [0u32; BUCKETS];
+        for (slot, count) in restored.iter_mut().zip(counts) {
+            *slot = u32::try_from(*count).ok()?;
+        }
+        let counted: u64 = restored.iter().map(|count| *count as u64).sum();
+        (counted == n).then_some(Self {
+            counts: restored,
+            n,
+            canceled,
+            sum,
+        })
+    }
+
+    /// The exact delay sum persisted beside the public mean so incremental merges do
+    /// not repeatedly round a mean back into a sum.
+    pub fn sum_delay(&self) -> i64 {
+        self.sum
+    }
+
     /// Folds another cell in. Histograms add, which is the property that lets ingest
     /// run file by file and still produce one exact distribution over the whole window.
     pub fn merge(&mut self, other: &Cell) {

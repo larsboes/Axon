@@ -165,7 +165,7 @@
       },
       "code": {
         "files": 191,
-        "nodes": 1262
+        "nodes": 1273
       }
     },
     {
@@ -470,8 +470,12 @@
       },
       "code": {
         "files": 12,
-        "nodes": 167
+        "nodes": 181
       }
+    },
+    {
+      "name": "punctuality-ingest",
+      "kind": "capability"
     },
     {
       "name": "roomplan-contract",
@@ -2030,7 +2034,7 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 21373,
+    "nodes": 21399,
     "external": 27,
     "stale": [
       "Packs/harness/pi-packages/accordion/app/src/lib/engine/parse.ts",

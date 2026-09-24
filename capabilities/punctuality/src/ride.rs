@@ -1,7 +1,7 @@
 //! One train's actual stops on one day, from the same published files the
 //! aggregate is built from.
 //!
-//! `ingest` projects six of the sixteen columns in each monthly parquet and
+//! `ingest` projects the seven columns it needs from each monthly parquet and
 //! folds the rest away into per-cell histograms. That is the right shape for
 //! "how late is an ICE at this station at this hour", and it cannot answer "how
 //! late was ICE 611 at Bonn Hbf on the 14th" at all, because the ride is gone by
@@ -92,7 +92,7 @@ pub fn same_train_number(left: &str, right: &str) -> bool {
     !left_digits.is_empty() && left_digits == digits(right)
 }
 
-const COLUMNS: [&str; 13] = [
+const COLUMNS: [&str; 15] = [
     "eva",
     "station_name",
     "train_type",
@@ -106,6 +106,8 @@ const COLUMNS: [&str; 13] = [
     "departure_change_time",
     "delay_in_min",
     "is_canceled",
+    "arrival_is_canceled",
+    "departure_is_canceled",
 ];
 
 fn text(batch: &arrow::record_batch::RecordBatch, name: &str, row: usize) -> Option<String> {
@@ -185,6 +187,16 @@ fn flag(batch: &arrow::record_batch::RecordBatch, name: &str, row: usize) -> boo
         .ok()
         .and_then(|i| batch.column(i).as_any().downcast_ref::<BooleanArray>())
         .is_some_and(|c| !c.is_null(row) && c.value(row))
+}
+
+fn canceled(batch: &arrow::record_batch::RecordBatch, row: usize) -> bool {
+    [
+        "is_canceled",
+        "arrival_is_canceled",
+        "departure_is_canceled",
+    ]
+    .into_iter()
+    .any(|name| flag(batch, name, row))
 }
 
 /// Reads one train's stops for one date out of the cached month file.
@@ -282,7 +294,7 @@ pub fn find(
                 departure_planned,
                 departure_actual: text(&batch, "departure_change_time", row),
                 delay_minutes: number(&batch, "delay_in_min", row),
-                canceled: flag(&batch, "is_canceled", row),
+                canceled: canceled(&batch, row),
             });
         }
     }

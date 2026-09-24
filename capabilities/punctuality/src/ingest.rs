@@ -1,6 +1,6 @@
 //! Reading the monthly parquet and folding it into cells.
 //!
-//! Five columns out of seventeen are projected, which is most of why a laptop can chew
+//! Seven columns out of the upstream schema are projected, which is most of why a laptop can chew
 //! through ~120M stop records without a database: parquet is columnar, so the fourteen
 //! unread columns are never decompressed.
 
@@ -12,7 +12,15 @@ use parquet::arrow::ProjectionMask;
 use std::collections::HashMap;
 use std::path::Path;
 
-const COLUMNS: [&str; 5] = ["eva", "train_type", "delay_in_min", "is_canceled", "time"];
+const COLUMNS: [&str; 7] = [
+    "eva",
+    "train_type",
+    "delay_in_min",
+    "is_canceled",
+    "arrival_is_canceled",
+    "departure_is_canceled",
+    "time",
+];
 
 #[derive(Debug, thiserror::Error)]
 pub enum IngestError {
@@ -22,7 +30,7 @@ pub enum IngestError {
     Parquet(String, #[source] parquet::errors::ParquetError),
     #[error("reading parquet {0}: {1}")]
     Arrow(String, #[source] arrow::error::ArrowError),
-    #[error("{file}: column `{column}` is missing — upstream schema changed (see upstreams.toml [deutsche-bahn-data], which records one such break in 2026-05)")]
+    #[error("{file}: column `{column}` is missing — upstream schema changed (see upstreams.toml [deutsche-bahn-data])")]
     MissingColumn { file: String, column: String },
     #[error("{file}: column `{column}` has type {actual}, expected {expected}")]
     WrongType {
@@ -70,16 +78,25 @@ fn column<'a, T: 'static>(
     name: &str,
     expected: &str,
 ) -> Result<&'a T, IngestError> {
-    let idx = batch
-        .schema()
-        .index_of(name)
-        .map_err(|_| IngestError::MissingColumn {
-            file: file.into(),
-            column: name.into(),
-        })?;
+    optional_column(batch, file, name, expected)?.ok_or_else(|| IngestError::MissingColumn {
+        file: file.into(),
+        column: name.into(),
+    })
+}
+
+fn optional_column<'a, T: 'static>(
+    batch: &'a RecordBatch,
+    file: &str,
+    name: &str,
+    expected: &str,
+) -> Result<Option<&'a T>, IngestError> {
+    let Ok(idx) = batch.schema().index_of(name) else {
+        return Ok(None);
+    };
     let col = batch.column(idx);
     col.as_any()
         .downcast_ref::<T>()
+        .map(Some)
         .ok_or_else(|| IngestError::WrongType {
             file: file.into(),
             column: name.into(),
@@ -126,7 +143,24 @@ pub fn fold_file(
         let eva = column::<StringArray>(&batch, &name, "eva", "Utf8")?;
         let train_type = column::<StringArray>(&batch, &name, "train_type", "Utf8")?;
         let delay = column::<Int32Array>(&batch, &name, "delay_in_min", "Int32")?;
-        let canceled = column::<BooleanArray>(&batch, &name, "is_canceled", "Boolean")?;
+        let canceled = optional_column::<BooleanArray>(&batch, &name, "is_canceled", "Boolean")?;
+        let arrival_canceled =
+            optional_column::<BooleanArray>(&batch, &name, "arrival_is_canceled", "Boolean")?;
+        let departure_canceled =
+            optional_column::<BooleanArray>(&batch, &name, "departure_is_canceled", "Boolean")?;
+        if canceled.is_none() && arrival_canceled.is_none() && departure_canceled.is_none() {
+            let column = if batch.schema().index_of("arrival_is_canceled").is_err()
+                && batch.schema().index_of("departure_is_canceled").is_err()
+            {
+                "is_canceled"
+            } else {
+                "is_canceled or arrival_is_canceled/departure_is_canceled"
+            };
+            return Err(IngestError::MissingColumn {
+                file: name.clone(),
+                column: column.into(),
+            });
+        }
         let time =
             column::<TimestampNanosecondArray>(&batch, &name, "time", "Timestamp(Nanosecond)")?;
         let station_name = column::<StringArray>(&batch, &name, "station_name", "Utf8")?;
@@ -137,7 +171,10 @@ pub fn fold_file(
                 counts.skipped += 1;
                 continue;
             }
-            let is_canceled = !canceled.is_null(row) && canceled.value(row);
+            let is_canceled = [canceled, arrival_canceled, departure_canceled]
+                .into_iter()
+                .flatten()
+                .any(|column| !column.is_null(row) && column.value(row));
             if delay.is_null(row) && !is_canceled {
                 // Neither a delay reading nor a cancellation: nothing this row can say.
                 counts.skipped += 1;
@@ -192,7 +229,7 @@ mod tests {
     ///
     /// `omit` drops one column from the file, which is how the upstream-schema-change
     /// path gets a red to prove itself against. `upstreams.toml [deutsche-bahn-data]`
-    /// records one such break in 2026-05.
+    /// records the 2026-05 and 2026-08 schema changes.
     fn write_fixture(path: &Path, omit: Option<&str>) {
         let columns: Vec<(&str, DataType)> = vec![
             ("eva", DataType::Utf8),
