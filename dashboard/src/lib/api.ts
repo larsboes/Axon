@@ -55,7 +55,7 @@ export function describeFailure(status: number, body: string, path: string): str
 }
 
 /** Status and body text of one answer, whichever way it travelled. */
-interface Answer {
+export interface Answer {
   ok: boolean;
   status: number;
   text: string;
@@ -66,7 +66,7 @@ interface Answer {
  * through the native bridge (`./mac-bridge.ts`). An absolute URL, such as the
  * Wikipedia lookups below, is not a Mac path and stays a plain fetch.
  */
-async function send(path: string, init?: RequestInit): Promise<Answer> {
+export async function send(path: string, init?: RequestInit): Promise<Answer> {
   if (inTauri() && path.startsWith('/')) {
     let answer: MacResponse;
     try {

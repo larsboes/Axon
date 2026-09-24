@@ -9,6 +9,7 @@ pub fn run() {
     builder
         .invoke_handler(tauri::generate_handler![
             mac_bridge::mac_request,
+            mac_bridge::mac_request_bytes,
             mac_bridge::mac_settings_get,
             mac_bridge::mac_settings_set,
         ])

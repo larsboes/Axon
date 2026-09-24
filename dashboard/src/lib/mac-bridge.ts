@@ -57,6 +57,44 @@ export async function macRequest(path: string, init?: RequestInit): Promise<MacR
   });
 }
 
+/** One binary answer from the Mac, as `mac_request_bytes` returns it. */
+export interface MacBytes {
+  status: number;
+  contentType: string | null;
+  bytes: Uint8Array;
+}
+
+/**
+ * Reads the frame `frame_bytes` in `src-tauri/src/mac_bridge.rs` writes:
+ * status (u16 BE), content-type length (u16 BE), content-type, body.
+ */
+export function decodeBytesFrame(raw: ArrayBuffer | ArrayBufferView | number[]): MacBytes {
+  const all =
+    raw instanceof ArrayBuffer
+      ? new Uint8Array(raw)
+      : ArrayBuffer.isView(raw)
+        ? new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength)
+        : Uint8Array.from(raw);
+  if (all.length < 4) throw new Error('mac-bridge: the binary answer is shorter than its header');
+  const status = (all[0] << 8) | all[1];
+  const typeLength = (all[2] << 8) | all[3];
+  if (all.length < 4 + typeLength) throw new Error('mac-bridge: the binary answer is cut short');
+  const type = new TextDecoder().decode(all.subarray(4, 4 + typeLength));
+  return { status, contentType: type || null, bytes: all.subarray(4 + typeLength) };
+}
+
+/**
+ * Fetches one Mac path as bytes (GET only). The native side refuses an answer
+ * above 64 MiB. Rejects with the native error string, as `macRequest` does.
+ */
+export async function macRequestBytes(path: string): Promise<MacBytes> {
+  const raw = await invoke<ArrayBuffer | ArrayBufferView | number[]>('mac_request_bytes', {
+    path,
+    headers: null,
+  });
+  return decodeBytesFrame(raw);
+}
+
 export function getMacSettings(): Promise<MacSettings> {
   return invoke<MacSettings>('mac_settings_get');
 }

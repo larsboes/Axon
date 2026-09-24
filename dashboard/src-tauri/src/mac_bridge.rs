@@ -24,6 +24,15 @@
 //! - headers: [`FORWARDED_HEADERS`] only, values without control characters;
 //! - redirects: never followed.
 //!
+//! ## Two commands, one rule set
+//!
+//! [`mac_request`] answers text, which every JSON API needs. [`mac_request_bytes`]
+//! answers raw bytes for pictures and the RoomPlan USDZ, which do not survive a
+//! UTF-8 string. It is GET only, refuses an answer larger than
+//! [`MAX_RESPONSE_BYTES`], and sends its answer as a raw IPC payload
+//! ([`tauri::ipc::Response`]), not as base64 inside JSON. The frame is
+//! described at [`frame_bytes`].
+//!
 //! The base URL is a house fact and this repository is public. It lives in the
 //! app-private settings file ([`SETTINGS_FILE`]), never in code or config.
 
@@ -37,10 +46,60 @@ use tauri::{AppHandle, Manager, Runtime};
 /// The Mac paths the app may reach. An entry that ends in `/` admits every
 /// path below it. Any other entry admits that exact path, optionally with a
 /// query string.
-pub const ALLOWED_PATHS: &[&str] = &["/interior/", "/axon-status/api/axon-status/health"];
+///
+/// ## Why this set, and why it adds no exposure
+///
+/// The set is the mount table of the shell's proxy, restricted to the
+/// capabilities the dashboard calls. `capabilities/axon-status/src/proxy.rs`
+/// (`Proxy::new`) mounts every registry entry with a port at `/<name>`, or at
+/// `/<name>/api` where its `service.toml` sets `proxy_api_only = "true"`
+/// (calendar, finance, interior, traveler, trips), and passes each
+/// `proxy_extra` prefix through unstripped (transit's `/api`, which is how
+/// `transit` in `dashboard/src/lib/api.ts` calls it). `/axon-status/` is the
+/// shell's own API, which `strip_self_prefix` in the same file serves.
+///
+/// PRD Q94 puts that shell behind `tailscale serve`, so a phone browser on the
+/// tailnet already reaches every path below. The bridge reaches the same
+/// server with the same tailnet identity and no more headers than a browser
+/// sends (see [`FORWARDED_HEADERS`]). So this list gives the app what the phone
+/// browser has, and nothing that the browser does not have.
+///
+/// Token-guarded routes: comms is the one capability that sets
+/// `refuse_without_token` (`capabilities/comms/src/server/main.rs`,
+/// `inbound_auth`), and a tailnet identity never satisfies it
+/// (`libs/axon-server/src/auth.rs`). The bridge sends no token. But the shell
+/// adds comms' bearer token to every request it forwards to `/comms`
+/// (`inject_comms_auth` in `proxy.rs`), so `POST /comms/ingest` works through
+/// the bridge exactly as it works from the phone browser. The server refuses
+/// it only if the shell has no token configured. This is Q94's exposure, not a
+/// new one.
+///
+/// Not listed: capabilities the shell proxies but the dashboard does not call
+/// (foundation-models, punctuality, soundscape) and scouting's `/discover`.
+pub const ALLOWED_PATHS: &[&str] = &[
+    "/axon-status/",
+    "/calendar/api/",
+    "/comms/",
+    "/finance/api/",
+    "/interior/api/",
+    "/knowledge-graph/",
+    "/macmon/",
+    "/places/",
+    "/scouting/",
+    "/transit/",
+    "/api/",
+    "/traveler/api/",
+    "/trips/api/",
+    "/vault/",
+];
 
 /// The request headers the bridge forwards. Every other name is dropped.
-pub const FORWARDED_HEADERS: &[&str] = &["content-type", "if-match"];
+pub const FORWARDED_HEADERS: &[&str] = &["accept", "content-type", "if-match"];
+
+/// The largest answer [`mac_request_bytes`] accepts. A larger answer is refused,
+/// not truncated. A RoomPlan USDZ of one flat is a few MB (not measured for
+/// every flat); 64 MiB leaves room and still bounds the phone's memory.
+pub const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
 /// The methods a capability API uses.
 const ALLOWED_METHODS: &[&str] = &["GET", "POST", "PUT", "PATCH", "DELETE"];
@@ -246,21 +305,24 @@ pub async fn mac_settings_set<R: Runtime>(
     Ok(settings)
 }
 
-#[tauri::command]
-pub async fn mac_request<R: Runtime>(
-    app: AppHandle<R>,
-    request: MacRequest,
-) -> Result<MacResponse, String> {
-    let settings = read_settings(&app)?;
+/// Checks one request and builds it. Every command goes through here, so
+/// every command applies the same rules.
+fn build_request<R: Runtime>(
+    app: &AppHandle<R>,
+    method: &str,
+    path: &str,
+    headers: &[(String, String)],
+) -> Result<reqwest::RequestBuilder, String> {
+    let settings = read_settings(app)?;
     let Some(base) = settings.base_url.filter(|b| !b.trim().is_empty()) else {
         return Err(format!(
             "{NOT_CONFIGURED}: set the Mac address in Settings, Mac connection"
         ));
     };
     let base = validate_base(&base, allow_loopback())?;
-    let url = target_url(&base, &request.path)?;
-    let method = validate_method(&request.method)?;
-    let headers = filter_headers(&request.headers)?;
+    let url = target_url(&base, path)?;
+    let method = validate_method(method)?;
+    let headers = filter_headers(headers)?;
 
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -271,6 +333,23 @@ pub async fn mac_request<R: Runtime>(
     for (name, value) in headers {
         builder = builder.header(name, value);
     }
+    Ok(builder)
+}
+
+fn content_type_of(response: &reqwest::Response) -> Option<String> {
+    response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+}
+
+#[tauri::command]
+pub async fn mac_request<R: Runtime>(
+    app: AppHandle<R>,
+    request: MacRequest,
+) -> Result<MacResponse, String> {
+    let mut builder = build_request(&app, &request.method, &request.path, &request.headers)?;
     if let Some(body) = request.body {
         builder = builder.body(body);
     }
@@ -279,11 +358,7 @@ pub async fn mac_request<R: Runtime>(
         .await
         .map_err(|e| format!("mac-bridge: the Mac did not answer: {e}"))?;
     let status = response.status().as_u16();
-    let content_type = response
-        .headers()
-        .get(reqwest::header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
+    let content_type = content_type_of(&response);
     let body = response
         .text()
         .await
@@ -293,6 +368,86 @@ pub async fn mac_request<R: Runtime>(
         content_type,
         body,
     })
+}
+
+/// Refuses an answer whose declared length is above `cap`.
+pub fn check_declared_length(length: Option<u64>, cap: usize) -> Result<(), String> {
+    match length {
+        Some(n) if n > cap as u64 => Err(format!(
+            "mac-bridge: the answer is {n} bytes, above the limit of {cap} bytes"
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Adds one chunk to `body`, or refuses when the total would pass `cap`. The
+/// declared length can be absent or wrong, so the count is what decides.
+pub fn append_capped(body: &mut Vec<u8>, chunk: &[u8], cap: usize) -> Result<(), String> {
+    if body.len() + chunk.len() > cap {
+        return Err(format!(
+            "mac-bridge: the answer is above the limit of {cap} bytes"
+        ));
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
+}
+
+/// The raw answer of [`mac_request_bytes`]:
+///
+/// | bytes      | content                                   |
+/// |------------|-------------------------------------------|
+/// | 0..2       | HTTP status, u16 big-endian               |
+/// | 2..4       | content-type length `n`, u16 big-endian   |
+/// | 4..4+n     | content-type, UTF-8 (empty when absent)   |
+/// | 4+n..      | the body, unchanged                       |
+///
+/// `dashboard/src/lib/mac-bridge.ts` (`decodeBytesFrame`) reads the same frame.
+pub fn frame_bytes(status: u16, content_type: Option<&str>, body: &[u8]) -> Vec<u8> {
+    let ct = content_type.unwrap_or("").as_bytes();
+    // A content type longer than u16::MAX is not a content type; drop it.
+    let ct = if ct.len() > usize::from(u16::MAX) {
+        &[][..]
+    } else {
+        ct
+    };
+    let mut out = Vec::with_capacity(4 + ct.len() + body.len());
+    out.extend_from_slice(&status.to_be_bytes());
+    out.extend_from_slice(&(ct.len() as u16).to_be_bytes());
+    out.extend_from_slice(ct);
+    out.extend_from_slice(body);
+    out
+}
+
+/// Fetches one path as bytes, for pictures and the RoomPlan USDZ. GET only,
+/// same path, header and base rules as [`mac_request`].
+#[tauri::command]
+pub async fn mac_request_bytes<R: Runtime>(
+    app: AppHandle<R>,
+    path: String,
+    headers: Option<Vec<(String, String)>>,
+) -> Result<tauri::ipc::Response, String> {
+    let headers = headers.unwrap_or_default();
+    let builder = build_request(&app, "GET", &path, &headers)?;
+    let mut response = builder
+        .send()
+        .await
+        .map_err(|e| format!("mac-bridge: the Mac did not answer: {e}"))?;
+    check_declared_length(response.content_length(), MAX_RESPONSE_BYTES)?;
+    let status = response.status().as_u16();
+    let content_type = content_type_of(&response);
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| format!("mac-bridge: reading the answer failed: {e}"))?
+    {
+        append_capped(&mut body, &chunk, MAX_RESPONSE_BYTES)?;
+    }
+    Ok(tauri::ipc::Response::new(frame_bytes(
+        status,
+        content_type.as_deref(),
+        &body,
+    )))
 }
 
 #[cfg(test)]
@@ -347,29 +502,107 @@ mod tests {
 
     #[test]
     fn accepts_allow_listed_paths() {
-        assert!(validate_path("/interior/api/items").is_ok());
-        assert!(validate_path("/interior/api/items?room=kitchen&limit=5").is_ok());
-        assert!(validate_path("/axon-status/api/axon-status/health").is_ok());
+        for good in [
+            "/interior/api/items",
+            "/interior/api/items?room=kitchen&limit=5",
+            "/interior/api/media/photos/lamp.jpg",
+            "/interior/api/roomplan/asset",
+            "/axon-status/api/axon-status/health",
+            "/axon-status/api/axon-status/start/interior",
+            "/axon-status/api/axon-status/capabilities",
+            "/calendar/api/entries",
+            "/comms/feed?limit=5",
+            "/comms/ingest",
+            "/finance/api/accounts",
+            "/knowledge-graph/api/graph/unit/x",
+            "/macmon/json",
+            "/places/api/places",
+            "/scouting/opportunities",
+            "/transit/health",
+            "/api/suggest?q=Berlin",
+            "/traveler/api/profile",
+            "/trips/api/plans",
+            "/vault/api/tasks",
+        ] {
+            assert!(validate_path(good).is_ok(), "{good} must be admitted");
+        }
     }
 
     #[test]
     fn refuses_non_allow_listed_prefixes() {
         for bad in [
-            "/finance/api/accounts",
+            // Shell-proxied, but the dashboard does not call them.
+            "/foundation-models/health",
+            "/punctuality/api/x",
+            "/soundscape/api/soundscape/stream",
+            "/discover/x",
+            // The api-only mounts admit nothing outside `/<name>/api/`.
             "/interior",
             "/interior/",
+            "/interior/health",
+            "/calendar/health",
+            "/finance/",
+            "/trips/api",
+            // A prefix is a segment, not a string prefix.
             "/interiorx/api",
-            "/axon-status/api/axon-status/healthz",
-            "/axon-status/api/axon-status/services",
+            "/commsx/feed",
+            "/apix/suggest",
+            // A bare prefix admits nothing: there must be a path below it.
+            "/comms/",
+            "/api/",
             "/",
+            "/feed/library",
         ] {
             assert!(validate_path(bad).is_err(), "{bad} must be refused");
         }
     }
 
     #[test]
+    fn every_allow_list_entry_is_a_segment_prefix() {
+        for entry in ALLOWED_PATHS {
+            assert!(entry.starts_with('/') && entry.ends_with('/'), "{entry}");
+            assert!(!entry.contains(".."), "{entry}");
+        }
+    }
+
+    #[test]
+    fn byte_cap_refuses_a_declared_length_above_the_cap() {
+        assert!(check_declared_length(None, 10).is_ok());
+        assert!(check_declared_length(Some(10), 10).is_ok());
+        assert!(check_declared_length(Some(11), 10).is_err());
+        assert!(
+            check_declared_length(Some(MAX_RESPONSE_BYTES as u64 + 1), MAX_RESPONSE_BYTES).is_err()
+        );
+        assert_eq!(MAX_RESPONSE_BYTES, 64 * 1024 * 1024);
+    }
+
+    #[test]
+    fn byte_cap_counts_chunks_and_refuses_the_one_that_passes_it() {
+        let mut body = Vec::new();
+        assert!(append_capped(&mut body, &[1; 6], 10).is_ok());
+        assert!(append_capped(&mut body, &[2; 4], 10).is_ok());
+        assert_eq!(body.len(), 10);
+        assert!(append_capped(&mut body, &[3], 10).is_err());
+        assert_eq!(body.len(), 10, "a refused chunk is not kept");
+    }
+
+    #[test]
+    fn frame_carries_status_type_and_raw_body() {
+        let body = [0u8, 159, 146, 150, 255];
+        let framed = frame_bytes(200, Some("image/jpeg"), &body);
+        assert_eq!(&framed[0..2], &200u16.to_be_bytes());
+        assert_eq!(&framed[2..4], &10u16.to_be_bytes());
+        assert_eq!(&framed[4..14], b"image/jpeg");
+        assert_eq!(&framed[14..], &body);
+
+        let bare = frame_bytes(404, None, b"");
+        assert_eq!(bare, vec![1, 148, 0, 0]);
+    }
+
+    #[test]
     fn refuses_traversal_and_absolute_urls() {
         for bad in [
+            "/interior/api/../../finance/api/accounts",
             "/interior/../finance/api/accounts",
             "/interior/api/..",
             "/interior/./api",
@@ -418,6 +651,7 @@ mod tests {
         let headers = vec![
             ("Content-Type".to_string(), "application/json".to_string()),
             ("If-Match".to_string(), "\"rev-1\"".to_string()),
+            ("Accept".to_string(), "image/*".to_string()),
             ("Origin".to_string(), "tauri://localhost".to_string()),
             (
                 "Tailscale-User-Login".to_string(),
@@ -432,6 +666,7 @@ mod tests {
             vec![
                 ("content-type".to_string(), "application/json".to_string()),
                 ("if-match".to_string(), "\"rev-1\"".to_string()),
+                ("accept".to_string(), "image/*".to_string()),
             ]
         );
     }

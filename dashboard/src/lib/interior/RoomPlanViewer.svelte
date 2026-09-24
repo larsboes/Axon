@@ -3,6 +3,7 @@
   import * as THREE from "three";
   import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
   import { USDZLoader } from "three/examples/jsm/loaders/USDZLoader.js";
+  import { acquireBridgedUrl, releaseBridgedUrl } from "$lib/bridged-url";
 
   export let assetUrl: string;
 
@@ -43,9 +44,22 @@
     observer.observe(host);
     resize();
 
-    loader.load(
-      assetUrl,
+    // In the app the relative asset path reaches nothing, so the USDZ comes
+    // through the native bridge as a `blob:` URL (`$lib/bridged-url`).
+    const heldUrl = assetUrl;
+    let disposed = false;
+    const fail = () => {
+      error = "The native USDZ could not be rendered in this browser.";
+    };
+    void acquireBridgedUrl(heldUrl).then((url) => {
+      if (disposed) return;
+      loadModel(url);
+    }, fail);
+
+    const loadModel = (url: string) => loader.load(
+      url,
       (loaded) => {
+        if (disposed) return;
         model = loaded;
         const bounds = new THREE.Box3().setFromObject(loaded);
         const center = bounds.getCenter(new THREE.Vector3());
@@ -61,9 +75,7 @@
         controls.update();
       },
       undefined,
-      () => {
-        error = "The native USDZ could not be rendered in this browser.";
-      },
+      fail,
     );
 
     const render = () => {
@@ -74,6 +86,8 @@
     render();
 
     return () => {
+      disposed = true;
+      releaseBridgedUrl(heldUrl);
       cancelAnimationFrame(frame);
       observer.disconnect();
       controls.dispose();

@@ -9,6 +9,7 @@
     "core:default",
     "roomplan:default",
     "allow-mac-request",
+    "allow-mac-request-bytes",
     "allow-mac-settings-get",
     "allow-mac-settings-set"
   ]

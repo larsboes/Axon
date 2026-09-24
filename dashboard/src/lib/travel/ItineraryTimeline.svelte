@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from "$lib/Icon.svelte";
+  import { bridgedSrc } from "$lib/bridged-url";
   import type { CalendarEntry, PlanItem, TripPlan, TripStage } from "$lib/api";
 
   let {
@@ -269,7 +270,7 @@
             {@const priceStr = itemPrice(item)}
             <div class="timeline-card item-card">
               {#if img}
-                <img class="card-thumb" src={img} alt="" />
+                <img class="card-thumb" use:bridgedSrc={img} alt="" />
               {:else}
                 <div class="card-icon item-type-icon">
                   <Icon name={badge.icon} size={14} />
@@ -347,7 +348,7 @@
             {@const img = itemImage(item)}
             <div class="timeline-card item-card">
               {#if img}
-                <img class="card-thumb" src={img} alt="" />
+                <img class="card-thumb" use:bridgedSrc={img} alt="" />
               {:else}
                 <div class="card-icon item-type-icon">
                   <Icon name={badge.icon} size={14} />

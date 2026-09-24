@@ -2,7 +2,12 @@
 // `allow-<command>` permission for each, and refuse any command a capability
 // in `capabilities/` does not grant. Without the manifest every app command is
 // callable from every window.
-const COMMANDS: &[&str] = &["mac_request", "mac_settings_get", "mac_settings_set"];
+const COMMANDS: &[&str] = &[
+    "mac_request",
+    "mac_request_bytes",
+    "mac_settings_get",
+    "mac_settings_set",
+];
 
 fn main() {
     tauri_build::try_build(

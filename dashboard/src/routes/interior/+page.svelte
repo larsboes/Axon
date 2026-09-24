@@ -38,6 +38,7 @@
   import RoomCapturePanel from "$lib/interior/RoomCapturePanel.svelte";
   import RoomPlanRevisionReview from "$lib/interior/RoomPlanRevisionReview.svelte";
   import { isRoomPlanPhone } from "$lib/roomplan";
+  import { bridgedSrc } from "$lib/bridged-url";
   import { getMacSettings } from "$lib/mac-bridge";
 
   type View = "plans" | "inventory" | "solve" | "buy";
@@ -976,11 +977,9 @@
   <div class="card offer">
     <p class="lead"><Icon name="alert" size={15} /> {error}</p>
     <!-- On-demand is the design: nothing but the shell runs until you open something. -->
-    {#if !isRoomPlanPhone()}
     <button onclick={start} disabled={starting}>
       {starting ? "Starting…" : "Start interior"}
     </button>
-    {/if}
   </div>
 {:else if loading}
   <p class="empty">Reading the model…</p>
@@ -1629,7 +1628,7 @@
             {#if i.kind === "slot"}<span class="tag slot">slot</span>{/if}
           </div>
           {#if i.bild}
-            <img class="shot" src={interior.mediaUrl(i.bild)} alt={i.label} loading="lazy" />
+            <img class="shot" use:bridgedSrc={interior.mediaUrl(i.bild)} alt={i.label} loading="lazy" />
           {/if}
           <span class="dims mono">{size(i)}</span>
           <span class="price mono">
@@ -1665,7 +1664,7 @@
           {#if i.mitnahme}<span class="tag">{i.mitnahme}</span>{/if}
         </div>
         {#if i.bild}
-          <img class="shot" src={interior.mediaUrl(i.bild)} alt={i.label} loading="lazy" />
+          <img class="shot" use:bridgedSrc={interior.mediaUrl(i.bild)} alt={i.label} loading="lazy" />
         {/if}
         <span class="dims mono">{size(i)}</span>
         {#if i.unsicher.length > 0}
@@ -1727,7 +1726,7 @@
         when shown.
       </p>
       {#if draft.bild}
-        <img class="shot big" src={interior.mediaUrl(String(draft.bild))} alt="" />
+        <img class="shot big" use:bridgedSrc={interior.mediaUrl(String(draft.bild))} alt="" />
       {/if}
       <label class="wide">note <textarea rows="2" bind:value={draft.hinweis}></textarea></label>
       <label class="wide">reasoning <textarea rows="2" bind:value={draft.begruendung}></textarea></label>

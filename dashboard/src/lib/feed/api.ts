@@ -12,18 +12,20 @@
 import {
   ApiError,
   describeFailure,
+  send,
   type CommsEvaluationStatus,
   type FeedStatus,
   type TriageItem,
 } from '$lib/api';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, init);
+  // `send`, not `fetch`: in the Tauri app a Mac path goes through the native
+  // bridge (`$lib/mac-bridge`), and a plain relative fetch reaches nothing.
+  const res = await send(path, init);
   if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new ApiError(res.status, describeFailure(res.status, body, path));
+    throw new ApiError(res.status, describeFailure(res.status, res.text, path));
   }
-  const text = await res.text();
+  const text = res.text;
   const parsed = text ? JSON.parse(text) : undefined;
   if (parsed && typeof parsed === 'object' && 'error' in parsed && parsed.error) {
     throw new ApiError(res.status, String(parsed.error));
