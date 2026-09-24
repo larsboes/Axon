@@ -38,6 +38,7 @@
   import RoomCapturePanel from "$lib/interior/RoomCapturePanel.svelte";
   import RoomPlanRevisionReview from "$lib/interior/RoomPlanRevisionReview.svelte";
   import { isRoomPlanPhone } from "$lib/roomplan";
+  import { getMacSettings } from "$lib/mac-bridge";
 
   type View = "plans" | "inventory" | "solve" | "buy";
 
@@ -928,9 +929,24 @@
   }
 
   onMount(() => {
-    phoneOnly = isRoomPlanPhone();
-    if (phoneOnly) {
-      loading = false;
+    if (isRoomPlanPhone()) {
+      // On the phone, layouts and inventory come from the Mac through the native bridge
+      // (Q113). Without a Mac address the page keeps to capture only, as before.
+      void getMacSettings()
+        .then((settings) => settings.base_url)
+        .catch(() => null)
+        .then((baseUrl) => {
+          if (!baseUrl) {
+            phoneOnly = true;
+            loading = false;
+            return;
+          }
+          void import("$lib/interior/RoomPlanViewer.svelte").then(({ default: viewer }) => {
+            RoomPlanViewer = viewer;
+          });
+          void load();
+          void loadRoomplanReference();
+        });
       return;
     }
     capabilities.subscribe();
@@ -954,15 +970,17 @@
 
 {#if phoneOnly}
   <div class="card offer">
-    <p class="lead">Room capture is available offline on this iPhone. Apartment layouts and inventory run in the desktop interior service.</p>
+    <p class="lead">Room capture is available offline on this iPhone. Set the Mac connection (page footer) to load layouts and inventory from the Mac.</p>
   </div>
 {:else if error}
   <div class="card offer">
     <p class="lead"><Icon name="alert" size={15} /> {error}</p>
     <!-- On-demand is the design: nothing but the shell runs until you open something. -->
+    {#if !isRoomPlanPhone()}
     <button onclick={start} disabled={starting}>
       {starting ? "Starting…" : "Start interior"}
     </button>
+    {/if}
   </div>
 {:else if loading}
   <p class="empty">Reading the model…</p>
