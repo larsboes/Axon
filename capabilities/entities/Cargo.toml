@@ -1,0 +1,33 @@
+[package]
+name = "entities"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Axon's system of record for people, organisations, places and the operator: typed fields per kind, declared extension fields, dated location facts, and where every value came from (PRD Q117)."
+publish = false
+
+[lib]
+name = "entities"
+path = "src/lib.rs"
+
+[[bin]]
+name = "entities-server"
+path = "src/server.rs"
+
+[dependencies]
+civil-date = { path = "../../libs/civil-date" }
+axon-config = { path = "../../libs/axon-config" }
+axon-http = { path = "../../libs/axon-http" }
+axon-server = { path = "../../libs/axon-server" }
+axon-store = { path = "../../libs/axon-store" }
+route-manifest = { path = "../../libs/route-manifest" }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+rusqlite.workspace = true
+# Blocking, inside spawn_blocking, like capabilities/trips: the geocode call to places
+# runs beside the store write it feeds.
+reqwest = { workspace = true, features = ["blocking", "json"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
+axum.workspace = true
+schemars = "1.2.2"

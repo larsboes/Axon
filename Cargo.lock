@@ -1152,7 +1152,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d5910408554659ed848ff469e67ec83b30f179e72cec286cfdae64d1616f466"
 dependencies = [
  "caseless",
- "entities",
+ "entities 1.0.1",
  "finl_unicode",
  "jetscii",
  "phf 0.13.1",
@@ -1524,6 +1524,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "entities"
+version = "0.1.0"
+dependencies = [
+ "axon-config",
+ "axon-http",
+ "axon-server",
+ "axon-store",
+ "axum",
+ "civil-date",
+ "reqwest",
+ "route-manifest",
+ "rusqlite",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]
