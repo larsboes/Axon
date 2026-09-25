@@ -633,6 +633,21 @@ impl EntitiesStore {
         .map_err(db)
     }
 
+    /// Every entity linked to `system`, for the name match that must skip them.
+    pub fn linked_entity_ids(&self, system: &str) -> Result<std::collections::HashSet<String>> {
+        let conn = self.conn()?;
+        let p = &self.prefix;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT entity_id FROM {p}_external WHERE system = ?1"
+            ))
+            .map_err(db)?;
+        let rows = stmt
+            .query_map(params![system], |row| row.get(0))
+            .map_err(db)?;
+        rows.collect::<std::result::Result<_, _>>().map_err(db)
+    }
+
     pub fn link_external(
         &self,
         system: &str,
@@ -817,7 +832,10 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ron.values["climbing_grade"].value, json!("6b"));
-        assert_eq!(store.fields(Some("person")).unwrap().len(), 5);
+        assert_eq!(
+            store.fields(Some("person")).unwrap().len(),
+            builtin_fields().len() + 1
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 

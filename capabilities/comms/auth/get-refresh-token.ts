@@ -11,6 +11,7 @@
  * Run once — interactive, opens a browser for consent:
  *   bw unlock                 # then: export BW_SESSION="..."
  *   bun capabilities/comms/auth/get-refresh-token.ts
+ *   bun capabilities/comms/auth/get-refresh-token.ts --env entities.env --scope contacts.readonly
  */
 
 import { readFileSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
@@ -18,10 +19,25 @@ import { join } from "node:path";
 import { overlayRoot } from "../../../libs/overlay/overlay.ts";
 
 const BW_ITEM = "Axon Google OAuth 2.0 Client IDs";
-const SCOPES = [
-  "https://www.googleapis.com/auth/gmail.modify",
-  "https://www.googleapis.com/auth/calendar.events",
-];
+
+/** `--env <file>` and repeatable `--scope <name>`. Defaults are the comms grant, unchanged.
+ *  capabilities/entities mints its own token with `--env entities.env --scope
+ *  contacts.readonly`, so the contacts grant never widens Gmail's and the reverse. */
+function flag(name: string): string[] {
+  const out: string[] = [];
+  const args = process.argv.slice(2);
+  for (let i = 0; i < args.length; i++) if (args[i] === name && args[i + 1]) out.push(args[++i]);
+  return out;
+}
+const ENV_FILE = flag("--env")[0] ?? "comms.env";
+if (!/^[a-z][a-z0-9-]*\.env$/.test(ENV_FILE)) {
+  console.error(`✗ --env must be a bare file name like entities.env, got ${ENV_FILE}`);
+  process.exit(1);
+}
+const requested = flag("--scope");
+const SCOPES = requested.length
+  ? requested.map((s) => (s.startsWith("https://") ? s : `https://www.googleapis.com/auth/${s}`))
+  : ["https://www.googleapis.com/auth/gmail.modify", "https://www.googleapis.com/auth/calendar.events"];
 const PORT = 8765;
 const REDIRECT = `http://localhost:${PORT}`;
 
@@ -146,7 +162,7 @@ const selectedOverlay = overlayRoot();
 if (!selectedOverlay) die("could not resolve the deployment overlay; run tools/install.sh or set AXON_OVERLAY_ROOT");
 const cfgDir = join(selectedOverlay, "config");
 mkdirSync(cfgDir, { recursive: true });
-const envPath = join(cfgDir, "comms.env");
+const envPath = join(cfgDir, ENV_FILE);
 let env = "";
 try {
   env = readFileSync(envPath, "utf8");
@@ -160,4 +176,4 @@ writeFileSync(envPath, env, { mode: 0o600 });
 chmodSync(envPath, 0o600);
 
 console.log(`✅ Refresh token stored (not printed) → ${envPath}`);
-console.log("   Scopes: gmail.modify + calendar.events. Gmail+Calendar prereq done.");
+console.log(`   Scopes: ${SCOPES.map((s) => s.split("/").pop()).join(" + ")}.`);

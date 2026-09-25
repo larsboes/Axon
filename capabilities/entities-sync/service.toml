@@ -1,0 +1,12 @@
+# See schemas/service.toml.example for the field reference.
+#
+# The Obsidian adapter's inbound sync for capabilities/entities (PRD Q117), every 6h. It reads
+# Atlas/People through vault's HTTP surface, so it needs no Full Disk Access of its own. A
+# value the operator edited elsewhere is never overwritten (entities/src/sync.rs).
+# Google Contacts gets its own schedule once its token exists (entities/src/google.rs).
+kind     = "process"
+name     = "entities-sync"
+command  = ["target/release/entities-server", "sync-obsidian"]
+build    = ["cargo", "build", "--locked", "--release", "--bin", "entities-server"]
+schedule = "6h"
+requires = ["vault", "entities"]

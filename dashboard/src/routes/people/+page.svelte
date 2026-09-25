@@ -98,7 +98,7 @@
   function parsed(field: EntityField, raw: string): unknown {
     const text = raw.trim();
     if (!text) return null;
-    if (field.field_type === "emails" || field.field_type === "phones") {
+    if (field.field_type === "emails" || field.field_type === "phones" || field.field_type === "tags") {
       return text.split(",").map((s) => s.trim()).filter(Boolean);
     }
     if (field.field_type === "bool") return text === "true";
@@ -274,7 +274,7 @@
               <input
                 aria-label={field.label}
                 type={field.field_type === "date" ? "date" : field.field_type === "number" ? "number" : "text"}
-                placeholder={field.field_type === "emails" || field.field_type === "phones" ? "comma-separated" : ""}
+                placeholder={["emails", "phones", "tags"].includes(field.field_type) ? "comma-separated" : ""}
                 bind:value={draft[field.key]}
               />
             {/if}
@@ -288,7 +288,7 @@
         <form class="fact-form" onsubmit={declareField}>
           <input aria-label="Field label" placeholder="Label, e.g. Climbing grade" bind:value={fieldLabel} required />
           <select aria-label="Field type" bind:value={fieldType}>
-            {#each ["text", "enum", "bool", "date", "number", "url", "emails", "phones"] as type (type)}
+            {#each ["text", "tags", "enum", "bool", "date", "number", "url", "emails", "phones"] as type (type)}
               <option value={type}>{type}</option>
             {/each}
           </select>

@@ -53,6 +53,68 @@ pub struct PersonFacts {
     pub host: bool,
     /// The note's `host_note`, as typed: "sofa, ask a week ahead".
     pub host_note: Option<String>,
+    /// The structured keys a person note carries, as typed, for `capabilities/entities`'
+    /// Obsidian import (PRD Q117). Only [`PROFILE_SCALARS`] and [`PROFILE_LISTS`], and only
+    /// when filled. Prose keys (character, memories, highlights) stay in the note by rule.
+    pub profile: BTreeMap<String, serde_json::Value>,
+}
+
+/// Single-value keys the import reads. Measured 2026-09-25 across 89 notes: relation 26,
+/// company 12, birthday 3, coordinates 2, role 2, email 1 filled.
+pub const PROFILE_SCALARS: &[&str] = &["relation", "company", "role", "birthday", "email", "coordinates"];
+
+/// List keys the import reads: interests 8, skills 3, socials 1 filled on the same day.
+pub const PROFILE_LISTS: &[&str] = &["interests", "skills", "socials"];
+
+/// The items of a YAML list key in raw frontmatter: `key: [a, b]` or `key:` followed by
+/// `- a` lines. `note.fields` keeps scalars only, so lists are read here.
+fn raw_list(raw: &str, key: &str) -> Vec<String> {
+    let clean = |item: &str| {
+        item.trim()
+            .trim_matches(|c| c == '"' || c == '\'')
+            .trim()
+            .to_string()
+    };
+    let mut lines = raw.lines();
+    while let Some(line) = lines.next() {
+        let Some(rest) = line.strip_prefix(key).and_then(|r| r.strip_prefix(':')) else {
+            continue;
+        };
+        let rest = rest.trim();
+        if let Some(inline) = rest.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+            return inline.split(',').map(clean).filter(|i| !i.is_empty()).collect();
+        }
+        let mut items = Vec::new();
+        for next in lines.by_ref() {
+            let Some(item) = next.trim_start().strip_prefix("- ") else {
+                break;
+            };
+            let item = clean(item);
+            if !item.is_empty() {
+                items.push(item);
+            }
+        }
+        return items;
+    }
+    Vec::new()
+}
+
+fn profile_of(note: &Note) -> BTreeMap<String, serde_json::Value> {
+    let mut out = BTreeMap::new();
+    for key in PROFILE_SCALARS {
+        if let Some(value) = scalar(note, key) {
+            out.insert((*key).to_string(), serde_json::Value::String(value));
+        }
+    }
+    if let Some(raw) = note.raw_frontmatter.as_deref() {
+        for key in PROFILE_LISTS {
+            let items = raw_list(raw, key);
+            if !items.is_empty() {
+                out.insert((*key).to_string(), serde_json::json!(items));
+            }
+        }
+    }
+    out
 }
 
 /// A frontmatter scalar without quotes or surrounding space, or `None` when empty.
@@ -203,6 +265,7 @@ pub fn report(notes: &[Note]) -> PeopleReport {
             home: scalar(note, "home"),
             host: yes(scalar(note, "host")),
             host_note: scalar(note, "host_note"),
+            profile: profile_of(note),
         });
     }
 
@@ -272,6 +335,24 @@ mod tests {
         let max = report.facts.iter().find(|f| f.name == "Max").unwrap();
         assert_eq!(max.home, None);
         assert!(!max.host, "only yes, true or y is a yes");
+    }
+
+    #[test]
+    fn list_keys_are_read_from_raw_frontmatter_in_both_forms() {
+        let raw = "relation: colleague\ninterests:\n  - bouldering\n  - \"jazz\"\nskills: [rust, go]\nsocials:\nnext: x";
+        assert_eq!(raw_list(raw, "interests"), vec!["bouldering", "jazz"]);
+        assert_eq!(raw_list(raw, "skills"), vec!["rust", "go"]);
+        assert!(raw_list(raw, "socials").is_empty());
+        assert!(raw_list(raw, "missing").is_empty());
+
+        let mut ron = note("Atlas/People/Ron.md", "");
+        ron.fields.insert("relation".into(), "colleague".into());
+        ron.fields.insert("company".into(), " ".into());
+        ron.raw_frontmatter = Some(raw.into());
+        let profile = profile_of(&ron);
+        assert_eq!(profile["relation"], serde_json::json!("colleague"));
+        assert!(!profile.contains_key("company"), "an empty key is not a value");
+        assert_eq!(profile["interests"], serde_json::json!(["bouldering", "jazz"]));
     }
 
     #[test]

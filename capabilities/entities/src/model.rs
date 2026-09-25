@@ -14,7 +14,7 @@ pub const KINDS: &[&str] = &["person", "organisation", "place", "self"];
 
 /// The value types a field can declare. Each has one check in [`check_value`].
 pub const FIELD_TYPES: &[&str] = &[
-    "text", "bool", "date", "number", "enum", "emails", "phones", "url",
+    "text", "bool", "date", "number", "enum", "emails", "phones", "url", "tags",
 ];
 
 /// PRD §6.1's classes. C2 is a fact about a named person; C3 never leaves in any form.
@@ -76,6 +76,17 @@ pub fn builtin_fields() -> Vec<FieldDef> {
         person("sleeping_note", "Sleeping note", "text", &[]),
         person("emails", "Emails", "emails", &[]),
         person("phones", "Phones", "phones", &[]),
+        // The keys Atlas/People notes carry filled, measured 2026-09-25 across 89 notes, and
+        // what Google Contacts carries. Prose keys (character, memories) stay in the note.
+        person("relation", "Relation", "text", &[]),
+        person("company", "Company", "text", &[]),
+        person("role", "Role", "text", &[]),
+        person("birthday", "Birthday", "date", &[]),
+        person("interests", "Interests", "tags", &[]),
+        person("skills", "Skills", "tags", &[]),
+        person("socials", "Socials", "tags", &[]),
+        // Computed by capabilities/vault from Journal backlinks, never typed.
+        person("last_contact", "Last contact", "date", &[]),
     ]
 }
 
@@ -170,7 +181,7 @@ pub fn check_value(def: &FieldDef, value: &Value) -> Result<Value, String> {
             Some(choice) if def.options.iter().any(|o| o == choice) => Ok(value.clone()),
             _ => wrong(&format!("one of {}", def.options.join(", "))),
         },
-        "emails" | "phones" => {
+        "emails" | "phones" | "tags" => {
             let Some(items) = value.as_array() else {
                 return wrong("a list of strings");
             };

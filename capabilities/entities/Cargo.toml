@@ -27,7 +27,7 @@ serde_json.workspace = true
 rusqlite.workspace = true
 # Blocking, inside spawn_blocking, like capabilities/trips: the geocode call to places
 # runs beside the store write it feeds.
-reqwest = { workspace = true, features = ["blocking", "json"] }
+reqwest = { workspace = true, features = ["blocking", "json", "form", "query"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
 axum.workspace = true
 schemars = "1.2.2"

@@ -1,4 +1,4 @@
-//! entities HTTP surface (port 8097), and the one-time `import-obsidian` command.
+//! entities HTTP surface (port 8097), and the `sync-obsidian` / `sync-google` commands.
 //!
 //! Same shape as `capabilities/traveler`: blocking store work in `spawn_blocking`, `/ready`
 //! proves the database, `/routes` serves the manifest the tests check against this file.
@@ -408,84 +408,58 @@ fn router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// `entities-server import-obsidian [--dry-run]`: one person per `Atlas/People` note, as
-/// vault reads it (GET /api/people). PRD Q117: the notes are imported once, and prose stays
-/// in them. Idempotent: a note already linked (external system `obsidian`) is skipped.
-/// `home` becomes a home_base fact; `host: yes` becomes sleeping_option `ask`, because a
-/// note saying someone could host is a reason to ask, not a booking.
-fn import_obsidian(config: &Config, store: &EntitiesStore, dry_run: bool) -> Result<(), String> {
-    let vault_url =
-        std::env::var("AXON_VAULT_URL").unwrap_or_else(|_| "http://127.0.0.1:8094".into());
-    let client = axon_http::client(
-        axon_http::Purpose::new("entities-import"),
-        std::time::Duration::from_secs(60),
+/// Runs one adapter's inbound sync and prints what it did.
+fn run_sync(
+    config: &Config,
+    store: &EntitiesStore,
+    system: &str,
+    dry_run: bool,
+) -> Result<(), String> {
+    let (records, managed): (Vec<entities::sync::Incoming>, &[&str]) = match system {
+        "obsidian" => {
+            let vault_url =
+                std::env::var("AXON_VAULT_URL").unwrap_or_else(|_| "http://127.0.0.1:8094".into());
+            (
+                entities::obsidian::fetch(&vault_url)?,
+                entities::obsidian::MANAGED,
+            )
+        }
+        "google" => {
+            let people = entities::google::fetch()?;
+            let skipped = people.len();
+            let records: Vec<_> = people.iter().filter_map(entities::google::record).collect();
+            if skipped > records.len() {
+                println!(
+                    "sync-google: {} contacts without a name skipped",
+                    skipped - records.len()
+                );
+            }
+            (records, entities::google::MANAGED)
+        }
+        other => return Err(format!("unknown system {other:?}")),
+    };
+    let report = entities::sync::apply(
+        store,
+        &config.places_url,
+        system,
+        managed,
+        &records,
+        dry_run,
     )
     .map_err(|e| e.to_string())?;
-    let body: Value = client
-        .get(format!("{vault_url}/api/people"))
-        .send()
-        .and_then(|r| r.error_for_status())
-        .and_then(|r| r.json())
-        .map_err(|e| format!("vault /api/people: {e}"))?;
-    let facts = body["facts"].as_array().cloned().unwrap_or_default();
-    let (mut created, mut skipped, mut homes) = (0, 0, 0);
-    for person in &facts {
-        let (Some(note_id), Some(name)) = (person["id"].as_str(), person["name"].as_str()) else {
-            continue;
-        };
-        if store
-            .external("obsidian", note_id)
-            .map_err(|e| e.to_string())?
-            .is_some()
-        {
-            skipped += 1;
-            continue;
-        }
-        let mut values = BTreeMap::new();
-        if person["host"].as_bool() == Some(true) {
-            values.insert("sleeping_option".to_string(), json!("ask"));
-        }
-        if let Some(note) = person["host_note"].as_str() {
-            values.insert("sleeping_note".to_string(), json!(note));
-        }
-        created += 1;
-        if dry_run {
-            continue;
-        }
-        let entity = store
-            .create("person", name, Some(note_id), &values, "obsidian")
-            .map_err(|e| format!("{note_id}: {e}"))?;
-        store
-            .link_external("obsidian", note_id, &entity.id, None)
-            .map_err(|e| e.to_string())?;
-        if let Some(home) = person["home"].as_str() {
-            let mut fact = NewFact {
-                predicate: "home_base".into(),
-                place: home.into(),
-                source: "obsidian".into(),
-                ..NewFact::default()
-            };
-            if let Resolved::At {
-                latitude,
-                longitude,
-                ..
-            } = places::resolve(&config.places_url, home)
-            {
-                fact.latitude = Some(latitude);
-                fact.longitude = Some(longitude);
-            }
-            store
-                .add_fact(&entity.id, &fact)
-                .map_err(|e| e.to_string())?;
-            homes += 1;
-        }
-    }
     println!(
-        "import-obsidian{}: {} notes, {created} people {}, {skipped} already imported, {homes} home bases",
+        "sync-{system}{}: {} records, {} created, {} linked by name, {} updated, {} unchanged, {} home bases set",
         if dry_run { " (dry run)" } else { "" },
-        facts.len(),
-        if dry_run { "would be created" } else { "created" },
+        report.records,
+        report.created,
+        report.linked_by_name,
+        report.updated,
+        report.unchanged,
+        report.homes_set,
     );
+    for refused in &report.refused {
+        println!("  refused {refused}");
+    }
     Ok(())
 }
 
@@ -508,9 +482,14 @@ fn main() {
     };
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
-        Some("import-obsidian") => {
+        Some(command @ ("sync-obsidian" | "import-obsidian" | "sync-google")) => {
+            let system = if command == "sync-google" {
+                "google"
+            } else {
+                "obsidian"
+            };
             let dry_run = args.iter().any(|a| a == "--dry-run");
-            if let Err(error) = import_obsidian(&config, &store, dry_run) {
+            if let Err(error) = run_sync(&config, &store, system, dry_run) {
                 eprintln!("entities: {error}");
                 std::process::exit(1);
             }
@@ -519,7 +498,9 @@ fn main() {
             .expect("tokio runtime could not start")
             .block_on(serve(config, store)),
         Some(other) => {
-            eprintln!("usage: entities-server [import-obsidian [--dry-run]] (got {other:?})");
+            eprintln!(
+                "usage: entities-server [sync-obsidian|sync-google [--dry-run]] (got {other:?})"
+            );
             std::process::exit(64);
         }
     }
