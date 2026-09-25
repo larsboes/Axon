@@ -9,7 +9,15 @@
   import { onMount } from "svelte";
   import Icon from "$lib/Icon.svelte";
   import PageHeader from "$lib/PageHeader.svelte";
-  import { entities, type Entity, type EntityField } from "$lib/api";
+  import { entities, type Entity, type EntityField, type LocatedPerson } from "$lib/api";
+  import MapSurface from "$lib/map/MapSurface.svelte";
+  import {
+    PEOPLE_LAYERS,
+    PEOPLE_POINTS,
+    groupByPlace,
+    peopleFitKey,
+    peopleSources,
+  } from "$lib/people/people-layers";
   import { assistantStore } from "$lib/assistant/assistant.svelte";
   import { page } from "$app/state";
 
@@ -23,10 +31,37 @@
 
   const today = new Date().toISOString().slice(0, 10);
   const selected = $derived(people.find((p) => p.id === selectedId) ?? null);
+  // ─── Map: where people are on a chosen day (entities /api/located) ───
+  let mapDay = $state(new Date().toISOString().slice(0, 10));
+  let located = $state<LocatedPerson[]>([]);
+  let onlyHosts = $state(false);
+  let placeKey = $state<string | null>(null);
+  const groups = $derived(groupByPlace(located, onlyHosts));
+  const placeGroup = $derived(groups.find((g) => g.key === placeKey) ?? null);
+  // The selected person's place is highlighted when no place is picked.
+  const highlightKey = $derived(
+    placeKey ?? groups.find((g) => g.people.some((p) => p.entity_id === selectedId))?.key ?? null,
+  );
+  const mapSources = $derived(peopleSources(groups, highlightKey));
+  const unplaced = $derived(people.length - located.filter((p) => p.latitude != null).length);
+
+  async function loadLocated(): Promise<void> {
+    try {
+      located = (await entities.located(mapDay)).located;
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : String(caught);
+    }
+  }
+  $effect(() => {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(mapDay)) void loadLocated();
+  });
+
   const filtered = $derived(
-    query.trim()
-      ? people.filter((p) => p.name.toLowerCase().includes(query.trim().toLowerCase()))
-      : people,
+    people.filter(
+      (p) =>
+        (!query.trim() || p.name.toLowerCase().includes(query.trim().toLowerCase())) &&
+        (!placeGroup || placeGroup.people.some((here) => here.entity_id === p.id)),
+    ),
   );
 
   /** Where a person is today: an away period covering it, else the home base that holds. */
@@ -143,6 +178,7 @@
         note: factNote.trim() || undefined,
       });
       replace(await entities.get(person.id));
+      void loadLocated();
       factPlace = "";
       factFrom = "";
       factTo = "";
@@ -159,6 +195,7 @@
     void run(async () => {
       await entities.removeFact(person.id, factId);
       replace(await entities.get(person.id));
+      void loadLocated();
     });
   }
 
@@ -210,6 +247,34 @@
 
 {#if error}<p class="error"><Icon name="alert" size={15} /> {error}</p>{/if}
 {#if notice}<p class="notice" aria-live="polite">{notice}</p>{/if}
+
+<section class="map-card" aria-label="Map of people">
+  <div class="map-controls">
+    <label>Where on <input type="date" aria-label="Day" bind:value={mapDay} /></label>
+    <label class="check"><input type="checkbox" bind:checked={onlyHosts} /> Only people I could stay with</label>
+    <span class="meta">
+      {groups.reduce((n, g) => n + g.people.length, 0)} on the map · {unplaced} without a place
+    </span>
+    {#if placeGroup}
+      <button class="chip" type="button" onclick={() => (placeKey = null)}>
+        {placeGroup.place} · {placeGroup.people.length} <Icon name="close" size={11} />
+      </button>
+    {/if}
+  </div>
+  <div class="map">
+    <MapSurface
+      sources={mapSources}
+      layers={PEOPLE_LAYERS}
+      fitKey={peopleFitKey(groups)}
+      interactive={[PEOPLE_POINTS]}
+      onFeatureClick={(_, feature) => {
+        const key = feature.properties?.key;
+        if (typeof key === "string") placeKey = placeKey === key ? null : key;
+      }}
+      deferredLabel={`${groups.length} ${groups.length === 1 ? "place" : "places"} with people`}
+    />
+  </div>
+</section>
 
 <div class="people">
   <section class="list" aria-label="People">
@@ -475,6 +540,51 @@
   .declare {
     margin-top: 1rem;
     font-size: var(--text-sm);
+  }
+
+  .map-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+  }
+
+  .map {
+    height: 22rem;
+  }
+
+  @media (max-width: 760px) {
+    .map {
+      height: 16rem;
+    }
+  }
+
+  .map-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.6rem 1rem;
+    font-size: var(--text-sm);
+  }
+
+  .map-controls label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.15rem 0.5rem;
+    border: 1px solid var(--primary);
+    border-radius: var(--radius-full);
+    background: var(--primary-soft);
+    color: var(--primary);
+    font: inherit;
+    font-size: var(--text-xs);
+    cursor: pointer;
   }
 
   .toolbar {
