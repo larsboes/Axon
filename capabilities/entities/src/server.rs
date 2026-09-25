@@ -91,6 +91,13 @@ const ROUTES: &[route_manifest::Route] = &[
     ),
     route_manifest::get(
         "GET",
+        "/api/entities/:id/sources",
+        "What each linked system says about this entity right now: the Google contact (read \
+         live) and the Obsidian note (through vault), as values in the entity's field keys. \
+         For comparing and taking a value back; nothing is written.",
+    ),
+    route_manifest::get(
+        "GET",
         "/api/duplicates",
         "People who are probably the same person, strongest first: a shared email or phone \
          (strong), the same name (name), a first name that begins a full name (partial). \
@@ -178,6 +185,9 @@ struct MergeRequest {
     /// The kept entity's name after the merge; absent keeps it.
     #[serde(default)]
     name: Option<String>,
+    /// Field keys whose value is taken from `other` rather than kept.
+    #[serde(default)]
+    pick: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -451,6 +461,58 @@ async fn duplicates(State(state): State<Arc<AppState>>, Query(q): Query<Duplicat
     Ok(Json(body))
 }
 
+/// `GET /api/entities/:id/sources`. Each linked system is asked separately; one that fails
+/// is reported with its error and the others still answer.
+async fn entity_sources(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Reply {
+    let body = blocking(&state, move |s| {
+        if s.store.get(&id)?.is_none() {
+            return Err(StoreError::NotFound(format!("no entity {id}")));
+        }
+        let vault_url =
+            std::env::var("AXON_VAULT_URL").unwrap_or_else(|_| "http://127.0.0.1:8094".into());
+        let mut obsidian: Option<Result<Vec<entities::sync::Incoming>, String>> = None;
+        let sources: Vec<Value> = s
+            .store
+            .externals_of(&id)?
+            .into_iter()
+            .map(|(system, external_id)| {
+                let record = match system.as_str() {
+                    "google" => entities::google::fetch_one(&external_id).and_then(|person| {
+                        entities::google::record(&person)
+                            .ok_or_else(|| "the contact has no name".to_string())
+                    }),
+                    "obsidian" => obsidian
+                        .get_or_insert_with(|| entities::obsidian::fetch(&vault_url))
+                        .as_ref()
+                        .map_err(Clone::clone)
+                        .and_then(|all| {
+                            all.iter()
+                                .find(|r| r.external_id == external_id)
+                                .cloned()
+                                .ok_or_else(|| "the note no longer exists".to_string())
+                        }),
+                    other => Err(format!("no adapter for {other}")),
+                };
+                match record {
+                    Ok(r) => json!({
+                        "system": system,
+                        "external_id": external_id,
+                        "name": r.name,
+                        "values": r.values,
+                        "home": r.home.map(|h| h.place),
+                    }),
+                    Err(error) => {
+                        json!({ "system": system, "external_id": external_id, "error": error })
+                    }
+                }
+            })
+            .collect();
+        Ok(json!({ "sources": sources }))
+    })
+    .await?;
+    Ok(Json(body))
+}
+
 async fn mark_distinct(
     State(state): State<Arc<AppState>>,
     Json(body): Json<DistinctRequest>,
@@ -467,7 +529,8 @@ async fn merge_entity(
     Json(body): Json<MergeRequest>,
 ) -> Reply {
     blocking(&state, move |s| {
-        s.store.merge(&id, &body.other, body.name.as_deref())
+        s.store
+            .merge(&id, &body.other, body.name.as_deref(), &body.pick)
     })
     .await
     .map(to_json)
@@ -515,6 +578,7 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/api/entities/:id/facts", post(add_fact))
         .route("/api/entities/:id/facts/:fact_id", delete(delete_fact))
         .route("/api/located", get(located))
+        .route("/api/entities/:id/sources", get(entity_sources))
         .route("/api/duplicates", get(duplicates))
         .route("/api/duplicates/distinct", post(mark_distinct))
         .route("/api/entities/:id/merge", post(merge_entity))

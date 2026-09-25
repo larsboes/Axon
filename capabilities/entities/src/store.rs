@@ -181,6 +181,15 @@ impl EntitiesStore {
                 PRIMARY KEY (system, external_id)
             );
             -- Pairs the operator said are different people; never proposed again.
+            -- The record a merge removed, whole, with its external ids. Merging is otherwise
+            -- lossy where both sides had a value; this is what makes it recoverable.
+            CREATE TABLE IF NOT EXISTS {prefix}_merges (
+                id          TEXT PRIMARY KEY,
+                kept_id     TEXT NOT NULL,
+                removed_id  TEXT NOT NULL,
+                snapshot    TEXT NOT NULL,
+                merged_at   TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS {prefix}_distinct (
                 a           TEXT NOT NULL,
                 b           TEXT NOT NULL,
@@ -599,6 +608,21 @@ impl EntitiesStore {
         Ok(deleted > 0)
     }
 
+    /// An entity's links to other systems: (system, external_id).
+    pub fn externals_of(&self, entity_id: &str) -> Result<Vec<(String, String)>> {
+        let conn = self.conn()?;
+        let p = &self.prefix;
+        let mut stmt = conn
+            .prepare(&format!(
+                "SELECT system, external_id FROM {p}_external WHERE entity_id = ?1 ORDER BY system"
+            ))
+            .map_err(db)?;
+        let rows = stmt
+            .query_map(params![entity_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(db)?;
+        rows.collect::<std::result::Result<_, _>>().map_err(db)
+    }
+
     /// Pairs marked as different people, order-free.
     pub fn distinct_pairs(&self) -> Result<std::collections::HashSet<(String, String)>> {
         let conn = self.conn()?;
@@ -637,7 +661,13 @@ impl EntitiesStore {
     ///   and dates) is kept once. Moving the links means both syncs now update `keep`.
     /// - `keep` takes `other`'s note link when it has none, and `name` when given.
     /// - `other` is deleted without an exclusion: its links live on in `keep`.
-    pub fn merge(&self, keep: &str, other: &str, name: Option<&str>) -> Result<Entity> {
+    pub fn merge(
+        &self,
+        keep: &str,
+        other: &str,
+        name: Option<&str>,
+        pick: &[String],
+    ) -> Result<Entity> {
         if keep == other {
             return Err(StoreError::Invalid(
                 "cannot merge a person into themselves".into(),
@@ -657,10 +687,26 @@ impl EntitiesStore {
                 return Err(StoreError::Invalid("name must not be empty".into()));
             }
         }
+        for key in pick {
+            if !gone.values.contains_key(key) {
+                return Err(StoreError::Invalid(format!(
+                    "cannot take {key:?} from the other record: it has no value there"
+                )));
+            }
+        }
+        let externals = self.externals_of(other)?;
+        let snapshot = serde_json::json!({ "entity": gone, "external": externals }).to_string();
         let mut conn = self.conn()?;
         let p = &self.prefix;
         let tx = axon_store::write_transaction(&mut conn).map_err(db)?;
         let run = |sql: String, args: &[&dyn rusqlite::ToSql]| tx.execute(&sql, args).map_err(db);
+        run(
+            format!(
+                "INSERT INTO {p}_merges (id, kept_id, removed_id, snapshot, merged_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)"
+            ),
+            &[&new_id("merge"), &keep, &other, &snapshot, &now()],
+        )?;
         run(
             format!(
                 "INSERT OR IGNORE INTO {p}_values (entity_id, key, value, source, updated_at)
@@ -668,6 +714,20 @@ impl EntitiesStore {
             ),
             &[&keep, &other],
         )?;
+        // The fields the operator chose from the other record overwrite the kept ones, with
+        // the other record's source, so the chosen value keeps following where it came from.
+        for key in pick {
+            run(
+                format!(
+                    "UPDATE {p}_values SET
+                        value = (SELECT value FROM {p}_values WHERE entity_id = ?2 AND key = ?3),
+                        source = (SELECT source FROM {p}_values WHERE entity_id = ?2 AND key = ?3),
+                        updated_at = ?4
+                     WHERE entity_id = ?1 AND key = ?3"
+                ),
+                &[&keep, &other, key, &now()],
+            )?;
+        }
         run(
             format!("UPDATE {p}_facts SET entity_id = ?1 WHERE entity_id = ?2"),
             &[&keep, &other],
@@ -1032,7 +1092,7 @@ mod tests {
         store.add_fact(&google.id, &home).unwrap();
 
         let merged = store
-            .merge(&note.id, &google.id, Some("Ron Mustermann"))
+            .merge(&note.id, &google.id, Some("Ron Mustermann"), &[])
             .unwrap();
         assert_eq!(merged.name, "Ron Mustermann");
         assert_eq!(merged.note_ref.as_deref(), Some("Atlas/People/Ron.md"));
@@ -1055,7 +1115,50 @@ mod tests {
             !store.is_excluded("google", "people/c9").unwrap(),
             "a merged contact is not excluded"
         );
-        assert!(store.merge(&note.id, &note.id, None).is_err());
+        assert!(store.merge(&note.id, &note.id, None, &[]).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_merge_takes_the_picked_fields_from_the_other_and_keeps_a_snapshot() {
+        let (store, dir) = scratch("pick");
+        let a = store
+            .create(
+                "person",
+                "Ron",
+                None,
+                &values(&[("company", json!("Old")), ("role", json!("Dev"))]),
+                "obsidian",
+            )
+            .unwrap();
+        let b = store
+            .create(
+                "person",
+                "Ron M",
+                None,
+                &values(&[("company", json!("New"))]),
+                "google",
+            )
+            .unwrap();
+        assert!(
+            store.merge(&a.id, &b.id, None, &["role".into()]).is_err(),
+            "b has no role"
+        );
+        let merged = store
+            .merge(&a.id, &b.id, None, &["company".into()])
+            .unwrap();
+        assert_eq!(merged.values["company"].value, json!("New"));
+        assert_eq!(merged.values["company"].source, "google");
+        assert_eq!(merged.values["role"].value, json!("Dev"));
+        let conn = store.conn().unwrap();
+        let snapshot: String = conn
+            .query_row(
+                "SELECT snapshot FROM entities_merges WHERE removed_id = ?1",
+                params![b.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(snapshot.contains("\"New\"") && snapshot.contains("Ron M"));
         let _ = std::fs::remove_dir_all(dir);
     }
 

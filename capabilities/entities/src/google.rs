@@ -83,7 +83,8 @@ fn access_token(
 }
 
 /// Every connection, all pages.
-pub fn fetch() -> Result<Vec<Value>, String> {
+/// A client and a fresh access token from the overlay's credentials.
+fn authorised() -> Result<(reqwest::blocking::Client, String), String> {
     let path = env_path();
     let body = std::fs::read_to_string(&path)
         .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
@@ -94,6 +95,34 @@ pub fn fetch() -> Result<Vec<Value>, String> {
     )
     .map_err(|e| e.to_string())?;
     let token = access_token(&client, &id, &secret, &refresh)?;
+    Ok((client, token))
+}
+
+/// One contact as Google holds it now, by its resource name (`people/c…`).
+pub fn fetch_one(resource_name: &str) -> Result<Value, String> {
+    if !resource_name.starts_with("people/") || resource_name.contains("..") {
+        return Err(format!(
+            "{resource_name:?} is not a People API resource name"
+        ));
+    }
+    let (client, token) = authorised()?;
+    let response = client
+        .get(format!("https://people.googleapis.com/v1/{resource_name}"))
+        .bearer_auth(&token)
+        .query(&[("personFields", PERSON_FIELDS)])
+        .send()
+        .map_err(|e| format!("people.get: {e}"))?;
+    let status = response.status();
+    let body: Value = response.json().map_err(|e| format!("people.get: {e}"))?;
+    if !status.is_success() {
+        let message = body["error"]["message"].as_str().unwrap_or("no message");
+        return Err(format!("people.get answered {status}: {message}"));
+    }
+    Ok(body)
+}
+
+pub fn fetch() -> Result<Vec<Value>, String> {
+    let (client, token) = authorised()?;
     let mut people = Vec::new();
     let mut page: Option<String> = None;
     loop {

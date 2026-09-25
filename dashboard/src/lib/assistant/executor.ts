@@ -106,12 +106,21 @@ export function mergedName(card: DuplicateCandidate): string {
   return b.length > a.length ? b : a;
 }
 
-export async function executeMerge(card: DuplicateCandidate): Promise<ActionResult> {
-  const keep = keepSide(card) === 'a' ? card.a : card.b;
-  const other = keep === card.a ? card.b : card.a;
-  const name = mergedName(card);
+/** An operator's choices from the card's field picker; absent means the defaults above. */
+export interface MergeChoice {
+  keep: 'a' | 'b';
+  name: string;
+  /** Field keys whose value comes from the side that is not kept. */
+  pick: string[];
+}
+
+export async function executeMerge(card: DuplicateCandidate, choice?: MergeChoice): Promise<ActionResult> {
+  const side = choice?.keep ?? keepSide(card);
+  const keep = side === 'a' ? card.a : card.b;
+  const other = side === 'a' ? card.b : card.a;
+  const name = choice?.name ?? mergedName(card);
   try {
-    await entities.merge(keep.id, other.id, name);
+    await entities.merge(keep.id, other.id, name, choice?.pick ?? []);
     triggerHaptic('success');
     return { ok: true, message: `Merged into "${name}".` };
   } catch (err) {

@@ -9,7 +9,7 @@
   import { onMount } from "svelte";
   import Icon from "$lib/Icon.svelte";
   import PageHeader from "$lib/PageHeader.svelte";
-  import { entities, type Entity, type EntityField, type LocatedPerson } from "$lib/api";
+  import { entities, type Entity, type EntityField, type EntitySource, type LocatedPerson } from "$lib/api";
   import MapSurface from "$lib/map/MapSurface.svelte";
   import {
     PEOPLE_LAYERS,
@@ -189,6 +189,86 @@
     });
   }
 
+  // ─── Name and delete ───
+  let nameDraft = $state("");
+  let confirmDelete = $state(false);
+  $effect(() => {
+    nameDraft = selected?.name ?? "";
+    confirmDelete = false;
+    sources = null;
+  });
+
+  function rename(): void {
+    const person = selected;
+    const name = nameDraft.trim();
+    if (!person || !name || name === person.name) return;
+    void run(async () => {
+      replace(await entities.patch(person.id, { name, expected_revision: person.revision }));
+      people = [...people].sort((a, b) => a.name.localeCompare(b.name));
+    });
+  }
+
+  function removePerson(): void {
+    const person = selected;
+    if (!person) return;
+    if (!confirmDelete) {
+      confirmDelete = true;
+      return;
+    }
+    void run(async () => {
+      await entities.remove(person.id);
+      people = people.filter((p) => p.id !== person.id);
+      selectedId = null;
+      void loadLocated();
+    }, `Deleted ${person.name}. A sync will not bring them back.`);
+  }
+
+  // ─── Compare with sources: what Google and the note say now ───
+  let sources = $state<EntitySource[] | null>(null);
+  let sourcesLoading = $state(false);
+
+  async function loadSources(): Promise<void> {
+    const person = selected;
+    if (!person) return;
+    sourcesLoading = true;
+    try {
+      sources = await entities.sources(person.id);
+    } catch (caught) {
+      error = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      sourcesLoading = false;
+    }
+  }
+
+  const label = (key: string) => fields.find((f) => f.key === key)?.label ?? key;
+  const show = (v: unknown) => (Array.isArray(v) ? v.join(", ") : v == null ? "–" : String(v));
+
+  /** Source values that differ from what Axon holds, one row per system and key. */
+  const differences = $derived.by(() => {
+    const person = selected;
+    if (!person || !sources) return [];
+    const rows: { system: EntitySource["system"]; key: string; value: unknown }[] = [];
+    for (const source of sources) {
+      for (const [key, value] of Object.entries(source.values ?? {})) {
+        if (JSON.stringify(person.values[key]?.value) !== JSON.stringify(value)) {
+          rows.push({ system: source.system, key, value });
+        }
+      }
+    }
+    return rows;
+  });
+
+  /** Takes a source's value, owned by that source again, so its sync keeps it current. */
+  function useSource(system: EntitySource["system"], key: string, value: unknown): void {
+    const person = selected;
+    if (!person) return;
+    void run(async () => {
+      replace(await entities.patch(person.id, { values: { [key]: value }, source: system }));
+    }, `${label(key)} taken from ${system === "google" ? "Google" : "the note"}.`);
+  }
+
+  const sourceName: Record<string, string> = { google: "Google", obsidian: "note", operator: "you" };
+
   function removeFact(factId: string): void {
     const person = selected;
     if (!person) return;
@@ -300,12 +380,51 @@
       <p class="empty">Pick a person, or add one.</p>
     {:else}
       <header>
-        <h2>{selected.name}</h2>
+        <div class="name-row">
+          <input
+            class="name-input"
+            aria-label="Name"
+            bind:value={nameDraft}
+            onblur={rename}
+            onkeydown={(e) => e.key === "Enter" && rename()}
+          />
+          <button class="btn btn-outline" type="button" disabled={busy || sourcesLoading} onclick={() => void loadSources()}>
+            {sourcesLoading ? "Asking sources…" : "Compare with sources"}
+          </button>
+          <button class="btn btn-outline danger" type="button" disabled={busy} onclick={removePerson}>
+            {confirmDelete ? "Really delete?" : "Delete"}
+          </button>
+        </div>
         <p class="meta">
           {whereToday(selected) ? `Today: ${whereToday(selected)}` : "No home base yet"}
           {#if selected.note_ref} · note: {selected.note_ref}{/if}
         </p>
       </header>
+
+      {#if sources}
+        <div class="sources">
+          {#each sources.filter((s) => s.error) as failed (failed.system)}
+            <p class="meta">{failed.system}: {failed.error}</p>
+          {/each}
+          {#if differences.length === 0}
+            <p class="meta">Google and the note agree with what Axon has.</p>
+          {:else}
+            <p class="meta">Where a source says something else:</p>
+            <ol>
+              {#each differences as row (row.system + row.key)}
+                <li>
+                  <span class="field">{label(row.key)}</span>
+                  <span>Axon: {show(selected.values[row.key]?.value)}</span>
+                  <span>{row.system === "google" ? "Google" : "Note"}: {show(row.value)}</span>
+                  <button class="btn btn-soft btn-sm" type="button" disabled={busy} onclick={() => useSource(row.system, row.key, row.value)}>
+                    Use this
+                  </button>
+                </li>
+              {/each}
+            </ol>
+          {/if}
+        </div>
+      {/if}
 
       <h3>Where</h3>
       {#if selected.facts.length === 0}
@@ -340,7 +459,10 @@
       <form class="fields" onsubmit={saveFields}>
         {#each fields as field (field.key)}
           <label>
-            <span>{field.label}</span>
+            <span>
+              {field.label}
+              {#if selected.values[field.key]}<small class="src">from {sourceName[selected.values[field.key].source] ?? selected.values[field.key].source}</small>{/if}
+            </span>
             {#if field.field_type === "enum"}
               <select aria-label={field.label} bind:value={draft[field.key]}>
                 <option value="">–</option>
@@ -470,10 +592,6 @@
     min-width: 0;
   }
 
-  h2 {
-    margin: 0;
-    font-size: var(--text-lg);
-  }
 
   h3 {
     margin: 1rem 0 0.3rem;
@@ -585,6 +703,60 @@
     font: inherit;
     font-size: var(--text-xs);
     cursor: pointer;
+  }
+
+  .name-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .name-input {
+    flex: 1;
+    min-width: 12rem;
+    font-size: var(--text-lg);
+    font-weight: 600;
+  }
+
+  .danger {
+    color: var(--danger);
+  }
+
+  .sources {
+    margin-top: 0.6rem;
+    padding: 0.6rem 0.75rem;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+  }
+
+  .sources ol {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin: 0.3rem 0 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .sources li {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.3rem 0.75rem;
+    font-size: var(--text-xs);
+  }
+
+  .sources .field {
+    font-weight: 600;
+  }
+
+  .src {
+    margin-left: 0.3rem;
+    color: var(--text-tertiary);
+    font-size: var(--text-2xs);
+    font-weight: 400;
   }
 
   .toolbar {

@@ -49,8 +49,31 @@ as `capabilities/vault` reads it (`GET /api/people`). `home` becomes a `home_bas
 reason to ask, not a booking. `host_note` becomes `sleeping_note`. A note that is already
 linked is skipped, so re-running the import changes nothing.
 
+## Duplicates, merge and sources
+
+`GET /api/duplicates` lists probable pairs, strongest first: a shared email or phone, the same
+name, or a first name that begins a full name. Only first-name pairs that share a field go to
+the on-device model, and it sees only the shared fields; measured on 2026-09-25, shown whole
+records, it invented differences for fields only one side had.
+
+`POST /api/entities/:id/merge` takes `{ other, name?, pick? }`. Values the kept record lacks
+come across; where both have one, the kept value stays unless its key is in `pick`. Facts and
+Google/Obsidian links move. Every merge stores the removed record whole, with its links, in
+`entities_merges`, because a merge is otherwise lossy exactly where both sides disagreed.
+
+`GET /api/entities/:id/sources` asks each linked system what it says now: the Google contact
+(live) and the Obsidian note (through vault). The People page shows where they differ from
+Axon, and "Use this" writes the source's value back with that source as its owner, so the
+next sync keeps it current. On 2026-09-25 this found 9 values across 8 people that the first
+18 merges had dropped.
+
 ## Not built yet
 
-- Google People API sync (Q117 order: after the People page).
+- **Writing back to Google.** The sync is read-only today. The groundwork is there: every
+  value records its source, the contact's `etag` is stored, and `sources` shows the diff. A
+  write-back would push operator-owned values for the fields Google has (emails, phones,
+  birthday, company, role), needs the `contacts` scope instead of `contacts.readonly`, and
+  sends C2 to Google, so it needs a ruling on which fields may go (PRD §6.1).
+- Undoing a merge from the app; the snapshot in `entities_merges` makes it possible.
 - Folding the places companion register (`places_person_places`) into dated facts.
 - Changing a field's type after values exist.

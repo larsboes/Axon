@@ -3196,6 +3196,16 @@ export interface LocatedPerson {
   sleeping_note: string | null;
 }
 
+/** One linked system's current view of an entity (entities server.rs, entity_sources). */
+export interface EntitySource {
+  system: 'google' | 'obsidian';
+  external_id: string;
+  name?: string;
+  values?: Record<string, unknown>;
+  home?: string | null;
+  error?: string;
+}
+
 /** What entities shows about one side of a duplicate pair (duplicates.rs, profile). */
 export interface DuplicateProfile {
   name: string;
@@ -3240,7 +3250,13 @@ export const entities = {
     request<Entity>('/entities/api/entities', jsonInit('POST', body)),
   patch: (
     id: string,
-    body: { name?: string; values?: Record<string, unknown>; expected_revision?: number },
+    body: {
+      name?: string;
+      values?: Record<string, unknown>;
+      expected_revision?: number;
+      /** Who the written values belong to; `operator` unless taking a source's value back. */
+      source?: 'operator' | 'google' | 'obsidian';
+    },
   ) => request<Entity>(`/entities/api/entities/${encodeURIComponent(id)}`, jsonInit('PATCH', body)),
   remove: (id: string) =>
     request<void>(`/entities/api/entities/${encodeURIComponent(id)}`, { method: 'DELETE' }),
@@ -3263,10 +3279,15 @@ export const entities = {
     request<{ total: number; candidates: DuplicateCandidate[] }>(
       `/entities/api/duplicates?limit=${limit}&judge=${judge}`,
     ),
-  merge: (keep: string, other: string, name?: string) =>
+  merge: (keep: string, other: string, name?: string, pick: string[] = []) =>
     request<Entity>(
       `/entities/api/entities/${encodeURIComponent(keep)}/merge`,
-      jsonInit('POST', { other, name }),
+      jsonInit('POST', { other, name, pick }),
+    ),
+  /** What the linked Google contact and Obsidian note say now, for comparing. */
+  sources: (id: string) =>
+    request<{ sources: EntitySource[] }>(`/entities/api/entities/${encodeURIComponent(id)}/sources`).then(
+      (r) => r.sources,
     ),
   markDistinct: (a: string, b: string) =>
     request<void>('/entities/api/duplicates/distinct', jsonInit('POST', { a, b })),
