@@ -15,6 +15,7 @@ pub fn run() {
     let builder = builder.plugin(tauri_plugin_roomplan::init());
 
     builder
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             mac_bridge::mac_request,
             mac_bridge::mac_request_bytes,

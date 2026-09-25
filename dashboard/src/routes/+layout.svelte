@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { checkFareAlerts } from "$lib/travel/fare-alerts";
   import { base } from "$app/paths";
   import { page } from "$app/state";
   import "../app.css";
@@ -71,9 +72,16 @@
     dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
     const clock = setInterval(() => (now = new Date()), 1000);
     const stop = capabilities.subscribe();
+    // A new Sparpreis low becomes a phone notification when the app opens or comes back.
+    void checkFareAlerts();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void checkFareAlerts();
+    };
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       clearInterval(clock);
       stop();
+      document.removeEventListener("visibilitychange", onVisible);
     };
   });
 
