@@ -160,26 +160,34 @@
   });
 
   onMount(() => {
+    assistantStore.loadFloatingVisibility();
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   });
 </script>
 
-<!-- Floating Assistant Trigger Pill (Visible when closed) -->
-{#if !assistantStore.isOpen}
-  <button
-    class="assistant-trigger-fab"
-    onclick={() => assistantStore.openDrawer()}
-    aria-label="Open Axon Assistant (Cmd+K)"
-    title="Axon Assistant (Cmd+K)"
-  >
-    <div class="fab-inner">
-      <span class="pulse-indicator"></span>
-      <Icon name="sparkles" size={16} />
-      <span class="fab-label">Assistant</span>
-      <kbd class="shortcut-kbd">⌘K</kbd>
-    </div>
-  </button>
+<!-- Small edge trigger. The × hides it until the primary Ask control is used. -->
+{#if !assistantStore.isOpen && assistantStore.floatingVisible}
+  <div class="assistant-edge-tab">
+    <button
+      class="assistant-edge-open"
+      onclick={() => assistantStore.openDrawer()}
+      aria-label="Open Axon Assistant (Cmd+K)"
+      title="Axon Assistant (Cmd+K)"
+    >
+      <Icon name="sparkles" size={14} />
+      <span>Ask</span>
+      <kbd>⌘K</kbd>
+    </button>
+    <button
+      class="assistant-edge-hide"
+      onclick={(event) => { event.stopPropagation(); assistantStore.hideFloating(); }}
+      aria-label="Hide floating Assistant"
+      title="Hide floating Assistant"
+    >
+      ×
+    </button>
+  </div>
 {/if}
 
 <!-- Assistant Drawer Overlay / Sheet -->
@@ -355,63 +363,60 @@
 {/if}
 
 <style>
-  /* Floating Action Button (FAB) */
-  .assistant-trigger-fab {
+  .assistant-edge-tab {
     position: fixed;
-    right: 1.5rem;
-    bottom: calc(var(--soundscape-dock-height, 0px) + 1.25rem);
+    top: 50%;
+    right: 0;
     z-index: 60;
-    background: var(--card-bg);
-    color: var(--text-primary);
+    display: flex;
+    align-items: stretch;
+    transform: translateY(-50%);
     border: 1px solid var(--card-border);
-    border-radius: var(--radius-full, 9999px);
-    padding: 0.5rem 0.95rem;
-    box-shadow:
-      0 4px 20px rgb(0 0 0 / 25%),
-      0 0 16px var(--primary-soft);
+    border-right: 0;
+    border-radius: var(--radius-md) 0 0 var(--radius-md);
+    background: var(--card-bg);
+    box-shadow: -4px 4px 16px rgb(0 0 0 / 18%);
+    overflow: hidden;
+  }
+
+  .assistant-edge-open,
+  .assistant-edge-hide {
+    border: 0;
+    color: var(--text-primary);
+    background: transparent;
     cursor: pointer;
-    transition:
-      transform 0.15s ease,
-      box-shadow 0.15s ease,
-      border-color 0.15s ease;
   }
 
-  .assistant-trigger-fab:hover {
-    transform: translateY(-2px);
-    box-shadow:
-      0 8px 24px rgb(0 0 0 / 35%),
-      0 0 20px var(--primary-soft);
-    border-color: var(--primary);
-  }
-
-  .assistant-trigger-fab:active {
-    transform: scale(0.96);
-  }
-
-  .fab-inner {
+  .assistant-edge-open {
     display: flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: 0.35rem;
+    padding: 0.55rem 0.65rem;
+    color: var(--primary);
+    font: inherit;
     font-size: var(--text-xs);
     font-weight: 600;
   }
 
-  .pulse-indicator {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--primary);
-    box-shadow: 0 0 8px var(--primary);
+  .assistant-edge-open:hover,
+  .assistant-edge-hide:hover {
+    background: var(--primary-soft);
   }
 
-  .shortcut-kbd {
-    background: var(--surface);
+  .assistant-edge-open kbd {
+    padding: 0.05rem 0.25rem;
     border: 1px solid var(--card-border);
     border-radius: var(--radius-sm);
-    padding: 0.1rem 0.4rem;
-    font-size: var(--text-2xs);
-    font-family: inherit;
     color: var(--text-tertiary);
+    font: inherit;
+    font-size: var(--text-2xs);
+  }
+
+  .assistant-edge-hide {
+    padding: 0 0.45rem;
+    border-left: 1px solid var(--card-border);
+    color: var(--text-tertiary);
+    font-size: 1rem;
   }
 
   /* Scrim */
@@ -866,15 +871,5 @@
       padding-bottom: max(0.85rem, env(safe-area-inset-bottom, 16px));
     }
 
-    .assistant-trigger-fab {
-      right: 1rem;
-      bottom: calc(var(--soundscape-dock-height, 0px) + max(1rem, env(safe-area-inset-bottom, 12px)));
-    }
-  }
-
-  @media (width < 38rem) {
-    .assistant-trigger-fab {
-      display: none;
-    }
   }
 </style>

@@ -1443,6 +1443,12 @@
 
           <div class="board-layout">
             <div class="overview-map">
+              <div class="map-top-bar">
+                <a class="map-link-btn" href={link("/map")} title="Explore in Master Life Map">
+                  <Icon name="globe" size={12} />
+                  <span>Master Life Map</span>
+                </a>
+              </div>
               <MapSurface
                 sources={overviewMapSources}
                 layers={TRIP_LAYERS}
@@ -2020,12 +2026,26 @@
 
   {#if viewingPast}
     <section class="past-view">
-      <MapSurface
-        sources={tripMapSources}
-        layers={TRIP_LAYERS}
-        fitKey={tripMapFitKey}
-        deferredLabel="Trip map"
-      />
+      <div class="past-map-wrap">
+        <div class="map-top-bar">
+          <a
+            class="map-link-btn"
+            href={activePlan && activePlan.destinations.length > 0
+              ? link(`/map?city=${encodeURIComponent(placeName(activePlan.destinations[0]))}`)
+              : link("/map")}
+            title="Explore destination in Master Life Map"
+          >
+            <Icon name="globe" size={12} />
+            <span>Master Life Map</span>
+          </a>
+        </div>
+        <MapSurface
+          sources={tripMapSources}
+          layers={TRIP_LAYERS}
+          fitKey={tripMapFitKey}
+          deferredLabel="Trip map"
+        />
+      </div>
       <div class="past-summary card">
         <span class="eyebrow">Trip history</span>
         <h3>{placeName(activePlan.origin)} → {activePlan.destinations.map(placeName).join(" → ")}</h3>
@@ -2177,12 +2197,24 @@
 
         {#if mapOpen}
           <div class="detail-map">
+            <div class="map-top-bar">
+              <a
+                class="map-link-btn"
+                href={activePlan && activePlan.destinations.length > 0
+                  ? link(`/map?city=${encodeURIComponent(placeName(activePlan.destinations[0]))}`)
+                  : link("/map")}
+                title="Explore destination in Master Life Map"
+              >
+                <Icon name="globe" size={12} />
+                <span>Master Life Map</span>
+              </a>
+            </div>
             <MapSurface
-        sources={tripMapSources}
-        layers={TRIP_LAYERS}
-        fitKey={tripMapFitKey}
-        deferredLabel="Trip map"
-      />
+              sources={tripMapSources}
+              layers={TRIP_LAYERS}
+              fitKey={tripMapFitKey}
+              deferredLabel="Trip map"
+            />
           </div>
         {/if}
 
@@ -2838,6 +2870,40 @@
     min-width: 0;
     padding: 0.75rem;
     border-bottom: 1px solid var(--card-border);
+  }
+
+  .map-top-bar {
+    position: absolute;
+    top: 1.25rem;
+    right: 1.25rem;
+    z-index: 2;
+  }
+
+  .map-link-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.3rem 0.6rem;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text-primary);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    text-decoration: none;
+    box-shadow: 0 1px 4px rgb(0 0 0 / 12%);
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+  }
+
+  .map-link-btn:hover {
+    background: var(--card-bg);
+    border-color: var(--primary);
+    color: var(--primary);
+  }
+
+  .past-map-wrap {
+    position: relative;
+    grid-column: 1 / -1;
   }
 
   .map-legend {
@@ -3686,6 +3752,7 @@
   }
 
   .detail-map {
+    position: relative;
     margin-bottom: 0.85rem;
   }
 
@@ -4211,7 +4278,8 @@
       grid-template-columns: minmax(15rem, 0.75fr) minmax(0, 1.25fr);
     }
 
-    .past-view :global(.map-frame) {
+    .past-view :global(.map-frame),
+    .past-map-wrap {
       grid-column: 1 / -1;
     }
 

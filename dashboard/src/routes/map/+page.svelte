@@ -1,9 +1,11 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import { page } from "$app/state";
   import Icon from "$lib/Icon.svelte";
   import PageHeader from "$lib/PageHeader.svelte";
   import MapSurface from "$lib/map/MapSurface.svelte";
   import type { MapFeatureCollection, MapLayerSpec } from "$lib/map/surface";
+  import { link } from "$lib/nav";
   import {
     MARK_ACCENT,
     MARK_HALO,
@@ -100,6 +102,79 @@
       loading = false;
     })();
     return () => clearTimeout(noticeTimer);
+  });
+
+  const hasTargetQuery = $derived(
+    Boolean(
+      page.url.searchParams.get("q") ||
+        page.url.searchParams.get("city") ||
+        page.url.searchParams.get("person") ||
+        page.url.searchParams.get("lat"),
+    ),
+  );
+
+  let autoFocusedQuery = $state<string | null>(null);
+
+  $effect(() => {
+    if (loading || !mapView) return;
+    const q =
+      page.url.searchParams.get("q") ||
+      page.url.searchParams.get("city") ||
+      page.url.searchParams.get("person");
+    const latStr = page.url.searchParams.get("lat");
+    const lonStr = page.url.searchParams.get("lon");
+
+    if (latStr && lonStr) {
+      const lat = parseFloat(latStr);
+      const lon = parseFloat(lonStr);
+      if (!Number.isNaN(lat) && !Number.isNaN(lon)) {
+        mapView.flyTo([lon, lat], 12);
+        return;
+      }
+    }
+
+    if (!q || q === autoFocusedQuery) return;
+    autoFocusedQuery = q;
+    const term = q.trim().toLowerCase();
+
+    // 1. Check People pins
+    const personPin = people?.features.find(
+      (f) =>
+        f.properties.person.toLowerCase().includes(term) ||
+        f.properties.place_name.toLowerCase().includes(term),
+    );
+    if (personPin) {
+      mapView.flyTo(personPin.geometry.coordinates, 11);
+      return;
+    }
+
+    // 2. Check Spend cities
+    const cityMatch = spend?.summary.cities.find((c) =>
+      c.city.toLowerCase().includes(term),
+    );
+    if (cityMatch && cityMatch.latitude !== null && cityMatch.longitude !== null) {
+      mapView.flyTo([cityMatch.longitude, cityMatch.latitude], 10);
+      return;
+    }
+
+    // 3. Check Travel points
+    const travelPoint = travel?.points.features.find((f) =>
+      f.properties.name.toLowerCase().includes(term),
+    );
+    if (travelPoint) {
+      mapView.flyTo(travelPoint.geometry.coordinates, 11);
+      return;
+    }
+
+    // 4. Fallback to places geocode
+    void places
+      .geocode({ query: q })
+      .then((res) => {
+        if (res.place && res.place.latitude !== null && res.place.longitude !== null) {
+          mapView?.flyTo([res.place.longitude, res.place.latitude], 11);
+        }
+      })
+      .catch(() => {});
   });
 
   const sources = $derived<Record<string, MapFeatureCollection>>({
@@ -229,7 +304,7 @@
       if (p.top_category) lines.push(`Mostly ${esc(p.top_category)}`);
       lines.push(`${esc(p.first)} → ${esc(p.last)}`);
       const city = p.city ? ` · ${esc(p.city)}` : "";
-      return `<strong>${esc(p.name)}</strong>${city}<br>${lines.join("<br>")}`;
+      return `<strong>${esc(p.name)}</strong>${city}<br>${lines.join("<br>")}<br><a class="map-popup-link" href="${link("/finance")}">View in Finance &rarr;</a>`;
     }
     if (layerId === "spend-cities") {
       const p = props as unknown as SpendCityProperties;
@@ -237,7 +312,8 @@
       return (
         `<strong>${esc(p.city)}</strong>${country}<br>` +
         `${esc(money(p.total_cents))} · ${visits(p.transactions)}<br>` +
-        `<em>City-level aggregate — no exact venue known.</em>`
+        `<em>City-level aggregate — no exact venue known.</em><br>` +
+        `<a class="map-popup-link" href="${link("/finance")}">View in Finance &rarr;</a>`
       );
     }
     if (layerId === "travel-points") {
@@ -249,14 +325,19 @@
       const lines = [`${kind}${p.phase ? ` · ${esc(p.phase)}` : ""}`];
       if (p.first || p.last) lines.push(`${esc(p.first ?? "…")} → ${esc(p.last ?? "…")}`);
       if (p.visits !== null && p.visits !== undefined) lines.push(visits(p.visits));
-      return `<strong>${esc(p.name)}</strong><br>${lines.join("<br>")}`;
+      const travelHref = p.plan_id ? link(`/travel?plan=${encodeURIComponent(p.plan_id)}`) : link("/travel");
+      const linkText = p.kind === "trip-destination" ? "View in Travel &rarr;" : "Open Travel &rarr;";
+      return `<strong>${esc(p.name)}</strong><br>${lines.join("<br>")}<br><a class="map-popup-link" href="${travelHref}">${linkText}</a>`;
     }
     if (layerId === "people-pins") {
       const p = props as unknown as PeoplePinProperties;
       const lines = [esc(p.place_name)];
       if (p.since) lines.push(`Since ${esc(p.since)}`);
       lines.push(`${Math.round(p.confidence_bp / 100)}% · ${esc(p.source)}`);
-      return `<strong>${esc(p.person)}</strong><br>${lines.join("<br>")}`;
+      const personHref = p.id
+        ? link(`/people?id=${encodeURIComponent(p.id)}`)
+        : link(`/people?search=${encodeURIComponent(p.person)}`);
+      return `<strong>${esc(p.person)}</strong><br>${lines.join("<br>")}<br><a class="map-popup-link" href="${personHref}">View person dossier &rarr;</a>`;
     }
     return null;
   }
@@ -764,6 +845,7 @@
       interactive={["people-pins", "travel-points", "spend-venues", "spend-cities"]}
       {popupHtml}
       eager
+      autoFit={!hasTargetQuery}
       deferredLabel={`${featureCount} ${featureCount === 1 ? "place" : "places"} on the map`}
     />
   </div>
@@ -1276,5 +1358,19 @@
     .panel.open {
       display: block;
     }
+  }
+
+  :global(.map-popup-link) {
+    display: inline-block;
+    margin-top: 0.35rem;
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    color: var(--primary);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  :global(.map-popup-link:hover) {
+    color: var(--primary-hover);
   }
 </style>

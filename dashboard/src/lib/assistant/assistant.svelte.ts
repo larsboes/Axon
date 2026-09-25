@@ -12,6 +12,7 @@ import type { ActionResult, AssistantMessage, CalendarSlotCardData, JourneyOptio
 class AssistantStore {
   isOpen = $state(false);
   isMinimized = $state(false);
+  floatingVisible = $state(true);
   loading = $state(false);
   messages = $state<AssistantMessage[]>([this.welcome()]);
 
@@ -33,6 +34,27 @@ class AssistantStore {
   openDrawer(): void {
     this.isOpen = true;
     this.isMinimized = false;
+  }
+
+  restoreFloating(): void {
+    this.floatingVisible = true;
+    this.persistFloatingVisibility();
+  }
+
+  hideFloating(): void {
+    this.floatingVisible = false;
+    this.persistFloatingVisibility();
+  }
+
+  loadFloatingVisibility(): void {
+    if (typeof localStorage === 'undefined') return;
+    this.floatingVisible = localStorage.getItem('axon-assistant-floating') !== 'hidden';
+  }
+
+  private persistFloatingVisibility(): void {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('axon-assistant-floating', this.floatingVisible ? 'visible' : 'hidden');
+    }
   }
 
   closeDrawer(): void {

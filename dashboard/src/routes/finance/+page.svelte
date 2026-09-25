@@ -259,6 +259,52 @@
     return `${sign}${Math.floor(abs / 100)}.${String(abs % 100).padStart(2, "0")} ${currency}`;
   }
 
+  const PILLAR_MAPPING: Record<string, string> = {
+    housing: "Living Space",
+    home: "Living Space",
+    utilities: "Living Space",
+    interior: "Living Space",
+    mobility: "Mobility & Travel",
+    travel: "Mobility & Travel",
+    transit: "Mobility & Travel",
+    infrastructure: "Tools & Infra",
+    cloud: "Tools & Infra",
+    software: "Tools & Infra",
+    dev: "Tools & Infra",
+    knowledge: "Mind & Knowledge",
+    learning: "Mind & Knowledge",
+    feed: "Mind & Knowledge",
+    news: "Mind & Knowledge",
+    health: "Vitality & Health",
+    wellness: "Vitality & Health",
+  };
+
+  function pillarOf(category?: string | null): string {
+    if (!category) return "Other";
+    return PILLAR_MAPPING[category.toLowerCase()] ?? "Other";
+  }
+
+  let selectedPillar = $state<string>("all");
+
+  const visibleRows = $derived(
+    selectedPillar === "all"
+      ? rows
+      : rows.filter((r) => pillarOf(r.sub.category) === selectedPillar),
+  );
+
+  const pillarTotals = $derived.by(() => {
+    const totals: Record<string, number> = {};
+    for (const r of rows) {
+      const p = pillarOf(r.sub.category);
+      totals[p] = (totals[p] ?? 0) + (r.monthlyCents > 0 ? r.monthlyCents : 0);
+    }
+    return totals;
+  });
+
+  const totalMonthlyCents = $derived(
+    Object.values(pillarTotals).reduce((sum, v) => sum + v, 0),
+  );
+
   // Which row is expanded. One at a time: two open editors invite editing the wrong
   // subscription, and the rows are one line each so there is nothing to compare.
   let open = $state<string | null>(null);
@@ -507,6 +553,27 @@
     </section>
   {/if}
 
+  <div class="pillar-filter-bar" role="group" aria-label="Life pillars">
+    <button
+      type="button"
+      class="pillar-pill"
+      class:active={selectedPillar === "all"}
+      onclick={() => (selectedPillar = "all")}
+    >
+      All Pillars <span class="pillar-sum">{money(totalMonthlyCents)}/mo</span>
+    </button>
+    {#each Object.entries(pillarTotals) as [pillar, totalCents] (pillar)}
+      <button
+        type="button"
+        class="pillar-pill"
+        class:active={selectedPillar === pillar}
+        onclick={() => (selectedPillar = pillar)}
+      >
+        {pillar} <span class="pillar-sum">{money(totalCents)}/mo</span>
+      </button>
+    {/each}
+  </div>
+
   <div class="subscription-table">
   <table>
     <thead>
@@ -519,7 +586,7 @@
       </tr>
     </thead>
     <tbody>
-      {#each rows as row (row.sub.id)}
+      {#each visibleRows as row (row.sub.id)}
         <tr class:dim={row.monthlyCents === 0} class:open={open === row.sub.id}>
           <td>
             <button class="name" onclick={() => toggle(row)} aria-expanded={open === row.sub.id}>
@@ -627,6 +694,48 @@
 {/if}
 
 <style>
+  .pillar-filter-bar {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    align-items: center;
+    margin: 1rem 0;
+  }
+
+  .pillar-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.3rem 0.65rem;
+    border-radius: var(--radius-full);
+    font-size: var(--text-xs);
+    font-weight: 500;
+    background: var(--card-bg);
+    border: 1px solid var(--rule);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 120ms ease;
+  }
+
+  .pillar-pill:hover {
+    color: var(--text-primary);
+    border-color: var(--primary);
+  }
+
+  .pillar-pill.active {
+    background: var(--primary-soft);
+    color: var(--primary);
+    border-color: var(--primary);
+    font-weight: 600;
+  }
+
+  .pillar-sum {
+    padding: 0.05rem 0.35rem;
+    border-radius: var(--radius-full);
+    background: var(--rule-soft, rgba(125, 125, 125, 0.15));
+    font-size: var(--text-2xs);
+  }
+
   nav {
     display: flex;
     gap: 0.2rem;

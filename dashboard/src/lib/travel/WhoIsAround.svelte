@@ -46,6 +46,9 @@
     }),
   );
 
+  const personFor = (name: string): Entity | undefined =>
+    people.find((p) => p.name.toLowerCase() === name.toLowerCase());
+
   // "Where is someone": an away period (with dates) or a home base (without), written to
   // entities. A name not yet known creates the person.
   let formPerson = $state("");
@@ -100,7 +103,19 @@
   <ol class="around-list">
     {#each meetups as meetup (meetup.itemId)}
       <li>
-        <p class="who"><strong>{meetup.people.join(", ")}</strong><span>{meetup.title}</span></p>
+        <p class="who">
+          <strong>
+            {#each meetup.people as p, i (p)}
+              {#if i > 0}, {/if}
+              {#if personFor(p)}
+                <a class="person-chip-link" href={link(`/people?id=${encodeURIComponent(personFor(p)!.id)}`)}>{p}</a>
+              {:else}
+                <span>{p}</span>
+              {/if}
+            {/each}
+          </strong>
+          <span>{meetup.title}</span>
+        </p>
         <p class="meta">
           {meetup.status} · {meetup.day ?? "no day yet"}{meetup.place ? ` · ${meetup.place}` : ""}
         </p>
@@ -124,13 +139,44 @@
         <p class="meta">Nobody you know is nearby that day.</p>
       {:else}
         <p class="when">
-          {leg.around.map((p) => `${p.person} (${p.distanceKm.toFixed(0)} km)`).join(", ")}
+          {#each leg.around as p, i (p.person)}
+            {#if i > 0}, {/if}
+            {#if personFor(p.person)}
+              <a class="person-chip-link" href={link(`/people?id=${encodeURIComponent(personFor(p.person)!.id)}`)}>
+                {p.person}
+              </a>
+            {:else}
+              <span>{p.person}</span>
+            {/if}
+            <span class="meta">({p.distanceKm.toFixed(0)} km)</span>
+            {#if leg.stage.date}
+              <a
+                class="meetup-action-link"
+                href={link(
+                  `/calendar?date=${encodeURIComponent(leg.stage.date)}&title=${encodeURIComponent(`Meetup with ${p.person}`)}&location=${encodeURIComponent(leg.stage.destination.name)}`,
+                )}
+                title="Schedule calendar meetup"
+              >
+                + Meetup
+              </a>
+            {/if}
+          {/each}
         </p>
       {/if}
       {#if leg.hosts.length > 0}
         <p class="stay-line">
           <Icon name="home" size={12} /> Could stay with:
-          {leg.hosts.map((h) => (h.note ? `${h.person} (${h.note})` : h.person)).join(", ")}
+          {#each leg.hosts as h, i (h.person)}
+            {#if i > 0}, {/if}
+            {#if personFor(h.person)}
+              <a class="person-chip-link" href={link(`/people?id=${encodeURIComponent(personFor(h.person)!.id)}`)}>
+                {h.person}
+              </a>
+            {:else}
+              <span>{h.person}</span>
+            {/if}
+            {#if h.note}<span class="meta">({h.note})</span>{/if}
+          {/each}
         </p>
       {/if}
     </li>
@@ -278,6 +324,36 @@
     margin-top: 0.5rem;
     padding: 0.3rem 0.5rem;
     font-size: var(--text-xs);
+    text-decoration: none;
+  }
+
+  .person-chip-link {
+    color: var(--primary);
+    text-decoration: none;
+    font-weight: 500;
+  }
+
+  .person-chip-link:hover {
+    text-decoration: underline;
+  }
+
+  .meetup-action-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    margin-left: 0.35rem;
+    padding: 0.05rem 0.35rem;
+    border-radius: var(--radius-sm);
+    background: var(--primary-soft);
+    color: var(--primary);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    text-decoration: none;
+    transition: opacity 120ms ease;
+  }
+
+  .meetup-action-link:hover {
+    opacity: 0.85;
     text-decoration: none;
   }
 </style>

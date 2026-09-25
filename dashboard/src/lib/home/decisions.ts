@@ -262,7 +262,7 @@ export const compareDecisions = (a: Decision, b: Decision): number =>
  *   610 | trip-retrospective | travel-season-cost | ADDITION, §8.2
  *   600 | opportunity        | dashboard-refresh  | §8.1 Opportunity
  *   550 | mail               | dashboard-refresh  | §8.1 Mail
- *   540 | (open)             | —                  | §8.1 person contact frequency
+ *   540 | people             | people-entities    | §8.1 person contact frequency
  *   500 | feed               | dashboard-refresh  | §8.1 Feed item
  *   490 | (open)             | —                  | §8.1 note due for review
  *

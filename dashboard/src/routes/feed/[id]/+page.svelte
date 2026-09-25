@@ -25,6 +25,7 @@
   } from "$lib/feed/cloud-calendar";
   import Icon from "$lib/Icon.svelte";
   import { modal } from "$lib/modal";
+  import { assistantStore } from "$lib/assistant/assistant.svelte";
   import {
     ApiError,
     axonStatus,
@@ -1031,6 +1032,17 @@
           </button>
           <button class="btn" disabled={busy} onclick={() => setStatus("dismissed")}>
             <Icon name="close" size={13} /> Dismiss
+          </button>
+          <button
+            class="btn"
+            type="button"
+            onclick={() => {
+              if (entry) {
+                void assistantStore.send(`Summarize and suggest action points for "${entry.title}": ${entry.url}`, page.url.pathname);
+              }
+            }}
+          >
+            <Icon name="sparkles" size={13} /> Ask Axon
           </button>
         {:else if entry.mail}
           <!-- "Make a task" was here until PRD Q48 (2026-08-27). The Action kind

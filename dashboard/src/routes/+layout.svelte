@@ -13,7 +13,10 @@
   import AssistantDrawer from "$lib/assistant/AssistantDrawer.svelte";
   import { assistantStore } from "$lib/assistant/assistant.svelte";
   import MacConnection from "$lib/MacConnection.svelte";
+  import DeviceRegistry from "$lib/DeviceRegistry.svelte";
   import SyncStatus from "$lib/SyncStatus.svelte";
+  import OmniSearch from "$lib/omni/OmniSearch.svelte";
+  import { omniStore } from "$lib/omni/omni.svelte";
 
   let { children, data } = $props();
 
@@ -132,6 +135,16 @@
   }
 
   function handleShellKeydown(event: KeyboardEvent): void {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      omniStore.toggle();
+      return;
+    }
+    if (event.key === "/" && !["INPUT", "TEXTAREA"].includes((event.target as HTMLElement)?.tagName)) {
+      event.preventDefault();
+      omniStore.open();
+      return;
+    }
     if (event.key === "Escape") {
       moreOpen = false;
       menuOpen = false;
@@ -160,12 +173,35 @@
   <a class="skip" href="#main">Skip to content</a>
   <header>
     <div class="bar">
-      <a class="brand" href={link("/")}>
-        <span class="mark">A</span>
-        <span class="name">Axon</span>
-      </a>
+      <div class="brand-group">
+        <a class="brand" href={link("/")}>
+          <span class="mark">A</span>
+          <span class="name">Axon</span>
+        </a>
+
+        <button
+          type="button"
+          class="omni-trigger"
+          onclick={() => omniStore.open()}
+          aria-label="Search across Axon"
+        >
+          <Icon name="search" size={13} />
+          <span class="omni-trigger-text">Search life...</span>
+          <kbd class="omni-trigger-kbd">⌘K</kbd>
+        </button>
+      </div>
 
       <div class="meta">
+        <button
+          type="button"
+          class="btn ask-btn"
+          onclick={() => { assistantStore.restoreFloating(); assistantStore.toggle(); }}
+          aria-label="Ask Axon Assistant"
+          title="Ask Axon Assistant"
+        >
+          <Icon name="sparkles" size={14} />
+          <span class="ask-btn-text">Ask</span>
+        </button>
         <span class="clock mono">
           <Icon name="clock" size={14} />
           {now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
@@ -292,6 +328,9 @@
       <span>Axon</span>
       <span class="mono">{capabilities.items.length} capabilities</span>
       <MacConnection />
+      {#if capabilities.byName("devices")}
+        <DeviceRegistry />
+      {/if}
     </div>
   </footer>
 
@@ -317,7 +356,7 @@
     <button
       type="button"
       class="tab-link tab-action"
-      onclick={() => assistantStore.toggle()}
+      onclick={() => { assistantStore.restoreFloating(); assistantStore.toggle(); }}
       aria-label="Ask Axon Assistant"
     >
       <span class="tab-action-icon">
@@ -349,6 +388,7 @@
 
   <SoundscapeDock />
   <AssistantDrawer />
+  <OmniSearch />
 </div>
 
 <style>
@@ -412,6 +452,74 @@
     gap: 0.6rem;
     font-weight: 600;
     letter-spacing: -0.01em;
+  }
+
+  .brand-group {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    flex: 1;
+    max-width: 32rem;
+  }
+
+  .omni-trigger {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.65rem;
+    border-radius: var(--radius-md);
+    background-color: var(--surface);
+    border: 1px solid var(--card-border);
+    color: var(--text-tertiary);
+    font-size: var(--text-xs);
+    cursor: pointer;
+    transition: border-color 0.15s ease, color 0.15s ease, background-color 0.15s ease;
+    max-width: 17rem;
+    width: 100%;
+  }
+
+  .omni-trigger:hover {
+    border-color: var(--primary);
+    color: var(--text-secondary);
+    background-color: var(--card-bg);
+  }
+
+  .omni-trigger-text {
+    flex: 1;
+    text-align: left;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .omni-trigger-kbd {
+    font-size: var(--text-2xs);
+    font-family: inherit;
+    padding: 0.05rem 0.3rem;
+    border-radius: var(--radius-sm);
+    background-color: var(--card-bg);
+    border: 1px solid var(--card-border);
+    color: var(--text-tertiary);
+  }
+
+  .ask-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.6rem;
+    color: var(--primary);
+    background-color: var(--primary-soft);
+    border-color: transparent;
+  }
+
+  .ask-btn:hover {
+    background-color: var(--primary);
+    color: var(--text-inverse);
+  }
+
+  .ask-btn-text {
+    font-size: var(--text-xs);
+    font-weight: 600;
   }
 
   .mark {
@@ -709,6 +817,14 @@
 
     .bar {
       padding-inline: var(--space-5);
+    }
+
+    .omni-trigger {
+      display: none;
+    }
+
+    .ask-btn-text {
+      display: none;
     }
 
     .meta {

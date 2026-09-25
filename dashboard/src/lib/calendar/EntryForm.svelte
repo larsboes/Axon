@@ -1,6 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import Overlay from "$lib/Overlay.svelte";
+  import Icon from "$lib/Icon.svelte";
+  import { link } from "$lib/nav";
   import {
     COMMITMENTS,
     KINDS,
@@ -248,6 +250,16 @@
   <label>
     <span>Location</span>
     <input type="text" bind:value={location} placeholder="Optional" />
+    {#if location.trim()}
+      <span class="location-links">
+        <a class="location-link" href={link('/map')} target="_blank">
+          <Icon name="map-pin" size={11} /> View on Map
+        </a>
+        <a class="location-link" href={link('/travel/connections')}>
+          <Icon name="train" size={11} /> Check Transit
+        </a>
+      </span>
+    {/if}
   </label>
 
   <label>
@@ -448,5 +460,29 @@
       grid-template-columns: 1fr;
       gap: 0;
     }
+  }
+
+  .location-links {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-top: 0.25rem;
+  }
+
+  .location-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-size: var(--text-2xs);
+    color: var(--primary);
+    text-decoration: none;
+    padding: 0.1rem 0.35rem;
+    border-radius: var(--radius-sm);
+    background-color: var(--surface);
+    border: 1px solid var(--card-border);
+  }
+
+  .location-link:hover {
+    background-color: var(--primary-soft);
   }
 </style>

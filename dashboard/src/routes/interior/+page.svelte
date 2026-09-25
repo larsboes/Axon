@@ -41,7 +41,7 @@
   import { isRoomPlanPhone } from "$lib/roomplan";
   import { SYNC_CHANGED_EVENT } from "$lib/sync-status";
   import { bridgedSrc } from "$lib/bridged-url";
-  import { getMacSettings } from "$lib/mac-bridge";
+  import { getConnectionSettings } from "$lib/mac-bridge";
   import { modal } from "$lib/modal";
 
   type View = "plans" | "inventory" | "solve" | "buy";
@@ -1027,7 +1027,7 @@
     }
   }
 
-  // The outbox sent or dropped an edit: show the Mac's answer instead of the pending values.
+  // The outbox sent or dropped an edit: show the canonical node's answer instead of the pending values.
   onMount(() => {
     const reload = () => {
       if (inventory.length === 0) return;
@@ -1040,10 +1040,10 @@
 
   onMount(() => {
     if (isRoomPlanPhone()) {
-      // On the phone, layouts and inventory come from the Mac through the native bridge
-      // (Q113). Without a Mac address the page keeps to capture only, as before.
-      void getMacSettings()
-        .then((settings) => settings.base_url)
+      // On the phone, layouts and inventory come from the canonical node through the native
+      // bridge. Without a node address the page keeps to capture only, as before.
+      void getConnectionSettings()
+        .then((settings) => settings.canonical_base_url)
         .catch(() => null)
         .then((baseUrl) => {
           if (!baseUrl) {
@@ -1080,7 +1080,7 @@
 
 {#if phoneOnly}
   <div class="card offer">
-    <p class="lead">Room capture is available offline on this iPhone. Set the Mac connection (page footer) to load layouts and inventory from the Mac.</p>
+    <p class="lead">Room capture is available offline on this iPhone. Set the Axon connection (page footer) to load layouts and inventory from the canonical node.</p>
   </div>
 {:else if error}
   <div class="card offer">
@@ -1738,8 +1738,8 @@
             <span class="label">{i.label}</span>
             {#if i.prioritaet}<span class="tag">{i.prioritaet}</span>{/if}
             {#if i.kind === "slot"}<span class="tag slot">slot</span>{/if}
-            {#if pendingIds.has(i.id)}<span class="tag pending" title="Saved on this device; not on the Mac yet.">not synced</span>{/if}
-            {#if conflictIds.has(i.id)}<span class="tag conflict" title="The Mac changed this item too. Review it in the sync line at the top.">conflict</span>{/if}
+            {#if pendingIds.has(i.id)}<span class="tag pending" title="Saved on this device; not on the canonical node yet.">not synced</span>{/if}
+            {#if conflictIds.has(i.id)}<span class="tag conflict" title="The canonical node changed this item too. Review it in the sync line at the top.">conflict</span>{/if}
           </div>
           {#if i.bild}
             <img class="shot" use:bridgedSrc={interior.mediaUrl(i.bild)} alt={i.label} loading="lazy" />
@@ -1795,8 +1795,8 @@
         <div class="head">
           <span class="label">{i.label}</span>
           {#if i.mitnahme}<span class="tag">{i.mitnahme}</span>{/if}
-          {#if pendingIds.has(i.id)}<span class="tag pending" title="Saved on this device; not on the Mac yet.">not synced</span>{/if}
-          {#if conflictIds.has(i.id)}<span class="tag conflict" title="The Mac changed this item too. Review it in the sync line at the top.">conflict</span>{/if}
+          {#if pendingIds.has(i.id)}<span class="tag pending" title="Saved on this device; not on the canonical node yet.">not synced</span>{/if}
+          {#if conflictIds.has(i.id)}<span class="tag conflict" title="The canonical node changed this item too. Review it in the sync line at the top.">conflict</span>{/if}
         </div>
         {#if i.bild}
           <img class="shot" use:bridgedSrc={interior.mediaUrl(i.bild)} alt={i.label} loading="lazy" />

@@ -138,6 +138,28 @@
   const commitments = $derived(decisions.filter((d) => (d.kind.lane ?? "commitment") === "commitment"));
   const reading = $derived(decisions.filter((d) => d.kind.lane === "reading"));
 
+  type PriorityLens = "all" | "focus" | "schedule" | "people" | "tasks";
+  let priorityLens = $state<PriorityLens>("all");
+
+  const filteredCommitments = $derived.by(() => {
+    if (priorityLens === "all") return commitments;
+    if (priorityLens === "focus") {
+      return commitments.filter((d) => {
+        if (d.kind.band >= 800) return true;
+        if (d.startOrDueAt) {
+          const days = daysUntil(d.startOrDueAt, today);
+          if (days <= 2) return true;
+        }
+        if (d.kind.key === "people") return true;
+        return false;
+      });
+    }
+    if (priorityLens === "people") return commitments.filter((d) => d.kind.key === "people");
+    if (priorityLens === "schedule") return commitments.filter((d) => d.kind.key === "calendar" || d.kind.key === "trip");
+    if (priorityLens === "tasks") return commitments.filter((d) => d.kind.key === "task" || d.kind.key === "finance");
+    return commitments;
+  });
+
   const visibleReading = $derived(showAll ? reading : reading.slice(0, READING_PREVIEW));
 
   /// The ladder, grouped by the band each row already carries. Order is the sort
@@ -145,7 +167,7 @@
   /// that has anything in it, and that is the one that opens on a first visit.
   const bands = $derived.by(() => {
     const groups: { label: string; tone: string; rows: Decision[] }[] = [];
-    for (const decision of commitments) {
+    for (const decision of filteredCommitments) {
       const label = bandLabel(decision.kind.band);
       const last = groups[groups.length - 1];
       if (last?.label === label) last.rows.push(decision);
@@ -394,21 +416,6 @@
     </a>
   </header>
 
-  <nav class="mobile-quick-actions" aria-label="Quick actions">
-    <a class="quick-chip" href={link("/feed")}>
-      <Icon name="plus" size={13} />
-      <span>Add link</span>
-    </a>
-    <a class="quick-chip" href={link("/travel")}>
-      <Icon name="map-pin" size={13} />
-      <span>Plan travel</span>
-    </a>
-    <a class="quick-chip" href={link("/feed?view=discover")}>
-      <Icon name="compass" size={13} />
-      <span>Scan sources</span>
-    </a>
-  </nav>
-
   {#if actionError}
     <div class="notice error" role="alert">
       <Icon name="alert" size={15} />
@@ -449,9 +456,65 @@
       </div>
 
       {#if homeView === "now"}
-      {#if visibleDecisions.length > 1}
-        <p class="key-hint"><kbd>J</kbd><kbd>K</kbd> select<span></span><kbd>Enter</kbd> open</p>
-      {/if}
+        <div class="priority-lens-bar" role="group" aria-label="Priority focus">
+          <button
+            type="button"
+            class="lens-pill"
+            class:active={priorityLens === "all"}
+            onclick={() => (priorityLens = "all")}
+          >
+            All Priorities <span class="pill-count">{commitments.length}</span>
+          </button>
+          <button
+            type="button"
+            class="lens-pill"
+            class:active={priorityLens === "focus"}
+            onclick={() => (priorityLens = "focus")}
+          >
+            <Icon name="sparkles" size={12} />
+            Today's Focus
+          </button>
+          <button
+            type="button"
+            class="lens-pill"
+            class:active={priorityLens === "schedule"}
+            onclick={() => (priorityLens = "schedule")}
+          >
+            <Icon name="calendar" size={12} />
+            Schedule & Trips
+          </button>
+          <button
+            type="button"
+            class="lens-pill"
+            class:active={priorityLens === "people"}
+            onclick={() => (priorityLens = "people")}
+          >
+            <Icon name="users" size={12} />
+            People
+          </button>
+          <button
+            type="button"
+            class="lens-pill"
+            class:active={priorityLens === "tasks"}
+            onclick={() => (priorityLens = "tasks")}
+          >
+            <Icon name="check" size={12} />
+            Tasks & Spend
+          </button>
+        </div>
+
+        {#if filteredCommitments.length === 0 && commitments.length > 0}
+          <div class="priority-empty">
+            <p>No items in this priority lens.</p>
+            <button class="btn btn-soft" type="button" onclick={() => (priorityLens = "all")}>
+              Show all priorities ({commitments.length})
+            </button>
+          </div>
+        {/if}
+
+        {#if visibleDecisions.length > 1}
+          <p class="key-hint"><kbd>J</kbd><kbd>K</kbd> select<span></span><kbd>Enter</kbd> open</p>
+        {/if}
 
       <!-- role="list" and rows as listitems, not a listbox. An option must not contain
            focusable descendants and every row here holds a title link and up to three
@@ -862,6 +925,61 @@
     margin-bottom: 0.8rem;
   }
 
+  .priority-lens-bar {
+    display: flex;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+    align-items: center;
+    margin-bottom: var(--space-3);
+  }
+
+  .lens-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.25rem 0.6rem;
+    border-radius: var(--radius-full);
+    font-size: var(--text-xs);
+    font-weight: 500;
+    background: var(--card-bg);
+    border: 1px solid var(--rule);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 120ms ease;
+  }
+
+  .lens-pill:hover {
+    color: var(--text-primary);
+    border-color: var(--primary);
+  }
+
+  .lens-pill.active {
+    background: var(--primary-soft);
+    color: var(--primary);
+    border-color: var(--primary);
+    font-weight: 600;
+  }
+
+  .pill-count {
+    padding: 0 0.35rem;
+    border-radius: var(--radius-full);
+    background: var(--rule-soft, rgba(125, 125, 125, 0.15));
+    font-size: var(--text-2xs);
+  }
+
+  .priority-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 1.5rem;
+    margin-bottom: 1rem;
+    text-align: center;
+    border: 1px dashed var(--rule);
+    border-radius: var(--radius-md);
+    color: var(--text-tertiary);
+    font-size: var(--text-xs);
+  }
 
   h2 {
     margin: 0;
@@ -1415,49 +1533,7 @@
     }
   }
 
-  .mobile-quick-actions {
-    display: none;
-  }
-
   @media (width < 38rem) {
-    .mobile-quick-actions {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      overflow-x: auto;
-      padding: 0.25rem 0 0.75rem;
-      margin-top: 0.25rem;
-      scrollbar-width: none;
-    }
-
-    .mobile-quick-actions::-webkit-scrollbar {
-      display: none;
-    }
-
-    .quick-chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.35rem;
-      padding: 0.4rem 0.75rem;
-      border: 1px solid var(--card-border);
-      border-radius: var(--radius-md);
-      background-color: var(--surface);
-      color: var(--text-primary);
-      font-size: var(--text-xs);
-      font-weight: 600;
-      text-decoration: none;
-      white-space: nowrap;
-      min-height: 2.35rem;
-      -webkit-tap-highlight-color: transparent;
-      transition: background-color 0.15s ease, border-color 0.15s ease;
-    }
-
-    .quick-chip:active {
-      background-color: var(--card-bg);
-      border-color: var(--primary);
-      color: var(--primary);
-    }
-
     .briefing {
       align-items: flex-start;
       flex-direction: column;
