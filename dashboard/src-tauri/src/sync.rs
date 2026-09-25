@@ -7,8 +7,10 @@
 //! the Interior page works while the Mac cannot be reached:
 //!
 //! - **Snapshot**: the last successful answer to each GET below [`C1_PREFIXES`]. Q110 limits the
-//!   first offline slice to C1 apartment and item data, so calendar, comms, finance, trips and
-//!   places are never cached here. Media and the RoomPlan USDZ are cached too, under the caps
+//!   first offline slice to C1 apartment and item data, so calendar, comms, finance and places
+//!   are never cached here. Trips is the one exception, PRD Q115 (2026-09-25, amends Q110): the
+//!   plans that have not ended, read-only, so an itinerary with its booking references is
+//!   readable on a train with no signal. See [`is_trip_offline`]. Media and the RoomPlan USDZ are cached too, under the caps
 //!   [`MAX_SNAPSHOT_ENTRY_BYTES`] and [`MAX_MEDIA_TOTAL_BYTES`] (least recently used goes first).
 //! - **Outbox**: a `PUT`/`PATCH /interior/api/items/:id` that could not reach the Mac. It is
 //!   queued only with `If-Match`: without a revision the Mac cannot refuse a stale write, and a
@@ -148,6 +150,65 @@ pub fn is_c1(path: &str) -> bool {
     C1_PREFIXES
         .iter()
         .any(|prefix| route.starts_with(prefix) && route.len() > prefix.len())
+}
+
+/// The plan list. Its offline copy holds only the plans that have not ended.
+pub const TRIPS_LIST: &str = "/trips/api/plans";
+const TRIPS_PLAN_PREFIX: &str = "/trips/api/plans/";
+
+/// The plan id in `/trips/api/plans/<id>`, or `None` for the list, a sub-route (`/items`,
+/// `/cost`) or any other path.
+fn trip_plan_id(path: &str) -> Option<&str> {
+    let id = route_of(path).strip_prefix(TRIPS_PLAN_PREFIX)?;
+    (!id.is_empty() && !id.contains('/')).then_some(id)
+}
+
+/// True for a trips answer the snapshot may keep: the plan list and one plan's detail. PRD Q115
+/// (2026-09-25, amends Q110) admits these and nothing else from trips. Nothing
+/// under trips is ever queued for writing.
+pub fn is_trip_offline(path: &str) -> bool {
+    route_of(path) == TRIPS_LIST || trip_plan_id(path).is_some()
+}
+
+/// `encodeURIComponent`, which is how `dashboard/src/lib/api.ts` builds a plan's path. The
+/// prefetch must store under the same key the page later reads.
+fn encode_component(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b"-_.!~*'()".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// The civil date (UTC) of a millisecond timestamp, as `YYYY-MM-DD`. Howard Hinnant's
+/// days-to-civil algorithm, so no date crate is added for one conversion.
+fn utc_date(now_ms: i64) -> String {
+    let z = now_ms.div_euclid(86_400_000) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+/// Whether a plan is over. Its last day is `date_end`, else `date_start`; a plan with neither
+/// has not ended. One day of slack, because `today` is the UTC date and the traveller's last
+/// evening can already be tomorrow in UTC.
+fn plan_ended(plan: &Value, now_ms: i64) -> bool {
+    let yesterday = utc_date(now_ms - 86_400_000);
+    let last = plan
+        .get("date_end")
+        .and_then(Value::as_str)
+        .or_else(|| plan.get("date_start").and_then(Value::as_str));
+    last.is_some_and(|day| day < yesterday.as_str())
 }
 
 fn percent_decode(s: &str) -> Option<String> {
@@ -415,6 +476,55 @@ impl LocalStore {
             .map_err(db_err)?;
         }
         Ok(found)
+    }
+
+    /// Deletes one kept answer, if there is one.
+    pub fn drop_snapshot(&self, path: &str, kind: Kind) -> Result<(), String> {
+        self.conn()
+            .execute(
+                "DELETE FROM snapshot WHERE path = ?1 AND kind = ?2",
+                params![path, kind.as_str()],
+            )
+            .map(|_| ())
+            .map_err(db_err)
+    }
+
+    /// When `path` was last stored, without marking it used.
+    pub fn snapshot_fetched_at(&self, path: &str, kind: Kind) -> Option<i64> {
+        self.conn()
+            .query_row(
+                "SELECT fetched_at FROM snapshot WHERE path = ?1 AND kind = ?2",
+                params![path, kind.as_str()],
+                |r| r.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    /// Deletes every kept plan detail whose path is not in `keep`. The list and anything
+    /// outside trips are not touched.
+    pub fn drop_trip_details_except(&self, keep: &[String]) -> Result<(), String> {
+        let conn = self.conn();
+        let mut stmt = conn
+            .prepare("SELECT path FROM snapshot WHERE kind = 'text' AND path LIKE '/trips/api/plans/%'")
+            .map_err(db_err)?;
+        let stored: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .map_err(db_err)?
+            .filter_map(Result::ok)
+            .collect();
+        drop(stmt);
+        for path in stored {
+            if trip_plan_id(&path).is_some() && !keep.contains(&path) {
+                conn.execute(
+                    "DELETE FROM snapshot WHERE path = ?1 AND kind = 'text'",
+                    params![path],
+                )
+                .map_err(db_err)?;
+            }
+        }
+        Ok(())
     }
 
     // ─── Outbox ───
@@ -885,6 +995,9 @@ async fn read_text<T: Transport>(
                     log::warn!("{e}");
                 }
             }
+            if is_success(reply.status) && is_trip_offline(path) {
+                keep_trips(store, t, path, &reply, now).await;
+            }
             let ok = is_success(reply.status);
             let mut response = text_response(reply);
             if ok {
@@ -892,7 +1005,7 @@ async fn read_text<T: Transport>(
             }
             Ok(response)
         }
-        Err(SendError::Unreachable(message)) if is_c1(path) => {
+        Err(SendError::Unreachable(message)) if is_c1(path) || is_trip_offline(path) => {
             match store.get_snapshot(path, Kind::Text, now) {
                 Ok(Some(snap)) => {
                     let Ok(body) = String::from_utf8(snap.body) else {
@@ -914,6 +1027,83 @@ async fn read_text<T: Transport>(
             }
         }
         Err(e) => Err(e.message()),
+    }
+}
+
+/// Keeps the offline copy of trips current after a successful read.
+///
+/// - The list is stored with the ended plans taken out. Every plan still in it is fetched and
+///   stored too, so a plan is readable offline without having been opened first. A detail
+///   stored in the last ten minutes is not fetched again.
+/// - A plan's detail is stored while the plan has not ended, and deleted once it has.
+/// - A stored detail whose plan is no longer in the list (ended, deleted) is deleted.
+///
+/// Failures are logged and never fail the read: the caller already has its answer.
+async fn keep_trips<T: Transport>(store: &LocalStore, t: &T, path: &str, reply: &Reply, now: i64) {
+    let Ok(body) = serde_json::from_slice::<Value>(&reply.body) else {
+        return;
+    };
+    if let Some(id) = trip_plan_id(path) {
+        let detail = format!("{TRIPS_PLAN_PREFIX}{id}");
+        let result = if plan_ended(&body, now) {
+            store.drop_snapshot(&detail, Kind::Text)
+        } else {
+            store.put_snapshot(&detail, Kind::Text, reply, now).map(|_| ())
+        };
+        if let Err(e) = result {
+            log::warn!("{e}");
+        }
+        return;
+    }
+    let Some(plans) = body.as_array() else {
+        return;
+    };
+    let upcoming: Vec<Value> = plans
+        .iter()
+        .filter(|plan| !plan_ended(plan, now))
+        .cloned()
+        .collect();
+    let ids: Vec<String> = upcoming
+        .iter()
+        .filter_map(|plan| plan.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    let filtered = Reply {
+        status: reply.status,
+        content_type: reply.content_type.clone(),
+        body: Value::Array(upcoming).to_string().into_bytes(),
+    };
+    if let Err(e) = store.put_snapshot(TRIPS_LIST, Kind::Text, &filtered, now) {
+        log::warn!("{e}");
+    }
+    let keep: Vec<String> = ids
+        .iter()
+        .map(|id| format!("{TRIPS_PLAN_PREFIX}{}", encode_component(id)))
+        .collect();
+    if let Err(e) = store.drop_trip_details_except(&keep) {
+        log::warn!("{e}");
+    }
+    for detail in keep {
+        if store.snapshot_fetched_at(&detail, Kind::Text).is_some_and(|at| now - at < 600_000) {
+            continue;
+        }
+        let request = Outgoing {
+            method: "GET".into(),
+            path: detail.clone(),
+            headers: vec![],
+            body: None,
+        };
+        match t.send(&request, MAX_SNAPSHOT_ENTRY_BYTES).await {
+            Ok(answer) if is_success(answer.status) => {
+                if let Err(e) = store.put_snapshot(&detail, Kind::Text, &answer, now) {
+                    log::warn!("{e}");
+                }
+            }
+            Ok(answer) => log::warn!("trips prefetch {detail}: HTTP {}", answer.status),
+            Err(e) => {
+                log::warn!("trips prefetch {detail}: {}", e.message());
+                return;
+            }
+        }
     }
 }
 
@@ -2050,5 +2240,133 @@ mod tests {
         assert_eq!(item_id_of("/interior/api/items/a?x=1"), None);
         assert_eq!(item_id_of("/interior/api/items/%ZZ"), None);
         assert_eq!(item_id_of("/finance/api/items/a"), None);
+    }
+
+    // ─── Trips offline (PRD Q115, 2026-09-25) ───
+
+    /// 2026-09-25 12:00 UTC.
+    const TODAY_MS: i64 = 1_790_337_600_000;
+
+    fn plan(id: &str, start: &str, end: &str) -> Value {
+        serde_json::json!({ "id": id, "title": id, "date_start": start, "date_end": end })
+    }
+
+    fn plans_online() -> Fake {
+        Fake::new(|req| {
+            let route = route_of(&req.path).to_string();
+            if route == TRIPS_LIST {
+                return json(
+                    200,
+                    serde_json::json!([
+                        plan("trip:plan:berlin", "2026-10-07", "2026-10-13"),
+                        plan("trip:plan:old", "2026-08-16", "2026-08-19"),
+                    ]),
+                );
+            }
+            if route == "/trips/api/plans/trip%3Aplan%3Aberlin" {
+                let mut detail = plan("trip:plan:berlin", "2026-10-07", "2026-10-13");
+                detail["items"] = serde_json::json!([{ "item_type": "booking", "payload": { "order_ref": "4711" } }]);
+                return json(200, detail);
+            }
+            json(404, serde_json::json!({ "error": "no plan" }))
+        })
+    }
+
+    #[test]
+    fn utc_date_matches_the_calendar() {
+        assert_eq!(utc_date(TODAY_MS), "2026-09-25");
+        assert_eq!(utc_date(0), "1970-01-01");
+        assert_eq!(utc_date(951_782_400_000), "2000-02-29");
+    }
+
+    #[test]
+    fn only_the_list_and_a_plan_detail_are_trip_paths() {
+        assert!(is_trip_offline("/trips/api/plans"));
+        assert!(is_trip_offline("/trips/api/plans/trip%3Aplan%3A1"));
+        assert!(!is_trip_offline("/trips/api/plans/trip%3Aplan%3A1/items"));
+        assert!(!is_trip_offline("/trips/api/plans/trip%3Aplan%3A1/cost"));
+        assert!(!is_trip_offline("/trips/api/places"));
+        assert!(!is_trip_offline("/calendar/api/entries"));
+    }
+
+    #[test]
+    fn a_plan_ends_after_its_last_day_with_a_day_of_slack() {
+        assert!(!plan_ended(&plan("p", "2026-10-07", "2026-10-13"), TODAY_MS));
+        assert!(!plan_ended(&plan("p", "2026-09-20", "2026-09-24"), TODAY_MS));
+        assert!(plan_ended(&plan("p", "2026-09-20", "2026-09-23"), TODAY_MS));
+        assert!(!plan_ended(&serde_json::json!({ "id": "p" }), TODAY_MS));
+    }
+
+    #[test]
+    fn upcoming_plans_are_readable_offline_without_being_opened() {
+        let (_dir, store) = store();
+        block(request_text(&store, &plans_online(), get(TRIPS_LIST), TODAY_MS)).unwrap();
+
+        let offline = Fake::offline();
+        let list = block(request_text(&store, &offline, get(TRIPS_LIST), TODAY_MS)).unwrap();
+        assert!(list.stale);
+        let ids: Vec<String> = serde_json::from_str::<Vec<Value>>(&list.body)
+            .unwrap()
+            .iter()
+            .map(|p| p["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(ids, ["trip:plan:berlin"], "an ended plan is not kept");
+
+        let detail = block(request_text(
+            &store,
+            &offline,
+            get("/trips/api/plans/trip%3Aplan%3Aberlin"),
+            TODAY_MS,
+        ))
+        .unwrap();
+        assert!(detail.stale);
+        assert!(detail.body.contains("4711"), "the booking reference is readable offline");
+
+        let ended = block(request_text(
+            &store,
+            &offline,
+            get("/trips/api/plans/trip%3Aplan%3Aold"),
+            TODAY_MS,
+        ));
+        assert!(ended.is_err(), "an ended plan has no offline copy");
+    }
+
+    #[test]
+    fn a_plan_gone_from_the_list_loses_its_offline_copy() {
+        let (_dir, store) = store();
+        block(request_text(&store, &plans_online(), get(TRIPS_LIST), TODAY_MS)).unwrap();
+        let path = "/trips/api/plans/trip%3Aplan%3Aberlin";
+        assert!(store.snapshot_fetched_at(path, Kind::Text).is_some());
+
+        let empty = Fake::new(|_| json(200, serde_json::json!([])));
+        block(request_text(&store, &empty, get(TRIPS_LIST), TODAY_MS)).unwrap();
+        assert!(store.snapshot_fetched_at(path, Kind::Text).is_none());
+    }
+
+    #[test]
+    fn a_fresh_detail_is_not_fetched_again() {
+        let (_dir, store) = store();
+        let fake = plans_online();
+        block(request_text(&store, &fake, get(TRIPS_LIST), TODAY_MS)).unwrap();
+        block(request_text(&store, &fake, get(TRIPS_LIST), TODAY_MS + 60_000)).unwrap();
+        let detail_calls = fake
+            .calls()
+            .iter()
+            .filter(|c| trip_plan_id(&c.path).is_some())
+            .count();
+        assert_eq!(detail_calls, 1);
+    }
+
+    #[test]
+    fn trip_writes_are_never_queued() {
+        let (_dir, store) = store();
+        let request = Outgoing {
+            method: "PATCH".into(),
+            path: "/trips/api/plans/trip%3Aplan%3Aberlin".into(),
+            headers: vec![("If-Match".into(), "1".into())],
+            body: Some("{}".into()),
+        };
+        assert!(block(request_text(&store, &Fake::offline(), request, TODAY_MS)).is_err());
+        assert!(store.entries().unwrap().is_empty());
     }
 }
