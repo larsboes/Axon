@@ -8,6 +8,7 @@
   import SpatialSummaryWidget from './SpatialSummaryWidget.svelte';
   import GenerativeCard from './GenerativeCard.svelte';
   import ActionChoiceWidget from './ActionChoiceWidget.svelte';
+  import MergeCandidateCard from './MergeCandidateCard.svelte';
 
   let {
     card,
@@ -37,6 +38,8 @@
     <GenerativeCard card={card.data} onActionPrompt={onPrompt} />
   {:else if card.type === 'action_choice'}
     <ActionChoiceWidget card={card.data} onSelect={onPrompt} />
+  {:else if card.type === 'merge_candidate'}
+    <MergeCandidateCard card={card.data} />
   {/if}
 </div>
 

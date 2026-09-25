@@ -10,6 +10,8 @@
   import Icon from "$lib/Icon.svelte";
   import PageHeader from "$lib/PageHeader.svelte";
   import { entities, type Entity, type EntityField } from "$lib/api";
+  import { assistantStore } from "$lib/assistant/assistant.svelte";
+  import { page } from "$app/state";
 
   let people = $state<Entity[]>([]);
   let fields = $state<EntityField[]>([]);
@@ -192,6 +194,19 @@
 </script>
 
 <PageHeader badge="People" title="People you know" desc="Where they live, where they are, and where you could stay. Stored in Axon; notes stay in Obsidian." />
+
+<p class="toolbar">
+  <button
+    class="btn btn-outline"
+    type="button"
+    onclick={() => {
+      assistantStore.openDrawer();
+      void assistantStore.send("Find duplicates", page.url.pathname).then(load);
+    }}
+  >
+    <Icon name="users" size={13} /> Find duplicates
+  </button>
+</p>
 
 {#if error}<p class="error"><Icon name="alert" size={15} /> {error}</p>{/if}
 {#if notice}<p class="notice" aria-live="polite">{notice}</p>{/if}
@@ -460,6 +475,10 @@
   .declare {
     margin-top: 1rem;
     font-size: var(--text-sm);
+  }
+
+  .toolbar {
+    margin: 0 0 0.75rem;
   }
 
   .error,

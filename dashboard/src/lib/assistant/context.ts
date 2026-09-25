@@ -58,6 +58,16 @@ export function extractRouteContext(pathname: string): RouteContext {
     };
   }
 
+  if (pathname.startsWith('/people')) {
+    return {
+      pathname,
+      domain: 'people',
+      label: 'People',
+      contextSummary: 'People: capabilities/entities, synced from Obsidian and Google Contacts.',
+      quickPrompts: ['Find duplicates'],
+    };
+  }
+
   if (pathname.startsWith('/feed')) {
     return {
       pathname,

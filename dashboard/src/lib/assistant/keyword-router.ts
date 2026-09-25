@@ -34,6 +34,10 @@ const CUES: Record<Exclude<IntentDomain, 'general'>, string[]> = {
     'feed', 'reading', 'read', 'article', 'articles', 'ingest', 'comms', 'newsletter',
     'unread',
   ],
+  people: [
+    'duplicate', 'duplicates', 'merge', 'dedupe', 'contact', 'contacts', 'people', 'person',
+    'doppelt', 'kontakte',
+  ],
 };
 
 /** Lower-cased words joined by single spaces and padded, so a cue matches only on word

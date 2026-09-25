@@ -3196,6 +3196,29 @@ export interface LocatedPerson {
   sleeping_note: string | null;
 }
 
+/** What entities shows about one side of a duplicate pair (duplicates.rs, profile). */
+export interface DuplicateProfile {
+  name: string;
+  lives_in: string | null;
+  company: unknown;
+  role: unknown;
+  relation: unknown;
+  emails: string[] | null;
+  phones: string[] | null;
+  birthday: string | null;
+  sources: string[];
+  has_note: boolean;
+}
+
+export interface DuplicateCandidate {
+  a: { id: string; profile: DuplicateProfile };
+  b: { id: string; profile: DuplicateProfile };
+  strength: 'strong' | 'name' | 'partial';
+  reasons: string[];
+  evidence: { same: string[]; different: string[] };
+  verdict: { same: boolean | null; why: string } | null;
+}
+
 /** capabilities/entities. C2: names, places and contact details. */
 export const entities = {
   fields: (kind?: EntityKind) =>
@@ -3234,6 +3257,19 @@ export const entities = {
       `/entities/api/entities/${encodeURIComponent(id)}/facts/${encodeURIComponent(factId)}`,
       { method: 'DELETE' },
     ),
+  /** Probable duplicates, strongest first; judge=true asks the on-device model about
+   *  first-name-only pairs that share a field. */
+  duplicates: (limit = 10, judge = true) =>
+    request<{ total: number; candidates: DuplicateCandidate[] }>(
+      `/entities/api/duplicates?limit=${limit}&judge=${judge}`,
+    ),
+  merge: (keep: string, other: string, name?: string) =>
+    request<Entity>(
+      `/entities/api/entities/${encodeURIComponent(keep)}/merge`,
+      jsonInit('POST', { other, name }),
+    ),
+  markDistinct: (a: string, b: string) =>
+    request<void>('/entities/api/duplicates/distinct', jsonInit('POST', { a, b })),
   located: (day?: string) =>
     request<{ day: string; located: LocatedPerson[] }>(
       `/entities/api/located${day ? `?day=${day}` : ''}`,

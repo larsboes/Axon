@@ -1,4 +1,4 @@
-import { axonStatus, calendar, comms, interior, macmon, transit, trips, type IntentDraft, type Journey } from '$lib/api';
+import { axonStatus, calendar, comms, entities, interior, macmon, transit, trips, type IntentDraft, type Journey } from '$lib/api';
 import { addDays, findFreeSlots, localDate, unreadableEntries } from './calendar-slots';
 import { matchedCues, routeByKeywords } from './keyword-router';
 import type { ActionCard, AssistantMessage, IntentDomain, RouteContext, SpatialRoomItem, TelemetryMetricItem } from './types';
@@ -84,6 +84,8 @@ export class AssistantEngine {
         return this.system();
       case 'feed':
         return this.feed(prompt);
+      case 'people':
+        return this.people();
       default:
         return Promise.resolve({
           content: 'Axon Assistant can interact with live capabilities across travel, calendar, systems, feed, and room interior.',
@@ -285,6 +287,28 @@ export class AssistantEngine {
       content: `Interior holds ${layouts.length} layout${layouts.length === 1 ? '' : 's'}. Open Interior for 3D layout.`,
       cards: [card],
     };
+  }
+
+  /**
+   * Probable duplicate people, as merge cards. Rules find the pairs; the on-device model is
+   * asked only about first-name-only pairs that share a field, and only advises. Every
+   * merge and every "not the same" is a tap (capabilities/entities/src/duplicates.rs).
+   */
+  private async people(): Promise<Reply> {
+    try {
+      const { total, candidates } = await entities.duplicates(10, true);
+      if (total === 0) return { content: 'No probable duplicates among your people.' };
+      const shown = candidates.length;
+      return {
+        content:
+          `${total} possible duplicate pair${total === 1 ? '' : 's'}` +
+          (shown < total ? `; here are the ${shown} strongest.` : '.') +
+          ' Merging keeps the record with a note (or more details) and the longer name.',
+        cards: candidates.map((data) => ({ type: 'merge_candidate' as const, data })),
+      };
+    } catch (err) {
+      return didNotAnswer('entities', err, 'No duplicates are shown.');
+    }
   }
 
   private async system(): Promise<Reply> {

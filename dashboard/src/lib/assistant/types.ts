@@ -1,6 +1,6 @@
-import type { Journey } from '$lib/api';
+import type { DuplicateCandidate, Journey } from '$lib/api';
 
-export type IntentDomain = 'travel' | 'interior' | 'calendar' | 'finance' | 'system' | 'feed' | 'general';
+export type IntentDomain = 'travel' | 'interior' | 'calendar' | 'finance' | 'system' | 'feed' | 'people' | 'general';
 
 /** How the local keyword router picked a domain. In-page word matching, no model. */
 export interface KeywordRouting {
@@ -123,7 +123,8 @@ export type ActionCard =
   | { type: 'feed_digest'; data: FeedDigestWidgetData }
   | { type: 'spatial_summary'; data: SpatialSummaryWidgetData }
   | { type: 'generative_card'; data: GenerativeCustomCardData }
-  | { type: 'action_choice'; data: ActionChoiceWidgetData };
+  | { type: 'action_choice'; data: ActionChoiceWidgetData }
+  | { type: 'merge_candidate'; data: DuplicateCandidate };
 
 export interface AssistantMessage {
   id: string;

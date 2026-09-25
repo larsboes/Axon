@@ -1,4 +1,4 @@
-import { calendar, trips, type TripPlan } from '$lib/api';
+import { calendar, entities, trips, type DuplicateCandidate, type TripPlan } from '$lib/api';
 import { instantMinutes, localDate } from './calendar-slots';
 import type { ActionResult, CalendarSlotCardData, JourneyOptionCardData } from './types';
 
@@ -83,6 +83,46 @@ export async function executeCalendarAccept(card: CalendarSlotCardData): Promise
     });
     triggerHaptic('success');
     return { ok: true, message: `Created "${card.title}" in the calendar.` };
+  } catch (err) {
+    return failure(err);
+  }
+}
+
+/**
+ * Which side of a duplicate pair to keep: the one with an Obsidian note (prose lives there),
+ * else the one with more filled fields. The kept side's values win where both have one
+ * (entities store.rs, merge), so this is also which values survive.
+ */
+export function keepSide(card: DuplicateCandidate): 'a' | 'b' {
+  const weight = (p: DuplicateCandidate['a']['profile']) =>
+    (p.has_note ? 100 : 0) +
+    Object.entries(p).filter(([k, v]) => k !== 'name' && k !== 'sources' && v != null && v !== false).length;
+  return weight(card.b.profile) > weight(card.a.profile) ? 'b' : 'a';
+}
+
+/** The longer of the two names, which is usually the full one ("Ron" → "Ron Mustermann"). */
+export function mergedName(card: DuplicateCandidate): string {
+  const [a, b] = [card.a.profile.name.trim(), card.b.profile.name.trim()];
+  return b.length > a.length ? b : a;
+}
+
+export async function executeMerge(card: DuplicateCandidate): Promise<ActionResult> {
+  const keep = keepSide(card) === 'a' ? card.a : card.b;
+  const other = keep === card.a ? card.b : card.a;
+  const name = mergedName(card);
+  try {
+    await entities.merge(keep.id, other.id, name);
+    triggerHaptic('success');
+    return { ok: true, message: `Merged into "${name}".` };
+  } catch (err) {
+    return failure(err);
+  }
+}
+
+export async function executeDistinct(card: DuplicateCandidate): Promise<ActionResult> {
+  try {
+    await entities.markDistinct(card.a.id, card.b.id);
+    return { ok: true, message: 'Kept apart; this pair will not be suggested again.' };
   } catch (err) {
     return failure(err);
   }
