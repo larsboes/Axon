@@ -1,7 +1,7 @@
 import { axonStatus, calendar, comms, interior, macmon, transit, trips, type IntentDraft, type Journey } from '$lib/api';
 import { addDays, findFreeSlots, localDate, unreadableEntries } from './calendar-slots';
 import { matchedCues, routeByKeywords } from './keyword-router';
-import type { ActionCard, AssistantMessage, IntentDomain, RouteContext } from './types';
+import type { ActionCard, AssistantMessage, IntentDomain, RouteContext, SpatialRoomItem, TelemetryMetricItem } from './types';
 
 /**
  * Answers a drawer prompt from the capabilities on this machine, and from nothing else.
@@ -66,6 +66,19 @@ export class AssistantEngine {
       case 'finance':
         return Promise.resolve({
           content: 'The drawer cannot answer finance questions yet. Open Finance for balances and the review queue.',
+          cards: [{
+            type: 'generative_card',
+            data: {
+              title: 'Finance & Ledger',
+              kicker: 'CAPABILITY OVERVIEW',
+              tone: 'primary',
+              subtitle: 'Bank accounts, balance reconciliation, and expense review queue.',
+              chips: ['Multi-currency', 'Ledger', 'Review Queue'],
+              actions: [
+                { label: 'Open Finance', route: '/finance', icon: 'wallet' },
+              ],
+            },
+          }],
         });
       case 'system':
         return this.system();
@@ -73,8 +86,44 @@ export class AssistantEngine {
         return this.feed(prompt);
       default:
         return Promise.resolve({
-          content:
-            'The drawer can search train connections (trips + transit), find a free calendar block (calendar) and list interior layouts (interior). It cannot answer other questions yet.',
+          content: 'Axon Assistant can interact with live capabilities across travel, calendar, systems, feed, and room interior.',
+          cards: [{
+            type: 'action_choice',
+            data: {
+              title: 'Suggested Quick Actions',
+              description: 'Tap a prompt or ask your own question:',
+              choices: [
+                {
+                  id: 'c1',
+                  label: 'Check System Telemetry',
+                  prompt: 'System health',
+                  description: 'Live CPU, RAM, power, and capability health check',
+                  icon: 'cpu',
+                },
+                {
+                  id: 'c2',
+                  label: 'Find Calendar Focus Slot',
+                  prompt: 'Find a 2-hour focus block tomorrow',
+                  description: 'Search free calendar blocks without overlapping commitments',
+                  icon: 'calendar',
+                },
+                {
+                  id: 'c3',
+                  label: 'Explore Reading Feed',
+                  prompt: 'Recent reading feed',
+                  description: 'Recent articles ingested into comms',
+                  icon: 'feed',
+                },
+                {
+                  id: 'c4',
+                  label: 'Inspect 3D Interior',
+                  prompt: 'Show interior layout',
+                  description: 'RoomPlan spatial rooms and furniture inventory',
+                  icon: 'layout',
+                },
+              ],
+            },
+          }],
         });
     }
   }
@@ -205,20 +254,37 @@ export class AssistantEngine {
   }
 
   private async interior(): Promise<Reply> {
+    let layouts: Array<{ name: string; occupied_m2: number; corridors: { from: string; to: string; width_cm: number | null }[] }>;
     try {
-      const layouts = await interior.layouts();
-      if (layouts.length === 0) {
-        return { content: 'interior holds no layouts yet. The drawer cannot evaluate or change layouts.' };
-      }
-      const list = layouts
-        .map((l) => `- ${l.name}: ${l.pass ? 'passes' : 'fails'} the check (${l.hard} hard, ${l.soft} soft rule violations)`)
-        .join('\n');
-      return {
-        content: `interior holds ${layouts.length} layout${layouts.length === 1 ? '' : 's'}:\n${list}\nThe drawer cannot evaluate or change layouts yet; open Interior for that.`,
-      };
+      layouts = await interior.layouts();
     } catch (err) {
       return didNotAnswer('interior', err, 'No layout is shown.');
     }
+
+    if (layouts.length === 0) {
+      return { content: 'interior holds no layouts yet. The drawer cannot evaluate or change layouts.' };
+    }
+
+    const rooms: SpatialRoomItem[] = layouts.map((l) => ({
+      name: l.name,
+      areaSqMeters: l.occupied_m2,
+      objectsCount: l.corridors.length,
+    }));
+
+    const card: ActionCard = {
+      type: 'spatial_summary',
+      data: {
+        title: 'RoomPlan Spatial Interior',
+        roomsCount: layouts.length,
+        furnitureCount: 0,
+        rooms,
+      },
+    };
+
+    return {
+      content: `Interior holds ${layouts.length} layout${layouts.length === 1 ? '' : 's'}. Open Interior for 3D layout.`,
+      cards: [card],
+    };
   }
 
   private async system(): Promise<Reply> {
@@ -227,30 +293,87 @@ export class AssistantEngine {
       macmon.json(),
     ]);
 
-    const lines: string[] = [];
-    if (healthResult.status === 'fulfilled') {
-      const h = healthResult.value;
-      lines.push(h.ok ? 'All systems are healthy.' : 'Systems need attention.');
-      const caps = Object.values(h.capabilities ?? {});
-      if (caps.length > 0) {
-        const upCount = caps.filter((c) => c.up).length;
-        lines.push(`${upCount} of ${caps.length} capabilities running.`);
-      }
-    } else {
-      lines.push(`axon-status did not answer: ${reason(healthResult.reason)}.`);
-    }
+    const isHealthy = healthResult.status === 'fulfilled' && healthResult.value.ok;
+    const caps = healthResult.status === 'fulfilled' ? Object.values(healthResult.value.capabilities ?? {}) : [];
+    const upCount = caps.filter((c) => c.up).length;
+
+    const metrics: TelemetryMetricItem[] = [];
+
+    let cpuVal = '--';
+    let gpuVal = '--';
+    let ramVal = '--';
+    let totalRamVal = '--';
+    let powerVal = '--';
 
     if (macmonSample.status === 'fulfilled') {
       const m = macmonSample.value;
-      const cpu = m.temp?.cpu_temp_avg != null ? `${m.temp.cpu_temp_avg.toFixed(0)}°` : '--';
-      const gpu = m.temp?.gpu_temp_avg != null ? `${m.temp.gpu_temp_avg.toFixed(0)}°` : '--';
-      const ram = m.memory?.ram_usage ? (m.memory.ram_usage / 1073741824).toFixed(1) : '--';
-      const totalRam = m.memory?.ram_total ? (m.memory.ram_total / 1073741824).toFixed(0) : '--';
-      const power = m.all_power != null ? `${m.all_power.toFixed(1)} W` : '--';
-      lines.push(`Hardware: CPU ${cpu} (GPU ${gpu}), RAM ${ram} GB / ${totalRam} GB, Power ${power}.`);
+      const cpuTemp = m.temp?.cpu_temp_avg;
+      const gpuTemp = m.temp?.gpu_temp_avg;
+      if (cpuTemp != null) {
+        cpuVal = `${cpuTemp.toFixed(0)}°C`;
+        metrics.push({
+          label: 'CPU Temp',
+          value: cpuVal,
+          tone: cpuTemp > 80 ? 'alarm' : cpuTemp > 65 ? 'warn' : 'good',
+          percent: Math.min(100, (cpuTemp / 100) * 100),
+        });
+      }
+      if (gpuTemp != null) {
+        gpuVal = `${gpuTemp.toFixed(0)}°C`;
+        metrics.push({
+          label: 'GPU Temp',
+          value: gpuVal,
+          tone: gpuTemp > 80 ? 'alarm' : gpuTemp > 65 ? 'warn' : 'good',
+          percent: Math.min(100, (gpuTemp / 100) * 100),
+        });
+      }
+      if (m.memory?.ram_usage != null && m.memory?.ram_total != null) {
+        const usedGb = m.memory.ram_usage / 1073741824;
+        const totalGb = m.memory.ram_total / 1073741824;
+        ramVal = `${usedGb.toFixed(1)} GB`;
+        totalRamVal = `${totalGb.toFixed(0)} GB`;
+        const ramPct = Math.round((usedGb / totalGb) * 100);
+        metrics.push({
+          label: 'RAM Usage',
+          value: ramVal,
+          subvalue: `of ${totalRamVal}`,
+          tone: ramPct > 85 ? 'warn' : 'normal',
+          percent: ramPct,
+        });
+      }
+      if (m.all_power != null) {
+        powerVal = `${m.all_power.toFixed(1)} W`;
+        metrics.push({
+          label: 'Total Power',
+          value: powerVal,
+          tone: 'normal',
+        });
+      }
     }
 
-    return { content: lines.join('\n') };
+    const card: ActionCard = {
+      type: 'telemetry_pulse',
+      data: {
+        title: 'System Telemetry & Status',
+        subtitle: isHealthy ? 'All probed services reporting operational' : 'One or more services need attention',
+        overallOk: isHealthy,
+        capabilitiesSummary: caps.length > 0 ? { up: upCount, total: caps.length } : undefined,
+        metrics,
+        actions: [
+          { label: 'Systems Dashboard', route: '/systems', icon: 'server' },
+          { label: 'Capabilities Map', route: '/capabilities', icon: 'boxes' },
+        ],
+      },
+    };
+
+    const prose = isHealthy
+      ? `All systems operational. ${upCount} of ${caps.length} capabilities running. CPU ${cpuVal}, RAM ${ramVal} / ${totalRamVal}, Power ${powerVal}.`
+      : `System attention required. ${upCount} of ${caps.length} capabilities running.`;
+
+    return {
+      content: prose,
+      cards: [card],
+    };
   }
 
   private async feed(prompt: string): Promise<Reply> {
@@ -259,7 +382,22 @@ export class AssistantEngine {
       const url = urlMatch[0];
       try {
         const entry = await comms.ingest(url);
-        return { content: `Ingested into Comms feed: ${entry.title ?? url}.` };
+        return {
+          content: `Ingested into Comms feed: ${entry.title ?? url}.`,
+          cards: [{
+            type: 'generative_card',
+            data: {
+              title: entry.title ?? url,
+              kicker: 'INGESTED LINK',
+              tone: 'good',
+              subtitle: entry.author ? `by ${entry.author}` : undefined,
+              chips: ['Saved to Comms', 'Reading List'],
+              actions: [
+                { label: 'Open Feed', route: '/feed', icon: 'feed' },
+              ],
+            },
+          }],
+        };
       } catch (err) {
         return didNotAnswer('comms', err, 'The URL was not ingested.');
       }
@@ -270,11 +408,34 @@ export class AssistantEngine {
       if (!entries || entries.length === 0) {
         return { content: 'Your feed has no recent items in the last 7 days.' };
       }
-      const lines = [`Comms feed has ${entries.length} recent item(s):`];
-      for (const e of entries.slice(0, 3)) {
-        lines.push(`• ${e.title ?? e.url} (${e.author ?? 'article'})`);
-      }
-      return { content: lines.join('\n') };
+
+      const items = entries.slice(0, 3).map((e) => {
+        let domain: string | undefined;
+        try {
+          domain = new URL(e.url).hostname.replace(/^www\./, '');
+        } catch {
+          domain = undefined;
+        }
+        return {
+          id: e.id,
+          title: e.title ?? e.url,
+          url: e.url,
+          author: e.author ?? undefined,
+          domain,
+        };
+      });
+
+      return {
+        content: `Comms feed has ${entries.length} recent item${entries.length === 1 ? '' : 's'}:`,
+        cards: [{
+          type: 'feed_digest',
+          data: {
+            title: 'Recent Reading Feed',
+            items,
+            moreCount: entries.length > 3 ? entries.length - 3 : undefined,
+          },
+        }],
+      };
     } catch (err) {
       return didNotAnswer('comms', err, 'Could not read feed.');
     }

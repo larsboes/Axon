@@ -858,7 +858,7 @@
         <span class="tag mono">{KIND_LABEL[entry.kind] ?? entry.kind}</span>
         <span>{new Date(entry.created_at).toLocaleDateString("en-GB")}</span>
         {#if entry.source !== "calendar"}
-          <span>{readMinutes} min read</span>
+          <span class="read-pill"><Icon name="clock" size={11} /> {readMinutes} min read</span>
         {/if}
       </div>
       {#if entry.calendar}
@@ -1801,6 +1801,19 @@
     font-size: var(--text-2xs);
   }
 
+  .read-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: var(--radius-full);
+    background: var(--surface);
+    border: 1px solid var(--card-border);
+    color: var(--text-secondary);
+    font-size: var(--text-2xs);
+    font-weight: 500;
+  }
+
   h1 {
     max-width: 27ch;
     margin: 0.9rem 0 0;
@@ -2133,6 +2146,7 @@
 
   .reader {
     min-width: 0;
+    max-width: 70ch;
   }
 
   .note {

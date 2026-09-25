@@ -69,14 +69,15 @@
 
 <style>
   .calendar-card {
-    background: var(--card-bg, #1a1a1a);
-    border: 1px solid var(--card-border, #333);
-    border-radius: var(--radius-md, 8px);
-    padding: 0.75rem 0.85rem;
-    margin-top: 0.5rem;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    padding: var(--space-3) var(--space-4);
+    box-shadow: var(--card-shadow);
+    margin-top: var(--space-2);
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
+    gap: var(--space-3);
   }
 
   .card-header {
@@ -89,9 +90,9 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    font-size: var(--text-xs, 0.75rem);
+    font-size: var(--text-xs);
     font-weight: 600;
-    color: var(--text-primary, #fff);
+    color: var(--text-primary);
   }
 
   .slot-title {
@@ -104,19 +105,20 @@
   .free-badge {
     display: inline-flex;
     align-items: center;
-    gap: 0.2rem;
-    font-size: 0.65rem;
-    color: #10b981;
-    background: rgba(16, 185, 129, 0.12);
-    padding: 0.1rem 0.35rem;
-    border-radius: 4px;
+    gap: 0.25rem;
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    color: var(--success);
+    background: var(--success-soft);
+    padding: 0.1rem 0.45rem;
+    border-radius: var(--radius-sm);
   }
 
   .slot-meta {
     display: flex;
-    gap: 0.6rem;
+    gap: var(--space-3);
     font-size: var(--text-xs);
-    color: var(--text-secondary, #d4d4d8);
+    color: var(--text-secondary);
   }
 
   .date {
@@ -124,29 +126,29 @@
   }
 
   .error-desc {
-    font-size: 0.7rem;
-    color: #f87171;
+    font-size: var(--text-2xs);
+    color: var(--danger);
     margin: 0;
   }
 
   .card-footer {
     display: flex;
     justify-content: flex-end;
-    border-top: 1px solid var(--card-border, #2a2a2a);
-    padding-top: 0.4rem;
+    border-top: 1px solid var(--card-border);
+    padding-top: var(--space-2);
   }
 
   .action-btn {
-    font-size: 0.7rem;
-    padding: 0.25rem 0.6rem;
+    font-size: var(--text-xs);
+    padding: 0.3rem 0.65rem;
     display: inline-flex;
     align-items: center;
-    gap: 0.3rem;
+    gap: 0.35rem;
+    border-radius: var(--radius-sm);
   }
 
   .btn-applied {
-    background: rgba(16, 185, 129, 0.15);
-    color: #10b981;
-    border-color: rgba(16, 185, 129, 0.3);
+    background: var(--success-soft);
+    color: var(--success);
   }
 </style>

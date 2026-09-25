@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from '$lib/Icon.svelte';
+  import SparpreisSparkline from '$lib/travel/SparpreisSparkline.svelte';
   import { trips, type TripPlan } from '$lib/api';
   import { settleCardAction, type CardStatus } from '../executor';
   import type { ActionResult, JourneyOptionCardData } from '../types';
@@ -57,9 +58,14 @@
       <Icon name="train" size={14} />
       <span class="mode-text">{trains || 'Train'}</span>
     </div>
-    <span class="price mono">
-      {journey.total_price === null ? 'price unknown' : `${journey.total_price.toFixed(2)} €`}
-    </span>
+    <div class="price-sparkline-wrap">
+      {#if card.price_history && card.price_history.length >= 2}
+        <SparpreisSparkline history={card.price_history} width={80} height={20} />
+      {/if}
+      <span class="price mono">
+        {journey.total_price === null ? 'price unknown' : `${journey.total_price.toFixed(2)} €`}
+      </span>
+    </div>
   </div>
 
   <div class="route-line">
@@ -125,15 +131,15 @@
 
 <style>
   .journey-card {
-    background: var(--card-bg, #1a1a1a);
-    border: 1px solid var(--card-border, #333);
-    border-radius: var(--radius-md, 8px);
-    padding: 0.75rem 0.85rem;
-    margin-top: 0.5rem;
-    box-shadow: var(--card-shadow, 0 2px 4px rgba(0, 0, 0, 0.1));
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    padding: var(--space-3) var(--space-4);
+    margin-top: var(--space-2);
+    box-shadow: var(--card-shadow);
     display: flex;
     flex-direction: column;
-    gap: 0.6rem;
+    gap: var(--space-3);
   }
 
   .card-header {
@@ -146,22 +152,28 @@
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    font-size: var(--text-xs, 0.75rem);
+    font-size: var(--text-xs);
     font-weight: 600;
-    color: var(--primary, #06b6d4);
+    color: var(--primary);
+  }
+
+  .price-sparkline-wrap {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
   }
 
   .price {
-    font-size: var(--text-xs, 0.75rem);
+    font-size: var(--text-xs);
     font-weight: 700;
-    color: var(--text-primary, #f4f4f5);
+    color: var(--text-primary);
   }
 
   .route-line {
     display: grid;
     grid-template-columns: auto 1fr auto;
     align-items: center;
-    gap: 0.75rem;
+    gap: var(--space-3);
   }
 
   .point {
@@ -175,14 +187,14 @@
   }
 
   .time {
-    font-size: 0.85rem;
+    font-size: var(--text-sm);
     font-weight: 700;
-    color: var(--text-primary, #fff);
+    color: var(--text-primary);
   }
 
   .station {
-    font-size: 0.7rem;
-    color: var(--text-tertiary, #a1a1aa);
+    font-size: var(--text-2xs);
+    color: var(--text-tertiary);
     max-width: 90px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -197,8 +209,8 @@
   }
 
   .duration-text {
-    font-size: 0.65rem;
-    color: var(--text-tertiary, #a1a1aa);
+    font-size: var(--text-2xs);
+    color: var(--text-tertiary);
   }
 
   .track-line {
@@ -214,7 +226,7 @@
     left: 4px;
     right: 4px;
     height: 2px;
-    background: var(--card-border, #444);
+    background: var(--card-border);
     z-index: 1;
   }
 
@@ -222,7 +234,7 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--primary, #06b6d4);
+    background: var(--primary);
     z-index: 2;
     position: absolute;
     left: 0;
@@ -236,59 +248,59 @@
   .transfer-pill {
     position: relative;
     z-index: 3;
-    background: var(--page-bg, #09090b);
-    border: 1px solid var(--card-border, #333);
-    padding: 0.05rem 0.3rem;
-    border-radius: 4px;
-    font-size: 0.6rem;
-    color: var(--text-secondary, #d4d4d8);
+    background: var(--surface);
+    border: 1px solid var(--card-border);
+    padding: 0.05rem 0.35rem;
+    border-radius: var(--radius-sm);
+    font-size: var(--text-2xs);
+    color: var(--text-secondary);
   }
 
   .card-footer {
     display: flex;
-    gap: 0.5rem;
+    gap: var(--space-2);
     justify-content: flex-end;
     align-items: center;
-    border-top: 1px solid var(--card-border, #2a2a2a);
-    padding-top: 0.5rem;
+    border-top: 1px solid var(--card-border);
+    padding-top: var(--space-2);
   }
 
   .action-btn {
-    font-size: 0.7rem;
-    padding: 0.25rem 0.6rem;
-    border-radius: var(--radius-sm, 4px);
+    font-size: var(--text-xs);
+    padding: 0.3rem 0.65rem;
+    border-radius: var(--radius-sm);
     display: inline-flex;
     align-items: center;
-    gap: 0.3rem;
+    gap: 0.35rem;
   }
 
   .applied-note {
     display: inline-flex;
     align-items: center;
-    gap: 0.3rem;
-    font-size: 0.7rem;
-    color: #10b981;
+    gap: 0.35rem;
+    font-size: var(--text-xs);
+    color: var(--success);
   }
 
   .hint {
-    font-size: 0.7rem;
-    color: var(--text-tertiary, #a1a1aa);
+    font-size: var(--text-2xs);
+    color: var(--text-tertiary);
   }
 
   .error-desc {
-    font-size: 0.7rem;
-    color: #f87171;
+    font-size: var(--text-2xs);
+    color: var(--danger);
     margin: 0;
   }
 
   .plan-select {
     flex: 1;
     min-width: 0;
-    font-size: 0.7rem;
-    background: var(--page-bg, #09090b);
-    color: var(--text-primary, #fff);
-    border: 1px solid var(--card-border, #333);
-    border-radius: var(--radius-sm, 4px);
-    padding: 0.2rem 0.35rem;
+    font-size: var(--text-xs);
+    background: var(--surface);
+    color: var(--text-primary);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+    padding: 0.25rem 0.45rem;
   }
 </style>

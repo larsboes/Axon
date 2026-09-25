@@ -2,13 +2,37 @@
   import { onMount, tick } from 'svelte';
   import { base } from '$app/paths';
   import { page } from '$app/state';
+  import { goto } from '$app/navigation';
+  import { link } from '$lib/nav';
   import Icon from '$lib/Icon.svelte';
   import { assistantStore } from './assistant.svelte';
   import { extractRouteContext } from './context';
-  import JourneyActionCard from './cards/JourneyActionCard.svelte';
-  import CalendarActionCard from './cards/CalendarActionCard.svelte';
+  import GenerativeWidgetRenderer from './cards/GenerativeWidgetRenderer.svelte';
+
+  interface CommandItem {
+    id: string;
+    label: string;
+    hint: string;
+    icon: string;
+    run: () => void | Promise<void>;
+  }
+
+  const COMMANDS: CommandItem[] = [
+    { id: 'c-home', label: '/home', hint: 'Jump to Home & Today', icon: 'home', run: () => { void goto(link('/')); assistantStore.closeDrawer(); } },
+    { id: 'c-cal', label: '/calendar', hint: 'Jump to Calendar & Agenda', icon: 'calendar', run: () => { void goto(link('/calendar')); assistantStore.closeDrawer(); } },
+    { id: 'c-trav', label: '/travel', hint: 'Jump to Travel & Connections', icon: 'train', run: () => { void goto(link('/travel')); assistantStore.closeDrawer(); } },
+    { id: 'c-feed', label: '/feed', hint: 'Jump to Reading Feed', icon: 'feed', run: () => { void goto(link('/feed')); assistantStore.closeDrawer(); } },
+    { id: 'c-sys', label: '/systems', hint: 'Jump to Systems & Hardware', icon: 'server', run: () => { void goto(link('/systems')); assistantStore.closeDrawer(); } },
+    { id: 'c-fin', label: '/finance', hint: 'Jump to Finance & Ledger', icon: 'wallet', run: () => { void goto(link('/finance')); assistantStore.closeDrawer(); } },
+    { id: 'c-int', label: '/interior', hint: 'Jump to 3D RoomPlan Interior', icon: 'layout', run: () => { void goto(link('/interior')); assistantStore.closeDrawer(); } },
+    { id: 'c-scout', label: '/scout', hint: 'Jump to Scouting Opportunities', icon: 'compass', run: () => { void goto(link('/scout')); assistantStore.closeDrawer(); } },
+    { id: 'c-theme', label: '> theme', hint: 'Toggle Dark / Light theme', icon: 'sun', run: () => { document.documentElement.classList.toggle('dark'); } },
+    { id: 'c-clear', label: '> clear', hint: 'Clear chat history', icon: 'refresh', run: () => { assistantStore.clearHistory(); } },
+    { id: 'c-doc', label: '> doctor', hint: 'Probe system & capability health', icon: 'cpu', run: () => { void assistantStore.send('system health', routePath); } },
+  ];
 
   let inputPrompt = $state('');
+  let selectedCommandIndex = $state(0);
   let chatBodyEl: HTMLElement | undefined = $state();
   let inputEl: HTMLTextAreaElement | undefined = $state();
   let drawerEl: HTMLElement | undefined = $state();
@@ -21,6 +45,20 @@
     base && page.url.pathname.startsWith(base) ? page.url.pathname.slice(base.length) || '/' : page.url.pathname,
   );
   const currentContext = $derived(extractRouteContext(routePath));
+
+  const isCommandInput = $derived(inputPrompt.startsWith('/') || inputPrompt.startsWith('>'));
+  const filteredCommands = $derived.by(() => {
+    if (!isCommandInput) return [];
+    const query = inputPrompt.toLowerCase().trim();
+    return COMMANDS.filter(
+      (cmd) => cmd.label.toLowerCase().includes(query) || cmd.hint.toLowerCase().includes(query)
+    );
+  });
+
+  async function executeCommand(cmd: CommandItem) {
+    inputPrompt = '';
+    await cmd.run();
+  }
 
   function handleTouchStart(e: TouchEvent) {
     if (e.touches.length === 1) {
@@ -78,6 +116,27 @@
   }
 
   function handleInputKeyDown(event: KeyboardEvent) {
+    if (isCommandInput && filteredCommands.length > 0) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        selectedCommandIndex = (selectedCommandIndex + 1) % filteredCommands.length;
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        selectedCommandIndex = (selectedCommandIndex - 1 + filteredCommands.length) % filteredCommands.length;
+        return;
+      }
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        const cmd = filteredCommands[selectedCommandIndex] || filteredCommands[0];
+        if (cmd) {
+          void executeCommand(cmd);
+          return;
+        }
+      }
+    }
+
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault();
       void handleSend();
@@ -86,6 +145,10 @@
 
   function sendQuickPrompt(promptText: string) {
     inputPrompt = promptText;
+    if (promptText.startsWith('/') || promptText.startsWith('>')) {
+      tick().then(() => inputEl?.focus());
+      return;
+    }
     void handleSend();
   }
 
@@ -202,11 +265,12 @@
               {#if msg.cards && msg.cards.length > 0}
                 <div class="cards-stream">
                   {#each msg.cards as card}
-                    {#if card.type === 'journey_option'}
-                      <JourneyActionCard card={card.data} onApply={(c, plan) => assistantStore.pinJourney(c, plan)} />
-                    {:else if card.type === 'calendar_slot'}
-                      <CalendarActionCard card={card.data} onApply={(c) => assistantStore.acceptCalendar(c)} />
-                    {/if}
+                    <GenerativeWidgetRenderer
+                      {card}
+                      onApplyJourney={(c, plan) => assistantStore.pinJourney(c, plan)}
+                      onApplyCalendar={(c) => assistantStore.acceptCalendar(c)}
+                      onPrompt={(p) => sendQuickPrompt(p)}
+                    />
                   {/each}
                 </div>
               {/if}
@@ -229,24 +293,49 @@
       </div>
 
       <!-- Quick Suggestion Chips based on Context -->
-      {#if currentContext.quickPrompts.length > 0}
-        <div class="quick-chips">
-          {#each currentContext.quickPrompts as qp}
-            <button class="chip-btn" onclick={() => sendQuickPrompt(qp)}>
-              {qp}
-            </button>
-          {/each}
-        </div>
-      {/if}
+      <div class="quick-chips">
+        <button class="chip-btn chip-command" onclick={() => sendQuickPrompt('/')}>
+          <Icon name="search" size={11} />
+          <span>/ Commands</span>
+        </button>
+        {#each currentContext.quickPrompts as qp}
+          <button class="chip-btn" onclick={() => sendQuickPrompt(qp)}>
+            {qp}
+          </button>
+        {/each}
+      </div>
 
       <!-- Footer / Input Box -->
       <footer class="drawer-footer">
+        {#if filteredCommands.length > 0}
+          <div class="command-palette-popover" role="listbox" aria-label="Command suggestions">
+            {#each filteredCommands as cmd, i (cmd.id)}
+              <button
+                type="button"
+                class="command-item-btn"
+                class:active={i === selectedCommandIndex}
+                onclick={() => void executeCommand(cmd)}
+                role="option"
+                aria-selected={i === selectedCommandIndex}
+              >
+                <div class="cmd-icon-wrap">
+                  <Icon name={cmd.icon as any} size={13} />
+                </div>
+                <div class="cmd-meta">
+                  <span class="cmd-label mono">{cmd.label}</span>
+                  <span class="cmd-hint">{cmd.hint}</span>
+                </div>
+              </button>
+            {/each}
+          </div>
+        {/if}
+
         <div class="input-container">
           <textarea
             bind:this={inputEl}
             bind:value={inputPrompt}
             onkeydown={handleInputKeyDown}
-            placeholder={`Ask Axon Assistant on ${currentContext.label}... (Enter to send)`}
+            placeholder={`Ask Axon Assistant or type / for commands... (Enter to send)`}
             rows={1}
             aria-label="Message Axon Assistant"
           ></textarea>
@@ -272,12 +361,14 @@
     right: 1.5rem;
     bottom: calc(var(--soundscape-dock-height, 0px) + 1.25rem);
     z-index: 60;
-    background: var(--card-bg, #18181b);
-    color: var(--text-primary, #f4f4f5);
-    border: 1px solid var(--card-border, #3f3f46);
-    border-radius: 9999px;
-    padding: 0.45rem 0.85rem;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+    background: var(--card-bg);
+    color: var(--text-primary);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-full, 9999px);
+    padding: 0.5rem 0.95rem;
+    box-shadow:
+      0 4px 20px rgb(0 0 0 / 25%),
+      0 0 16px var(--primary-soft);
     cursor: pointer;
     transition:
       transform 0.15s ease,
@@ -287,15 +378,21 @@
 
   .assistant-trigger-fab:hover {
     transform: translateY(-2px);
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
-    border-color: var(--primary, #06b6d4);
+    box-shadow:
+      0 8px 24px rgb(0 0 0 / 35%),
+      0 0 20px var(--primary-soft);
+    border-color: var(--primary);
+  }
+
+  .assistant-trigger-fab:active {
+    transform: scale(0.96);
   }
 
   .fab-inner {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    font-size: var(--text-xs, 0.75rem);
+    font-size: var(--text-xs);
     font-weight: 600;
   }
 
@@ -303,27 +400,27 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--primary, #06b6d4);
-    box-shadow: 0 0 6px var(--primary, #06b6d4);
+    background: var(--primary);
+    box-shadow: 0 0 8px var(--primary);
   }
 
   .shortcut-kbd {
-    background: var(--page-bg, #09090b);
-    border: 1px solid var(--card-border, #3f3f46);
-    border-radius: 4px;
-    padding: 0.05rem 0.35rem;
-    font-size: 0.65rem;
+    background: var(--surface);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+    padding: 0.1rem 0.4rem;
+    font-size: var(--text-2xs);
     font-family: inherit;
-    color: var(--text-secondary, #a1a1aa);
+    color: var(--text-tertiary);
   }
 
   /* Scrim */
   .assistant-scrim {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.45);
-    backdrop-filter: blur(2px);
-    -webkit-backdrop-filter: blur(2px);
+    background: rgb(0 0 0 / 45%);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
     z-index: 80;
   }
 
@@ -332,11 +429,11 @@
     position: fixed;
     top: 0;
     right: 0;
-    width: clamp(380px, 32vw, 540px);
+    width: clamp(380px, 34vw, 560px);
     height: 100vh;
-    background: var(--page-bg, #09090b);
-    border-left: 1px solid var(--card-border, #27272a);
-    box-shadow: -8px 0 28px rgba(0, 0, 0, 0.4);
+    background: var(--page-bg);
+    border-left: 1px solid var(--card-border);
+    box-shadow: -8px 0 36px rgb(0 0 0 / 35%);
     z-index: 90;
     display: flex;
     flex-direction: column;
@@ -347,8 +444,8 @@
     height: auto;
     top: auto;
     bottom: 0;
-    border-top: 1px solid var(--card-border, #27272a);
-    border-radius: var(--radius-lg, 12px) var(--radius-lg, 12px) 0 0;
+    border-top: 1px solid var(--card-border);
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
   }
 
   /* Header */
@@ -356,9 +453,11 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 0.85rem 1rem;
-    background: var(--card-bg, #121215);
-    border-bottom: 1px solid var(--card-border, #27272a);
+    padding: 0.85rem 1.15rem;
+    background: var(--header-bg);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border-bottom: 1px solid var(--header-border);
   }
 
   .header-left {
@@ -370,23 +469,23 @@
   .assistant-title {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
-    font-size: var(--text-sm, 0.875rem);
+    gap: 0.45rem;
+    font-size: var(--text-sm);
     font-weight: 700;
-    color: var(--primary, #06b6d4);
+    color: var(--primary);
   }
 
   .context-pill {
     display: flex;
     align-items: center;
     gap: 0.35rem;
-    background: var(--primary-soft, rgba(6, 182, 212, 0.1));
-    border: 1px solid rgba(6, 182, 212, 0.25);
-    padding: 0.15rem 0.5rem;
-    border-radius: 9999px;
-    font-size: 0.65rem;
-    font-weight: 500;
-    color: var(--text-secondary, #d4d4d8);
+    background: var(--primary-soft);
+    border: 1px solid color-mix(in srgb, var(--primary) 25%, transparent);
+    padding: 0.15rem 0.55rem;
+    border-radius: var(--radius-full, 9999px);
+    font-size: var(--text-2xs);
+    font-weight: 550;
+    color: var(--text-secondary);
     cursor: default;
   }
 
@@ -394,7 +493,7 @@
     width: 5px;
     height: 5px;
     border-radius: 50%;
-    background: var(--primary, #06b6d4);
+    background: var(--primary);
   }
 
   .header-actions {
@@ -406,41 +505,42 @@
   .btn-icon {
     background: transparent;
     border: none;
-    color: var(--text-tertiary, #71717a);
-    padding: 0.35rem;
-    border-radius: var(--radius-sm, 4px);
+    color: var(--text-tertiary);
+    padding: 0.4rem;
+    border-radius: var(--radius-sm);
     cursor: pointer;
     display: grid;
     place-items: center;
     transition:
       color 0.15s ease,
-      background 0.15s ease;
+      background-color 0.15s ease;
   }
 
   .btn-icon:hover {
-    color: var(--text-primary, #fff);
-    background: var(--card-bg, #27272a);
+    color: var(--text-primary);
+    background-color: var(--surface);
   }
 
   .close-btn:hover {
-    color: #ef4444;
+    color: var(--danger);
+    background-color: var(--danger-soft);
   }
 
   /* Drawer Body */
   .drawer-body {
     flex: 1;
     overflow-y: auto;
-    padding: 1rem;
+    padding: 1.15rem;
     display: flex;
     flex-direction: column;
-    gap: 1rem;
+    gap: 1.15rem;
   }
 
   .message-row {
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    max-width: 90%;
+    max-width: 92%;
   }
 
   .message-row.user {
@@ -459,38 +559,42 @@
     align-items: center;
     gap: 0.4rem;
     margin-bottom: 0.25rem;
-    font-size: 0.62rem;
+    font-size: var(--text-2xs);
   }
 
   .route-tag {
-    color: var(--text-tertiary, #a1a1aa);
-    padding: 0.05rem 0.35rem;
-    border-radius: 4px;
-    border: 1px solid var(--card-border, #27272a);
+    color: var(--text-tertiary);
+    padding: 0.05rem 0.4rem;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--card-border);
+    font-weight: 500;
   }
 
   .bubble {
-    background: var(--card-bg, #18181b);
-    border: 1px solid var(--card-border, #27272a);
-    border-radius: var(--radius-md, 8px);
-    padding: 0.65rem 0.85rem;
-    color: var(--text-primary, #f4f4f5);
-    font-size: var(--text-xs, 0.75rem);
-    line-height: 1.5;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-lg) var(--radius-lg) var(--radius-lg) var(--radius-sm);
+    padding: 0.75rem 1rem;
+    color: var(--text-primary);
+    font-size: var(--text-xs);
+    line-height: var(--leading-normal);
     word-break: break-word;
+    box-shadow: var(--card-shadow);
   }
 
   .message-row.user .bubble {
-    background: var(--primary-soft, rgba(6, 182, 212, 0.15));
-    border-color: rgba(6, 182, 212, 0.3);
-    color: var(--text-primary, #ffffff);
+    background: color-mix(in srgb, var(--primary) 12%, var(--card-bg));
+    border-color: color-mix(in srgb, var(--primary) 28%, var(--card-border));
+    border-radius: var(--radius-lg) var(--radius-lg) var(--radius-sm) var(--radius-lg);
+    color: var(--text-primary);
   }
 
   .message-row.system .bubble {
     background: transparent;
-    border: 1px dashed var(--card-border, #3f3f46);
-    color: var(--text-tertiary, #a1a1aa);
-    font-size: 0.7rem;
+    border: 1px dashed var(--card-border);
+    border-radius: var(--radius-md);
+    color: var(--text-tertiary);
+    font-size: var(--text-xs);
     text-align: center;
   }
 
@@ -502,22 +606,22 @@
   .cards-stream {
     display: flex;
     flex-direction: column;
-    gap: 0.5rem;
-    margin-top: 0.5rem;
+    gap: var(--space-2);
+    margin-top: var(--space-2);
   }
 
   .msg-time {
-    font-size: 0.6rem;
-    color: var(--text-tertiary, #71717a);
-    margin-top: 0.2rem;
+    font-size: var(--text-2xs);
+    color: var(--text-tertiary);
+    margin-top: 0.25rem;
   }
 
   .loading-row {
     display: flex;
     align-items: center;
-    gap: 0.4rem;
-    font-size: 0.7rem;
-    color: var(--text-tertiary, #a1a1aa);
+    gap: 0.45rem;
+    font-size: var(--text-xs);
+    color: var(--text-tertiary);
     padding: 0.5rem 0;
   }
 
@@ -525,7 +629,7 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--primary, #06b6d4);
+    background: var(--primary);
     animation: bounce 1.2s infinite ease-in-out;
   }
 
@@ -551,11 +655,11 @@
   /* Quick Suggestion Chips */
   .quick-chips {
     display: flex;
-    gap: 0.4rem;
+    gap: var(--space-2);
     overflow-x: auto;
-    padding: 0.5rem 1rem;
-    background: var(--page-bg, #09090b);
-    border-top: 1px solid var(--card-border, #27272a);
+    padding: 0.6rem 1.15rem;
+    background: var(--page-bg);
+    border-top: 1px solid var(--card-border);
     scrollbar-width: none;
   }
 
@@ -565,42 +669,126 @@
 
   .chip-btn {
     white-space: nowrap;
-    background: var(--card-bg, #18181b);
-    border: 1px solid var(--card-border, #27272a);
-    border-radius: 9999px;
-    padding: 0.25rem 0.65rem;
-    font-size: 0.68rem;
-    color: var(--text-secondary, #d4d4d8);
+    background: var(--surface);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-full, 9999px);
+    padding: 0.3rem 0.75rem;
+    font-size: var(--text-xs);
+    font-weight: 500;
+    color: var(--text-secondary);
     cursor: pointer;
     transition:
+      background-color 0.15s ease,
       border-color 0.15s ease,
       color 0.15s ease;
   }
 
   .chip-btn:hover {
-    border-color: var(--primary, #06b6d4);
-    color: var(--primary, #06b6d4);
+    border-color: var(--primary);
+    color: var(--primary);
+    background-color: var(--primary-soft);
+  }
+
+  .chip-command {
+    background-color: var(--primary-soft);
+    color: var(--primary);
+    border-color: color-mix(in srgb, var(--primary) 30%, transparent);
+    font-weight: 600;
   }
 
   /* Input Footer */
   .drawer-footer {
-    padding: 0.75rem 1rem;
-    background: var(--card-bg, #121215);
-    border-top: 1px solid var(--card-border, #27272a);
+    position: relative;
+    padding: 0.85rem 1.15rem;
+    background: var(--header-bg);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border-top: 1px solid var(--header-border);
+  }
+
+  .command-palette-popover {
+    position: absolute;
+    bottom: calc(100% + 0.5rem);
+    left: 1.15rem;
+    right: 1.15rem;
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-md);
+    box-shadow: var(--card-shadow-hover);
+    max-height: 240px;
+    overflow-y: auto;
+    padding: 0.35rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    z-index: 20;
+  }
+
+  .command-item-btn {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.4rem 0.6rem;
+    border-radius: var(--radius-sm);
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    font: inherit;
+    text-align: left;
+    width: 100%;
+    transition: background-color 0.1s ease;
+  }
+
+  .command-item-btn.active,
+  .command-item-btn:hover {
+    background-color: var(--surface);
+  }
+
+  .cmd-icon-wrap {
+    display: grid;
+    place-items: center;
+    width: 1.5rem;
+    height: 1.5rem;
+    border-radius: var(--radius-sm);
+    background-color: var(--primary-soft);
+    color: var(--primary);
+    flex-shrink: 0;
+  }
+
+  .cmd-meta {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .cmd-label {
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--primary);
+  }
+
+  .cmd-hint {
+    font-size: var(--text-2xs);
+    color: var(--text-secondary);
+    margin-left: auto;
   }
 
   .input-container {
     display: flex;
     align-items: center;
-    background: var(--page-bg, #09090b);
-    border: 1px solid var(--card-border, #3f3f46);
-    border-radius: var(--radius-md, 8px);
-    padding: 0.4rem 0.6rem;
+    background: var(--surface);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    padding: 0.45rem 0.75rem;
     gap: 0.5rem;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }
 
   .input-container:focus-within {
-    border-color: var(--primary, #06b6d4);
+    border-color: var(--primary);
+    box-shadow: 0 0 0 1px var(--primary);
   }
 
   textarea {
@@ -608,28 +796,33 @@
     background: transparent;
     border: none;
     outline: none;
-    color: var(--text-primary, #fff);
+    color: var(--text-primary);
     font-family: inherit;
-    font-size: var(--text-xs, 0.75rem);
+    font-size: var(--text-xs);
     resize: none;
-    line-height: 1.4;
+    line-height: var(--leading-normal);
     max-height: 120px;
   }
 
   .send-btn {
-    background: var(--primary, #06b6d4);
-    color: var(--text-inverse, #000);
+    background: var(--primary);
+    color: var(--text-inverse);
     border: none;
-    border-radius: var(--radius-sm, 4px);
-    padding: 0.35rem 0.5rem;
+    border-radius: var(--radius-sm);
+    padding: 0.35rem 0.55rem;
     cursor: pointer;
     display: grid;
     place-items: center;
-    transition: opacity 0.15s ease;
+    transition: opacity 0.15s ease, transform 0.15s ease, background-color 0.15s ease;
+  }
+
+  .send-btn:hover:not(:disabled) {
+    background: var(--primary-hover);
+    transform: scale(1.04);
   }
 
   .send-btn:disabled {
-    opacity: 0.4;
+    opacity: 0.35;
     cursor: not-allowed;
   }
 
@@ -648,7 +841,7 @@
     width: 38px;
     height: 4px;
     border-radius: 9999px;
-    background: var(--card-border, #3f3f46);
+    background: var(--card-border);
   }
 
   /* Responsive Mobile Bottom Sheet */
@@ -663,8 +856,8 @@
       width: 100%;
       height: min(88dvh, calc(100dvh - env(safe-area-inset-top, 24px)));
       border-left: none;
-      border-top: 1px solid var(--card-border, #27272a);
-      border-radius: var(--radius-lg, 16px) var(--radius-lg, 16px) 0 0;
+      border-top: 1px solid var(--card-border);
+      border-radius: var(--radius-xl) var(--radius-xl) 0 0;
       transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
       overscroll-behavior: contain;
     }

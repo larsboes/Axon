@@ -24,6 +24,7 @@
   import PinnedLinks from "$lib/PinnedLinks.svelte";
   import RepoStatusCard from "$lib/RepoStatusCard.svelte";
   import HomeHorizon from "$lib/home/HomeHorizon.svelte";
+  import AxonGlance from "$lib/home/AxonGlance.svelte";
   import LocationView from "$lib/home/LocationView.svelte";
   import SourcesView from "$lib/home/SourcesView.svelte";
   import {
@@ -421,6 +422,11 @@
   <div class="workspace">
     <section class="next">
       {#if homeView === "now"}
+        <AxonGlance
+          entries={upcomingEntries}
+          plans={plans}
+          macmon={macmonSample}
+        />
         <HomeHorizon contexts={calendarContexts} entries={upcomingEntries} />
       {/if}
 
@@ -455,6 +461,28 @@
            `aria-hidden` rule between rows; it is the control now, which is why it is a
            real <button> with aria-expanded rather than a <li> with a label in it. -->
       <div class="ladder" aria-busy={loading}>
+        {#if loading && visibleDecisions.length === 0}
+          <div class="ladder-skeletons" aria-label="Loading decisions">
+            <div class="skeleton-band">
+              <div class="skeleton-bar title"></div>
+              <div class="skeleton-row">
+                <div class="skeleton-dot"></div>
+                <div class="skeleton-line-wrap">
+                  <div class="skeleton-line full"></div>
+                  <div class="skeleton-line half"></div>
+                </div>
+              </div>
+              <div class="skeleton-row">
+                <div class="skeleton-dot"></div>
+                <div class="skeleton-line-wrap">
+                  <div class="skeleton-line three-quarter"></div>
+                  <div class="skeleton-line third"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        {/if}
+
         {#each bands as band (band.label)}
           {@const open = disclosure.isOpen(band.label, leadingBand)}
           <section class="band tone-{band.tone}">
@@ -1485,6 +1513,77 @@
 
     .key-hint {
       display: none;
+    }
+  }
+
+  .ladder-skeletons {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    padding: var(--space-3) 0;
+  }
+
+  .skeleton-band {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .skeleton-bar.title {
+    width: 120px;
+    height: 18px;
+    border-radius: var(--radius-sm);
+    background: linear-gradient(90deg, var(--surface) 25%, color-mix(in srgb, var(--card-border) 40%, var(--surface)) 50%, var(--surface) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+  }
+
+  .skeleton-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border-radius: var(--radius-md);
+    background-color: var(--surface);
+  }
+
+  .skeleton-dot {
+    width: 24px;
+    height: 24px;
+    border-radius: var(--radius-sm);
+    background-color: var(--card-border);
+    flex-shrink: 0;
+  }
+
+  .skeleton-line-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    flex: 1;
+  }
+
+  .skeleton-line {
+    height: 12px;
+    border-radius: var(--radius-sm);
+    background: linear-gradient(90deg, var(--card-border) 25%, color-mix(in srgb, var(--card-border-hover) 50%, var(--card-border)) 50%, var(--card-border) 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+  }
+
+  .skeleton-line.full { width: 85%; }
+  .skeleton-line.three-quarter { width: 65%; }
+  .skeleton-line.half { width: 45%; }
+  .skeleton-line.third { width: 30%; }
+
+  @keyframes shimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .skeleton-bar.title,
+    .skeleton-line {
+      animation: none;
     }
   }
 </style>

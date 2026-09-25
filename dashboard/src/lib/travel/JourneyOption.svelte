@@ -1,17 +1,20 @@
 <script lang="ts">
   import Icon from "$lib/Icon.svelte";
+  import SparpreisSparkline, { type Observation } from "$lib/travel/SparpreisSparkline.svelte";
   import type { Journey, ConnectionLeg } from "$lib/api";
 
   let {
     journey,
     expanded,
     saved = false,
+    priceHistory,
     onToggle,
     onSave,
   }: {
     journey: Journey;
     expanded: boolean;
     saved?: boolean;
+    priceHistory?: Observation[];
     onToggle: () => void;
     onSave?: () => void;
   } = $props();
@@ -126,6 +129,9 @@
         <strong>
           {journey.total_price === null ? "price unknown" : `${journey.total_price.toFixed(2)} €`}
         </strong>
+        {#if priceHistory && priceHistory.length >= 2}
+          <SparpreisSparkline history={priceHistory} width={76} height={18} />
+        {/if}
       {/if}
     </div>
     {#if onSave}

@@ -417,3 +417,46 @@ describe('local keyword router', () => {
     expect(routeByKeywords('measure the living room', general).domain).toBe('interior');
   });
 });
+
+describe('generative UI widgets', () => {
+  const general = extractRouteContext('/');
+
+  it('emits action_choice card for general help query', async () => {
+    const reply = await assistantEngine.processQuery('help me', general);
+    expect(reply.cards).toBeDefined();
+    expect(reply.cards?.[0]?.type).toBe('action_choice');
+  });
+
+  it('emits telemetry_pulse card for system health query', async () => {
+    mockFetch((url) => {
+      if (url.includes('axon-status/health')) {
+        return json({ ok: true, capabilities: { calendar: { up: true }, transit: { up: false } } });
+      }
+      return json({
+        temp: { cpu_temp_avg: 48.5, gpu_temp_avg: 44.0 },
+        memory: { ram_usage: 12000000000, ram_total: 34359738368 },
+        all_power: 14.2,
+      });
+    });
+
+    const reply = await assistantEngine.processQuery('check system status', general);
+    expect(reply.cards).toBeDefined();
+    expect(reply.cards?.[0]?.type).toBe('telemetry_pulse');
+    if (reply.cards?.[0]?.type === 'telemetry_pulse') {
+      expect(reply.cards[0].data.metrics.length).toBeGreaterThanOrEqual(3);
+      expect(reply.cards[0].data.capabilitiesSummary?.up).toBe(1);
+    }
+  });
+
+  it('emits feed_digest card for recent feed query', async () => {
+    mockFetch(() => {
+      return json([
+        { id: '1', title: 'Generative UI in Practice', url: 'https://example.com/gen-ui', author: 'Research' },
+      ]);
+    });
+
+    const reply = await assistantEngine.processQuery('read feed articles', general);
+    expect(reply.cards).toBeDefined();
+    expect(reply.cards?.[0]?.type).toBe('feed_digest');
+  });
+});
