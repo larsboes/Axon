@@ -2,23 +2,209 @@
 <!-- This file enumerates real sets constantly (the four things the spine owns, the three
      surfaces of the control app, the log kinds security covers). Several flagged "triads" are
      four-item lists the check reads as three. Shortening them would delete information to move
-     a score, so the category is muted here deliberately — every other check stays live. -->
+     a score, so the category is muted here deliberately. Every other check stays live. -->
 
-# Axon
+# Selv
 
-My integration platform, for me and my agents both: AI usage, adopted tooling, and the tools I
-actually build, wired together instead of living as separate silos I have to remember to check.
-Public shell, so anyone can run their own deployment; one active private overlay holds
-everything instance-specific and injects it at runtime — never the reverse. An overlay may
-describe several cooperating hosts and user access scopes without forking the public core.
+**Your life's data on your own devices, with one assistant that can act on it.**
 
-## The one idea
+Selv is the working name, chosen on 2026-09-26. The code, the CLI and the repository still say
+Axon until the rename step in [Order of work](#order-of-work). This file is the product
+document: what Selv is, for whom, and what it will not do. Open work lives in [ISA.md](ISA.md).
+The engineering doctrine starts at [Start here](#start-here).
 
-Axon is not "a monorepo", and not just an agent layer. A spine owns contracts, identity,
-orchestration, and machine setup; capabilities each either wrap an existing tool (adapter) or
-are built from scratch (Rust services). Everything speaks the shared schemas, and **everything
-is a plugin from the core**: an installation enables only the capabilities its owner needs, so
-one person runs Axon with three plugins while another runs thirty.
+## What it is
+
+Selv keeps your people, places, trips, money, home and calendar as typed data on hardware you
+control. An assistant reads that data and proposes actions. You confirm the actions that
+matter. Models run on the device when the device can run them, on your Mac when it cannot, and
+in the cloud only after [Obhut](#obhut-the-trust-layer) removes what identifies a person.
+
+A slim core does the hard parts once. Everything else is an optional first-party extension in
+this one repository: you switch on travel and leave money off, or the other way round.
+
+## Who it is for
+
+1. **Me, first.** Selv runs my life today on one Mac, one iPhone and a Raspberry Pi.
+2. **One other household next.** The `axon-family` deployment is user number two. What breaks
+   there sets the priorities, before any onboarding flow or public release.
+3. **People with little technical experience, later.** They get working defaults and never see
+   a choice they did not ask for.
+4. **Developers, alongside.** The system side (your Macs, dotfiles and agent setup) is the way
+   in for someone who installs Selv for their machine and stays for their life.
+
+## Why another assistant
+
+The market shows the demand and the price. Instinct, an assistant for life admin, runs on a
+cloud desktop and needs "total delegation of session tokens, passwords, and multi-factor
+authentication codes". It costs an estimated "$200 to $500 per month"
+([Spinnable, 2026](https://www.spinnable.ai/blog/what-is-instinct-ai-guide)).
+
+Selv takes the opposite position. Your passwords stay yours. Each paired device holds one key
+that never leaves it, and data about other people leaves your devices only encrypted or
+pseudonymized. That trade is only possible because the data is typed: the assistant acts
+through typed tools, not by driving a browser with your credentials.
+
+## Principles
+
+Each principle names the decision that set it. The decisions before 2026-09-26 are in the
+frozen vault PRD (see [Where the reasoning lives](#where-the-reasoning-lives)).
+
+1. **Local first, cloud by rule.** A task runs on the best model the device can reach: its own
+   Apple model, then the Mac's, then deterministic rules. (Q118)
+2. **The device key admits, not the network.** Every connection carries the same signed
+   requests, so a new connection type adds reach and no new security model. (Q119)
+3. **It works without setup.** Selv detects what your devices can do and chooses for you. Options exist for the
+   person who asks for them, behind Advanced.
+4. **Raw data about other people never leaves.** It leaves end-to-end encrypted with keys only
+   your devices hold, or pseudonymized by Obhut. A test proves each path, and a failing test
+   closes it. (Q120)
+5. **The assistant proposes.** Summaries and labels appear on their own. A reversible write
+   applies by itself only after a frozen corpus shows it is reliable. A write that leaves Selv
+   or cannot be undone always asks. (Q118)
+6. **Types first.** Screens and assistant tools come from the typed core, so the interface can
+   be generated from the data rather than drawn per feature. (Q117)
+7. **Measure before claiming.** A statement about the system cites the file, the command or
+   the measurement that makes it checkable.
+
+## The core
+
+The core is what every installation needs. A part is core only if removing it breaks the
+others. This list stays short on purpose.
+
+| Part | What it does | Where it is today |
+|---|---|---|
+| Entity store | Typed people, places, organisations and dated facts, each value with its source and data class | `capabilities/entities` |
+| Device identity and sync | Pairing, one Ed25519 key per device, signed requests, the phone's offline copy and outbox | `capabilities/devices`, `plugins/device-identity`, `dashboard/src-tauri/src/sync.rs` |
+| Data classes and Obhut | C0 to C3 on every value, and the reversible pseudonymizer | `libs/content-item`, `libs/pseudonymize`, `capabilities/comms/src/cloud_derivative.rs` |
+| Capability contract | How an extension declares its service, port, data and backup | `schemas/`, `service.toml` files, `libs/axon-server` |
+| Model ladder | On-device, Mac and rules, chosen per task at runtime | `dashboard/src/lib/intelligence`, `plugins/foundation-models`, `libs/inference` |
+| Assistant | One drawer that knows the domain you are in and acts through typed tools | `dashboard/src/lib/assistant` |
+
+### Obhut, the trust layer
+
+Obhut (German: safekeeping) is the name for the part that decides what may leave your devices
+and in which form. Today it is the data classes plus the reversible pseudonymizer
+(`prepare_pseudonymized`, 48 of 48 on the frozen corpus, Axon `06ebd0c`). We built it because
+we found no implementation that met the rule in principle 4. The plan is to grow it into a
+standalone, well-tested Rust library with its own name and README.
+
+## Extensions
+
+Every extension is first-party, lives in this repository and is optional. There is no
+third-party extension store: a stranger's code does not run next to your data. Ideas from
+other projects come in through `upstreams.toml`, with a verdict and a reason.
+
+| Area | Extensions today (a selection: `axon capability list` shows every one) |
+|---|---|
+| Travel | `trips`, `transit`, `traveler`, `scouting`, `sparpreis-watch`, `punctuality` |
+| People | `entities-sync`, `entities-google-sync`, `places`, `people-registry` |
+| Money | `finance`, `finance-prices` |
+| Home | `interior`, `home-assistant`, `soundscape`, `printing` |
+| Time and knowledge | `calendar`, `comms` (the feed), `knowledge-base`, `knowledge-graph`, `vault` |
+| Your machines | `host-patch`, `host-watch`, `host-net`, `macmon`, `backup`, `container-refresh` |
+| Your agents | `Packs/`, `tools/harnesses`, `agentbox`, `shell` |
+
+The last two rows are the system side. Selv manages your Macs and your agent setup the way it
+manages a trip: as data it can read, check and change with you.
+
+## Surfaces
+
+| Surface | State |
+|---|---|
+| iPhone app | Built (Tauri, iOS 16 and later). Works offline for admitted views. |
+| Web shell | Built. The same interface in a browser, served by the Mac. |
+| Assistant drawer | Built, keyword-routed. The model ladder is ready and not yet wired in. |
+| Mac app | Planned. It hosts the iCloud relay, pairing and setup, and later the notch panel from `machNotch`. |
+
+## Connections
+
+A device reaches its Selv node in any of four ways, side by side. Selv picks for you. The
+connection screen shows each with its pros and cons for the person who wants to choose.
+
+| Connection | Needs | State |
+|---|---|---|
+| Same Wi-Fi | Nothing: Bonjour finds the Mac, you compare a 16-character code once | Built |
+| Tailscale | The Tailscale app on each device | Built |
+| Your server or a hosted node | A server with a real certificate | Built on the phone. Hosting a node is a deployment step. |
+| iCloud | An Apple account. Records in CloudKit, encrypted by Selv. | Not built. Needs the Mac app. |
+
+## Open source and building in public
+
+The code is public. The license moves from MIT to AGPL-3.0 for the core, so anyone who hosts a
+changed Selv for others publishes their changes. I keep the copyright, and contributors sign
+off under a DCO. Whether some parts stay closed later (open core) is open question O2.
+
+Selv is also built in public. Every decision carries a date, an argument and a measurement,
+which makes it material for a series in the style of James Simo's
+[city-builder devlog](https://www.youtube.com/watch?v=BoqK5wOGpfU): the decision, the papers
+behind it, and what the measurement said.
+
+## Where the reasoning lives
+
+| Kind | Where |
+|---|---|
+| The product | This file, down to [Start here](#start-here) |
+| Open work | [ISA.md](ISA.md) and the ISA of each owner |
+| Why a thing is the way it is | `research/`: decisions, papers, rejected options and episode links, curated in one place and shown on the demo site. Not yet created. |
+| Decisions Q1 to Q120 | The vault PRD, frozen on 2026-09-26. A decision moves into `research/` when its area is next worked on. One that never earns a place stays in the archive. |
+
+## Non-goals
+
+- Selv never asks for your passwords or MFA codes, and it does not run on a cloud desktop.
+- Selv has no third-party extension store. Only first-party extensions run next to your data.
+- Selv is not a second writing tool. Prose stays in Obsidian, and Selv links to it and owns
+  the structured facts. (Q117)
+- Not every device is an authority. One node accepts writes, and a multi-master peer mesh
+  stays deferred (`dashboard/README.md`, "Device mesh boundary").
+- Android and Windows are out for now. Selv builds on Apple's on-device frameworks first.
+
+## Order of work
+
+The root ISA sizes each step when it starts.
+
+1. **License.** Switch the core to AGPL-3.0 and add the DCO note.
+2. **Name.** Check Selv against domains, the App Store and EUIPO/DPMA trademarks, then rename
+   the repository, the CLI and the bundle identifiers.
+3. **Documents.** Move the engineering doctrine below into `CONTRIBUTING.md`, rewrite the 208
+   links into it, and create `research/`.
+4. **User number two.** Make the family deployment work without me.
+5. **Mac app and iCloud.** The Mac app hosts CloudKit. Q120's test proves the records are
+   ciphertext.
+6. **The wedge.** Pick the one area a stranger sees first (O1).
+
+## Open questions
+
+| # | Question | State |
+|---|---|---|
+| O1 | Which area is the wedge a stranger sees first? | Open |
+| O2 | Fully open source, or open core with some closed parts? | Open. AGPL-3.0 keeps both possible. |
+| O3 | Does the Mac app live in this repository, or does `machNotch` grow into it? | Open |
+| O4 | How is Selv funded: support and sponsorship, hosting, or a company? | Open |
+
+## Decisions made in this document
+
+> [!done] D1, 2026-09-26: **the name is Selv, and Obhut names the trust layer.** Axon and LifeOS are both
+> taken, and a name close to LifeOS (for example LivOS) invites confusion with Daniel
+> Miessler's project. Selv (Norwegian and Danish: self) has no competitor in this field on
+> GitHub. Obhut had 2 repositories using the word.
+
+> [!done] D2, 2026-09-26: **the product document is this README, and open work stays in ISAs.** One PRD
+> file would be a second specification type, which the doctrine below forbids. The top of the
+> README is the page every visitor reads anyway.
+
+> [!done] D3, 2026-09-26: **the vault PRD is frozen, and its decisions migrate on touch.** Its 5,524 lines
+> and 118 recorded decisions stay readable as an archive. A decision moves into `research/`
+> only when its area is next worked on.
+
+> [!done] D4, 2026-09-26: **the reasoning moves into one curated `research/` page.** Decisions scattered
+> over 45 ISAs and many READMEs are not read. One place with narrative, papers and episode
+> links serves the build-in-public series and the demo site.
+
+> [!done] D5, 2026-09-26: **the documents say Selv now, and the code renames later.** The rename waits for
+> the availability check and the license switch.
+
+---
 
 ## Start here
 
