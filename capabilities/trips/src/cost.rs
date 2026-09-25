@@ -219,11 +219,7 @@ pub fn roll_up(details: &PlanDetails, spending: Result<TripSpending, Unreachable
     // A price whose unit cannot be resolved is counted, not dropped. Dropping it
     // is how the headline answered a confident 0 for a plan that had money on it.
     let mut unitless_items = 0_usize;
-    for item in details
-        .items
-        .iter()
-        .filter(|item| is_committed(item))
-    {
+    for item in details.items.iter().filter(|item| is_committed(item)) {
         let Some(amount) = cents(&item.payload) else {
             continue;
         };
@@ -323,11 +319,7 @@ pub fn roll_up(details: &PlanDetails, spending: Result<TripSpending, Unreachable
         .map(|stage| (stage, Tally::default()))
         .collect();
     let mut unattributed_tally = Tally::default();
-    for item in details
-        .items
-        .iter()
-        .filter(|item| is_committed(item))
-    {
+    for item in details.items.iter().filter(|item| is_committed(item)) {
         let Some(amount) = cents(&item.payload) else {
             continue;
         };
@@ -848,7 +840,10 @@ mod tests {
     fn a_stay_counts_as_booked_only_with_evidence_of_a_booking() {
         let stay = |id: &str, extra: Value| {
             let mut payload = json!({"check_in":"2026-10-07","check_out":"2026-10-13","latitude":52.5,"longitude":13.4,"amount_cents":70_735,"currency":"EUR"});
-            payload.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            payload
+                .as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
             item("stay", id, payload)
         };
         let candidate = roll_up(
@@ -865,7 +860,12 @@ mod tests {
             assert_eq!(booked.booked_cents, Some(70_735));
         }
         let blank = roll_up(
-            &details(Some("EUR"), None, Vec::new(), vec![stay("s1", json!({"order_ref": " "}))]),
+            &details(
+                Some("EUR"),
+                None,
+                Vec::new(),
+                vec![stay("s1", json!({"order_ref": " "}))],
+            ),
             Ok(spending()),
         );
         assert_eq!(blank.booked_cents, Some(0));
