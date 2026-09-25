@@ -72,6 +72,7 @@ dependencies = [
  "log",
  "reqwest",
  "rusqlite",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",
@@ -79,6 +80,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-device-identity",
  "tauri-plugin-foundation-models",
+ "tauri-plugin-local-network",
  "tauri-plugin-log",
  "tauri-plugin-notification",
  "tauri-plugin-roomplan",
@@ -3334,6 +3336,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "aws-lc-rs",
+ "log",
  "once_cell",
  "rustls-pki-types",
  "rustls-webpki",
@@ -4169,6 +4172,14 @@ dependencies = [
 
 [[package]]
 name = "tauri-plugin-foundation-models"
+version = "0.1.0"
+dependencies = [
+ "tauri",
+ "tauri-plugin",
+]
+
+[[package]]
+name = "tauri-plugin-local-network"
 version = "0.1.0"
 dependencies = [
  "tauri",

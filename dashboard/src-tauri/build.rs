@@ -7,6 +7,7 @@ const COMMANDS: &[&str] = &[
     "mac_request_bytes",
     "connection_settings_get",
     "connection_settings_set",
+    "connection_local_set",
     "sync_status",
     "sync_entries",
     "sync_flush",
@@ -32,6 +33,8 @@ fn main() {
             "tauri-plugin-log",
             "tauri-plugin-notification",
             "tauri-plugin-device-identity",
+            "tauri-plugin-foundation-models",
+            "tauri-plugin-local-network",
             "tauri-plugin-roomplan",
         ] {
             println!("cargo:rustc-link-lib=static={library}");

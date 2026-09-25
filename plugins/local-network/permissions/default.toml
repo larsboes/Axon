@@ -1,0 +1,10 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = "Find an Axon node on the local network."
+permissions = ["allow-browse"]
+
+[[permission]]
+identifier = "allow-browse"
+description = "Browse Bonjour for _axon._tcp for a few seconds and return what was found."
+commands.allow = ["browse"]

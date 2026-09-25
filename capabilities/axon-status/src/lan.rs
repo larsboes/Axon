@@ -82,6 +82,10 @@ fn advertise(port: u16, host: &str, fingerprint: &str) {
             "local",
             &port.to_string(),
             "v=1",
+            // The phone connects to `https://<host>.local:<port>` straight from the record,
+            // without resolving the service first.
+            &format!("host={host}"),
+            &format!("port={port}"),
             &format!("fp={fingerprint}"),
         ])
         .stdout(std::process::Stdio::null())

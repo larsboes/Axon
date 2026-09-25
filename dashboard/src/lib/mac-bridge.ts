@@ -36,6 +36,16 @@ export interface ConnectionSettings {
   protocol_version: 'axon-node/v1';
   node_id: string;
   canonical_base_url: string | null;
+  /** The node on the local network, tried first (`LocalEndpoint` in src-tauri/src/mac_bridge.rs). */
+  local?: { base_url: string; pin_sha256: string } | null;
+}
+
+/** An Axon node found with Bonjour (plugins/local-network). Unverified until compared. */
+export interface FoundNode {
+  name: string;
+  host: string;
+  port: number;
+  fingerprint: string;
 }
 
 export function inTauri(): boolean {
@@ -163,6 +173,16 @@ export function setCanonicalBaseUrl(canonicalBaseUrl: string): Promise<Connectio
 }
 
 /** The error text of a failed `invoke`, which Tauri rejects with as a bare string. */
+/** Saves the node's local-network address and its certificate pin. An empty URL clears it. */
+export function setLocalEndpoint(baseUrl: string, pinSha256: string): Promise<ConnectionSettings> {
+  return invoke<ConnectionSettings>('connection_local_set', { baseUrl, pinSha256 });
+}
+
+/** Browses the local network for Axon nodes for a few seconds. iOS app only. */
+export function browseLocalNetwork(timeoutMs = 3000): Promise<{ nodes: FoundNode[]; denied: boolean }> {
+  return invoke('plugin:local-network|browse', { timeoutMs });
+}
+
 export function bridgeErrorText(error: unknown): string {
   if (typeof error === 'string') return error;
   if (error instanceof Error) return error.message;

@@ -35,11 +35,13 @@ pub fn run() {
         .plugin(tauri_plugin_roomplan::init())
         .plugin(tauri_plugin_device_identity::init())
         .plugin(tauri_plugin_foundation_models::init())
+        .plugin(tauri_plugin_local_network::init())
         .invoke_handler(tauri::generate_handler![
             mac_bridge::mac_request,
             mac_bridge::mac_request_bytes,
             mac_bridge::connection_settings_get,
             mac_bridge::connection_settings_set,
+            mac_bridge::connection_local_set,
             mac_bridge::sync_status,
             mac_bridge::sync_entries,
             mac_bridge::sync_flush,
@@ -54,6 +56,7 @@ pub fn run() {
         mac_bridge::mac_request_bytes,
         mac_bridge::connection_settings_get,
         mac_bridge::connection_settings_set,
+        mac_bridge::connection_local_set,
         mac_bridge::sync_status,
         mac_bridge::sync_entries,
         mac_bridge::sync_flush,

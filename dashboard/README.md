@@ -289,6 +289,23 @@ bootstrap fallback. Phone-side Foundation Models are a separate adapter: they ma
 extract and summarize locally, but they do not become an unrestricted capability executor or an
 authority for synchronized state.
 
+**Transports, 2026-09-25 (PRD Q119).** The device key is the trust root, so the network a
+request arrives on no longer decides admission. The shell's gate admits a valid device signature
+on any listener (`libs/axon-server/src/auth.rs`, `with_device_verifier`), and the app offers
+every way to connect side by side, each with its pros and cons (`src/lib/MacConnection.svelte`,
+`src/lib/connection/transports.ts`):
+
+| Option | How | State |
+|---|---|---|
+| Same Wi-Fi | The shell's TLS listener (`AXON_LAN_PORT`), found with Bonjour (`plugins/local-network`); the person compares a 16-character code, then the app pins the certificate | Built |
+| Tailscale | `https://<name>.ts.net`, as before | Built |
+| Your server or hosted | Any `https` address with a real certificate | Built on the phone; a hosted node is a deployment, not app code |
+| iCloud | Encrypted records in the private CloudKit database (PRD Q120) | Not built |
+
+The local address is tried first with a 1.5-second connect timeout, then the main address. A read
+falls through to the main address; a write only when its connection never opened, so it cannot
+arrive twice. After the local address fails, the app skips it for a minute.
+
 The next sync contract is `schemas/axon-sync.schema.json`. It makes operation IDs, opaque
 revisions, acknowledgements, conflicts, and optional encrypted envelopes node-neutral. The
 existing local outbox still speaks to the current canonical node; this schema is the migration

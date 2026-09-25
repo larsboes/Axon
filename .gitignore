@@ -108,3 +108,4 @@ axon-local-*.lock
 /plugins/foundation-models/.tauri/
 /plugins/*/ios/.build/
 /plugins/*/ios/.swiftpm/
+/plugins/local-network/.tauri/

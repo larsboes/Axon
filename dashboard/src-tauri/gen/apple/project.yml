@@ -43,6 +43,8 @@ targets:
         UILaunchStoryboardName: LaunchScreen
         UIRequiredDeviceCapabilities: [arm64, metal]
         NSCameraUsageDescription: LifeOS uses the camera and LiDAR to capture room geometry offline.
+        NSLocalNetworkUsageDescription: Axon looks for your Mac on this Wi-Fi so it can connect without a VPN.
+        NSBonjourServices: [_axon._tcp]
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft

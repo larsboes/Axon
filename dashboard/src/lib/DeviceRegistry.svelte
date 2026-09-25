@@ -1,5 +1,7 @@
 <script lang="ts">
   import Overlay from './Overlay.svelte';
+  import { request } from './api';
+  import { comparisonCode } from './connection/transports';
   import {
     canClaimOnThisDevice,
     devices,
@@ -17,6 +19,8 @@
   let deviceLabel = $state('iPhone');
   let result = $state<{ ok: boolean; text: string } | null>(null);
   const canClaim = canClaimOnThisDevice();
+  /** The node's Same Wi-Fi listener, from the shell (PRD Q119); null when it is off. */
+  let lan = $state<{ port: number; host: string; fingerprint: string } | null>(null);
 
   function failure(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
@@ -37,6 +41,14 @@
   async function openPanel(): Promise<void> {
     open = true;
     await refresh();
+    try {
+      const answer = await request<{ enabled: boolean; lan?: { port: number; host: string; fingerprint: string } }>(
+        '/axon-status/api/axon-status/lan',
+      );
+      lan = answer.enabled && answer.lan ? answer.lan : null;
+    } catch {
+      lan = null;
+    }
   }
 
   async function createChallenge(): Promise<void> {
@@ -166,6 +178,12 @@
       <div class="section-heading">
         <div>
           <h3>Pair a device</h3>
+          {#if lan && !canClaim}
+            <p class="hint">
+              Same Wi-Fi is on ({lan.host}.local, port {lan.port}). When a phone finds this Mac, it shows a code. It must be
+              <strong class="code">{comparisonCode(lan.fingerprint)}</strong>.
+            </p>
+          {/if}
           <p class="hint">Generate a one-time challenge, then use its code or payload in the device setup flow.</p>
         </div>
         <button type="button" disabled={busy} onclick={() => void createChallenge()}>New code</button>
@@ -425,5 +443,9 @@
       align-items: stretch;
       flex-direction: column;
     }
+  }
+  .code {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    letter-spacing: 0.05em;
   }
 </style>

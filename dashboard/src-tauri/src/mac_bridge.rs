@@ -19,7 +19,10 @@
 //! path, the method and the headers are each checked against a closed set
 //! before anything leaves the device:
 //!
-//! - base URL: `https://<name>.ts.net[:port]`, or loopback on desktop only;
+//! - base URL: `https://<host>[:port]` (a tailnet name, a hosted node or an own server, PRD
+//!   Q119), or loopback on desktop only;
+//! - local URL: `https://<name>.local` or a private address, with the certificate pinned by its
+//!   SHA-256 ([`LocalEndpoint`]); tried first, with a short connect timeout;
 //! - path: relative, under [`ALLOWED_PATHS`], no `..`, no scheme, no `//`;
 //! - headers: [`FORWARDED_HEADERS`] only, values without control characters;
 //! - redirects: never followed.
@@ -142,8 +145,19 @@ pub struct Settings {
     /// Stable identity of this canonical Axon node. It survives URL changes and migration.
     #[serde(default = "default_node_id")]
     pub node_id: String,
-    /// For example `https://<name>.ts.net`. `None` until the operator sets it.
+    /// For example `https://<name>.ts.net` or a hosted node. `None` until the operator sets it.
     pub canonical_base_url: Option<String>,
+    /// The same node on the local network, when it was found or entered (PRD Q119).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local: Option<LocalEndpoint>,
+}
+
+/// The node's local-network listener (`libs/axon-server/src/lan.rs`): its address and the
+/// SHA-256 of the self-signed certificate this device accepts from it, and no other.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LocalEndpoint {
+    pub base_url: String,
+    pub pin_sha256: String,
 }
 
 fn default_node_id() -> String {
@@ -156,6 +170,7 @@ impl Default for Settings {
             protocol_version: NODE_PROTOCOL_VERSION.to_string(),
             node_id: default_node_id(),
             canonical_base_url: None,
+            local: None,
         }
     }
 }
@@ -237,24 +252,54 @@ pub fn validate_base(base: &str, allow_loopback: bool) -> Result<Url, String> {
         return Err("base URL has no host".into());
     };
     let loopback = matches!(host.as_str(), "localhost" | "127.0.0.1" | "[::1]");
-    let tailnet = host
-        .strip_suffix(".ts.net")
-        .is_some_and(|name| !name.is_empty() && !name.starts_with('.') && !name.ends_with('.'));
+    // Any https host (PRD Q119): a tailnet name, a hosted node, an own server. Its certificate
+    // is checked against the platform roots, and what admits this device there is its key, not
+    // the network, so the host name no longer has to be a tailnet one.
     match url.scheme() {
-        "https" if tailnet => {}
         "http" | "https" if loopback && allow_loopback => {}
         "http" | "https" if loopback => {
             return Err("loopback base URL is allowed only in the desktop app".into())
         }
-        "http" if tailnet => return Err("a tailnet base URL must use https".into()),
+        "https" if !host.starts_with('.') && !host.ends_with('.') => {}
+        "http" => return Err("base URL must use https".into()),
         _ => {
             return Err(
-                "base URL must be https://<name>.ts.net or, on the Mac, http://127.0.0.1:<port>"
-                    .into(),
+                "base URL must be https://<host> or, on the Mac, http://127.0.0.1:<port>".into(),
             )
         }
     }
     Ok(url)
+}
+
+/// Checks a local-network endpoint: https to a `.local` name or a private address, and a pin.
+///
+/// A public host is refused here: a pinned self-signed certificate is for the node on this
+/// Wi-Fi, and a public node has a real certificate and belongs in the base URL.
+pub fn validate_local(base: &str, pin_sha256: &str) -> Result<LocalEndpoint, String> {
+    let url = validate_base(base, false)?;
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    let local_name = host
+        .strip_suffix(".local")
+        .is_some_and(|name| !name.is_empty() && !name.contains('.'));
+    let private = match host.trim_start_matches('[').trim_end_matches(']').parse() {
+        Ok(std::net::IpAddr::V4(ip)) => ip.is_private(),
+        Ok(std::net::IpAddr::V6(ip)) => {
+            let first = ip.segments()[0];
+            (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80
+        }
+        Err(_) => false,
+    };
+    if !local_name && !private {
+        return Err("a local address must be <name>.local or a private IP address".into());
+    }
+    let pin = pin_sha256.trim().to_ascii_lowercase();
+    if pin.len() != 64 || !pin.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("the certificate pin must be 64 hexadecimal characters (SHA-256)".into());
+    }
+    Ok(LocalEndpoint {
+        base_url: url.origin().ascii_serialization(),
+        pin_sha256: pin,
+    })
 }
 
 /// Checks a request path against [`ALLOWED_PATHS`] and the shape rules.
@@ -387,22 +432,41 @@ pub async fn connection_settings_set<R: Runtime>(
     app: AppHandle<R>,
     canonical_base_url: String,
 ) -> Result<Settings, String> {
-    let settings = if canonical_base_url.trim().is_empty() {
-        Settings::default()
+    let mut settings = read_settings(&app)?;
+    settings.canonical_base_url = if canonical_base_url.trim().is_empty() {
+        None
     } else {
         let url = validate_base(&canonical_base_url, allow_loopback())?;
-        Settings {
-            canonical_base_url: Some(url.origin().ascii_serialization()),
-            ..Settings::default()
-        }
+        Some(url.origin().ascii_serialization())
     };
-    let path = settings_path(&app)?;
+    write_settings(&app, &settings)?;
+    Ok(settings)
+}
+
+/// Stores the node's local-network endpoint and its certificate pin. An empty URL clears it.
+#[tauri::command]
+pub async fn connection_local_set<R: Runtime>(
+    app: AppHandle<R>,
+    base_url: String,
+    pin_sha256: String,
+) -> Result<Settings, String> {
+    let mut settings = read_settings(&app)?;
+    settings.local = if base_url.trim().is_empty() {
+        None
+    } else {
+        Some(validate_local(&base_url, &pin_sha256)?)
+    };
+    write_settings(&app, &settings)?;
+    Ok(settings)
+}
+
+fn write_settings<R: Runtime>(app: &AppHandle<R>, settings: &Settings) -> Result<(), String> {
+    let path = settings_path(app)?;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
-    let text = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
-    std::fs::write(&path, text).map_err(|e| format!("{SETTINGS_FILE}: {e}"))?;
-    Ok(settings)
+    let text = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
+    std::fs::write(&path, text).map_err(|e| format!("{SETTINGS_FILE}: {e}"))
 }
 
 /// The Mac as a [`Transport`]. Every request is checked here, whichever command sent it, so
@@ -429,32 +493,6 @@ impl<R: Runtime> RequestSigner for NativeRequestSigner<R> {
             .state::<tauri_plugin_device_identity::DeviceIdentity<R>>()
             .sign(message)
             .map_err(|error| error.to_string())
-    }
-}
-
-pub struct ReqwestTransport {
-    base: Url,
-    client: reqwest::Client,
-    signer: Option<Arc<dyn RequestSigner>>,
-}
-
-impl ReqwestTransport {
-    pub fn new(base: Url) -> Result<Self, String> {
-        Self::with_signer(base, None)
-    }
-
-    fn with_signer(base: Url, signer: Option<Arc<dyn RequestSigner>>) -> Result<Self, String> {
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(TIMEOUT)
-            .connect_timeout(CONNECT_TIMEOUT)
-            .build()
-            .map_err(|e| format!("mac-bridge: {e}"))?;
-        Ok(Self {
-            base,
-            client,
-            signer,
-        })
     }
 }
 
@@ -528,39 +566,119 @@ fn signed_request(
     ])
 }
 
-impl Transport for ReqwestTransport {
-    async fn send(&self, request: &Outgoing, max_bytes: usize) -> Result<Reply, SendError> {
-        let url = target_url(&self.base, &request.path).map_err(SendError::Failed)?;
-        let method = validate_method(&request.method).map_err(SendError::Failed)?;
-        let mut headers = filter_headers(&request.headers).map_err(SendError::Failed)?;
+/// One address of the node and the client that reaches it.
+struct Endpoint {
+    base: Url,
+    client: reqwest::Client,
+    /// The local-network endpoint: tried first, and skipped for [`LOCAL_RETRY_AFTER_MS`] after
+    /// it failed, so a phone away from home does not wait on it for every request.
+    local: bool,
+}
+
+pub struct ReqwestTransport {
+    endpoints: Vec<Endpoint>,
+    signer: Option<Arc<dyn RequestSigner>>,
+}
+
+/// How long a connection to the local endpoint may take before the main address is tried.
+/// On the same Wi-Fi a connection opens in milliseconds (not measured here); this is the
+/// price of being away from home, paid once per [`LOCAL_RETRY_AFTER_MS`].
+const LOCAL_CONNECT_TIMEOUT: Duration = Duration::from_millis(1500);
+
+/// After the local endpoint failed, go straight to the main address for this long.
+const LOCAL_RETRY_AFTER_MS: i64 = 60_000;
+
+/// When the local endpoint last failed, unix milliseconds. Process-wide, because a transport is
+/// built per request.
+static LOCAL_FAILED_AT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+impl ReqwestTransport {
+    pub fn new(base: Url) -> Result<Self, String> {
+        Self::with_signer(Some(base), None, None)
+    }
+
+    /// The local endpoint first when there is one, then the main address. Either may be absent:
+    /// a phone that only ever uses the home Wi-Fi has no main address (PRD Q119).
+    fn with_signer(
+        base: Option<Url>,
+        local: Option<&LocalEndpoint>,
+        signer: Option<Arc<dyn RequestSigner>>,
+    ) -> Result<Self, String> {
+        let mut endpoints = Vec::new();
+        if let Some(local) = local {
+            let pin = decode_pin(&local.pin_sha256)?;
+            let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(TIMEOUT)
+                .connect_timeout(LOCAL_CONNECT_TIMEOUT)
+                .tls_backend_preconfigured(pinned_tls(pin)?)
+                .build()
+                .map_err(|e| format!("mac-bridge: {e}"))?;
+            let base = Url::parse(&local.base_url).map_err(|e| format!("local URL: {e}"))?;
+            endpoints.push(Endpoint {
+                base,
+                client,
+                local: true,
+            });
+        }
+        if let Some(base) = base {
+            let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(TIMEOUT)
+                .connect_timeout(CONNECT_TIMEOUT)
+                .build()
+                .map_err(|e| format!("mac-bridge: {e}"))?;
+            endpoints.push(Endpoint {
+                base,
+                client,
+                local: false,
+            });
+        }
+        Ok(Self { endpoints, signer })
+    }
+
+    async fn send_to(
+        &self,
+        endpoint: &Endpoint,
+        request: &Outgoing,
+        max_bytes: usize,
+    ) -> Result<Reply, (SendError, bool)> {
+        let fail = |e: String| (SendError::Failed(e), false);
+        let url = target_url(&endpoint.base, &request.path).map_err(fail)?;
+        let method = validate_method(&request.method).map_err(fail)?;
+        let mut headers = filter_headers(&request.headers).map_err(fail)?;
         let body = request.body.as_deref().unwrap_or("").as_bytes();
+        // Signed per attempt, so a second address never sees a nonce the first one consumed.
         if let Some(signer) = &self.signer {
             headers.extend(
                 signed_request(signer.as_ref(), method.as_str(), &request.path, body)
-                    .map_err(SendError::Failed)?,
+                    .map_err(fail)?,
             );
         }
-        let mut builder = self.client.request(method, url);
+        // A read may be repeated at the next address. A write only when the connection was
+        // never opened, so it cannot have been delivered twice.
+        let idempotent = method == reqwest::Method::GET;
+        let mut builder = endpoint.client.request(method, url);
         for (name, value) in headers {
             builder = builder.header(name, value);
         }
         if request.body.is_some() {
             builder = builder.body(body.to_vec());
         }
-        let mut response = builder
-            .send()
-            .await
-            .map_err(|e| classify(e, "the Mac did not answer"))?;
-        check_declared_length(response.content_length(), max_bytes).map_err(SendError::Failed)?;
+        let mut response = builder.send().await.map_err(|e| {
+            let retry = idempotent || e.is_connect();
+            (classify(e, "the Mac did not answer"), retry)
+        })?;
+        check_declared_length(response.content_length(), max_bytes).map_err(fail)?;
         let status = response.status().as_u16();
         let content_type = content_type_of(&response);
         let mut body = Vec::new();
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|e| classify(e, "reading the answer failed"))?
+            .map_err(|e| (classify(e, "reading the answer failed"), idempotent))?
         {
-            append_capped(&mut body, &chunk, max_bytes).map_err(SendError::Failed)?;
+            append_capped(&mut body, &chunk, max_bytes).map_err(fail)?;
         }
         Ok(Reply {
             status,
@@ -570,15 +688,140 @@ impl Transport for ReqwestTransport {
     }
 }
 
+impl Transport for ReqwestTransport {
+    async fn send(&self, request: &Outgoing, max_bytes: usize) -> Result<Reply, SendError> {
+        // Skipping the local endpoint only helps when there is another address to go to.
+        let recently_failed = self.endpoints.len() > 1
+            && now_ms() - LOCAL_FAILED_AT.load(std::sync::atomic::Ordering::Relaxed)
+                < LOCAL_RETRY_AFTER_MS;
+        let mut last = None;
+        for endpoint in &self.endpoints {
+            if endpoint.local && recently_failed {
+                continue;
+            }
+            match self.send_to(endpoint, request, max_bytes).await {
+                Ok(reply) => return Ok(reply),
+                Err((error, retry)) => {
+                    let unreachable = matches!(error, SendError::Unreachable(_));
+                    if endpoint.local && unreachable {
+                        LOCAL_FAILED_AT.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+                    }
+                    if !(endpoint.local && unreachable && retry) {
+                        return Err(error);
+                    }
+                    last = Some(error);
+                }
+            }
+        }
+        Err(last.unwrap_or_else(|| SendError::Failed("mac-bridge: no address to try".into())))
+    }
+}
+
+fn decode_pin(pin: &str) -> Result<[u8; 32], String> {
+    let bytes = pin.as_bytes();
+    if bytes.len() != 64 {
+        return Err("certificate pin must be 64 hexadecimal characters".into());
+    }
+    let mut out = [0u8; 32];
+    for (i, pair) in bytes.chunks_exact(2).enumerate() {
+        let text = std::str::from_utf8(pair).map_err(|_| "certificate pin is not hexadecimal")?;
+        out[i] = u8::from_str_radix(text, 16).map_err(|_| "certificate pin is not hexadecimal")?;
+    }
+    Ok(out)
+}
+
+/// A TLS client that accepts exactly one certificate, identified by its SHA-256.
+///
+/// The node's local listener has a self-signed certificate (`libs/axon-server/src/lan.rs`), so no
+/// chain or host name can be checked; the pin replaces both. The handshake signature is still
+/// verified with the provider's own functions, which proves the peer holds the pinned key.
+#[derive(Debug)]
+struct PinnedCertificate {
+    pin: [u8; 32],
+    provider: Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for PinnedCertificate {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        if Sha256::digest(end_entity.as_ref()).as_slice() == self.pin {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        } else {
+            Err(rustls::Error::General(
+                "the certificate is not the one this device paired with".into(),
+            ))
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+fn pinned_tls(pin: [u8; 32]) -> Result<rustls::ClientConfig, String> {
+    // Named, not the process default: `builder()` panics when a tree enables two providers.
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let mut config = rustls::ClientConfig::builder_with_provider(provider.clone())
+        .with_safe_default_protocol_versions()
+        .map_err(|e| format!("tls versions: {e}"))?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(PinnedCertificate { pin, provider }))
+        .with_no_client_auth();
+    config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    Ok(config)
+}
+
 /// The transport to the configured canonical node, or the "not configured" error.
 pub fn transport<R: Runtime>(app: &AppHandle<R>) -> Result<ReqwestTransport, String> {
     let settings = read_settings(app)?;
-    let Some(base) = settings.canonical_base_url.filter(|b| !b.trim().is_empty()) else {
+    let base = settings
+        .canonical_base_url
+        .as_deref()
+        .filter(|b| !b.trim().is_empty())
+        .map(|b| validate_base(b, allow_loopback()))
+        .transpose()?;
+    let local = settings.local.as_ref();
+    if base.is_none() && local.is_none() {
         return Err(format!(
-            "{NOT_CONFIGURED}: set the Axon node address in Settings, Axon connection"
+            "{NOT_CONFIGURED}: choose how to reach Axon in Settings, Axon connection"
         ));
-    };
-    let base = validate_base(&base, allow_loopback())?;
+    }
     #[cfg(mobile)]
     {
         let identity = app
@@ -587,6 +830,7 @@ pub fn transport<R: Runtime>(app: &AppHandle<R>) -> Result<ReqwestTransport, Str
             .map_err(|error| error.to_string())?;
         return ReqwestTransport::with_signer(
             base,
+            local,
             Some(Arc::new(NativeRequestSigner {
                 app: app.clone(),
                 device_id: identity.id,
@@ -594,7 +838,7 @@ pub fn transport<R: Runtime>(app: &AppHandle<R>) -> Result<ReqwestTransport, Str
         );
     }
     #[cfg(not(mobile))]
-    ReqwestTransport::new(base)
+    ReqwestTransport::with_signer(base, local, None)
 }
 
 fn content_type_of(response: &reqwest::Response) -> Option<String> {
@@ -910,6 +1154,50 @@ mod tests {
     }
 
     #[test]
+    fn a_local_endpoint_is_a_local_name_or_private_address_with_a_pin() {
+        let pin = "ab".repeat(32);
+        for good in [
+            "https://lars-mac.local:8443",
+            "https://192.168.1.20:8443",
+            "https://10.0.0.5",
+            "https://[fd00::1]:8443",
+        ] {
+            let local = validate_local(good, &pin).unwrap_or_else(|e| panic!("{good}: {e}"));
+            assert_eq!(local.pin_sha256, pin);
+        }
+        for bad in [
+            "https://axon.example.com",
+            "https://8.8.8.8",
+            "https://a.b.local",
+            "http://lars-mac.local",
+        ] {
+            assert!(validate_local(bad, &pin).is_err(), "{bad} must be refused");
+        }
+        assert!(validate_local("https://lars-mac.local", "abc").is_err());
+        assert!(validate_local("https://lars-mac.local", &"zz".repeat(32)).is_err());
+    }
+
+    /// The pin is the whole check: the certificate with that SHA-256 passes, any other fails,
+    /// whatever name it claims.
+    #[test]
+    fn the_pinned_verifier_accepts_one_certificate_only() {
+        use rustls::client::danger::ServerCertVerifier;
+        let cert = rustls::pki_types::CertificateDer::from(b"the paired certificate".to_vec());
+        let other = rustls::pki_types::CertificateDer::from(b"another certificate".to_vec());
+        let pin: [u8; 32] = Sha256::digest(cert.as_ref()).into();
+        let verifier = PinnedCertificate {
+            pin,
+            provider: Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
+        };
+        let name = rustls::pki_types::ServerName::try_from("anything.local").unwrap();
+        let now = rustls::pki_types::UnixTime::now();
+        assert!(verifier.verify_server_cert(&cert, &[], &name, &[], now).is_ok());
+        assert!(verifier.verify_server_cert(&other, &[], &name, &[], now).is_err());
+        assert_eq!(decode_pin(&hex(&pin)).unwrap(), pin);
+        assert!(pinned_tls(pin).is_ok());
+    }
+
+    #[test]
     fn accepts_tailnet_https_with_and_without_port() {
         assert!(validate_base("https://mac.example-tailnet.ts.net", false).is_ok());
         assert!(validate_base("https://mac.example-tailnet.ts.net/", false).is_ok());
@@ -931,15 +1219,23 @@ mod tests {
         assert!(validate_base("http://100.64.0.1", true).is_err());
     }
 
+    /// PRD Q119: a hosted node or an own server is a base URL like a tailnet name. What admits
+    /// the device there is its key; the platform roots check the certificate.
     #[test]
-    fn refuses_other_hosts() {
+    fn accepts_any_https_host() {
+        for good in [
+            "https://axon.example.com",
+            "https://home.example.org:8443",
+            "https://mac.example-tailnet.ts.net",
+        ] {
+            assert!(validate_base(good, false).is_ok(), "{good} must be accepted");
+        }
+    }
+
+    #[test]
+    fn refuses_other_shapes() {
         for bad in [
-            "https://example.com",
-            "https://ts.net",
             "https://.ts.net",
-            "https://evil.ts.net.example.com",
-            "https://evilts.net",
-            "https://100.64.0.1",
             "ftp://mac.example-tailnet.ts.net",
             "tauri://localhost",
             "https://user:pw@mac.example-tailnet.ts.net",
