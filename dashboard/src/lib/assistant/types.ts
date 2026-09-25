@@ -1,6 +1,6 @@
 import type { Journey } from '$lib/api';
 
-export type IntentDomain = 'travel' | 'interior' | 'calendar' | 'finance' | 'general';
+export type IntentDomain = 'travel' | 'interior' | 'calendar' | 'finance' | 'system' | 'feed' | 'general';
 
 /** How the local keyword router picked a domain. In-page word matching, no model. */
 export interface KeywordRouting {

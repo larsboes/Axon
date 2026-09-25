@@ -10,6 +10,7 @@
   import { axonStatus } from "$lib/api";
   import SoundscapeDock from "$lib/SoundscapeDock.svelte";
   import AssistantDrawer from "$lib/assistant/AssistantDrawer.svelte";
+  import { assistantStore } from "$lib/assistant/assistant.svelte";
   import MacConnection from "$lib/MacConnection.svelte";
   import SyncStatus from "$lib/SyncStatus.svelte";
 
@@ -285,6 +286,58 @@
       <MacConnection />
     </div>
   </footer>
+
+  <nav class="mobile-tab-bar" aria-label="Mobile navigation">
+    <a
+      class="tab-link"
+      class:active={isActive("/")}
+      href={link("/")}
+      aria-current={isActive("/") ? "page" : undefined}
+    >
+      <Icon name="home" size={18} />
+      <span class="tab-label">Home</span>
+    </a>
+    <a
+      class="tab-link"
+      class:active={isActive("/calendar")}
+      href={link("/calendar")}
+      aria-current={isActive("/calendar") ? "page" : undefined}
+    >
+      <Icon name="calendar" size={18} />
+      <span class="tab-label">Calendar</span>
+    </a>
+    <button
+      type="button"
+      class="tab-link tab-action"
+      onclick={() => assistantStore.toggle()}
+      aria-label="Ask Axon Assistant"
+    >
+      <span class="tab-action-icon">
+        <Icon name="sparkles" size={18} />
+      </span>
+      <span class="tab-label">Ask</span>
+    </button>
+    <a
+      class="tab-link"
+      class:active={isActive("/feed")}
+      href={link("/feed")}
+      aria-current={isActive("/feed") ? "page" : undefined}
+    >
+      <Icon name="feed" size={18} />
+      <span class="tab-label">Feed</span>
+    </a>
+    <button
+      type="button"
+      class="tab-link"
+      class:active={menuOpen || utilityActive}
+      onclick={() => (menuOpen = !menuOpen)}
+      aria-label="More navigation options"
+      aria-expanded={menuOpen}
+    >
+      <Icon name="menu" size={18} />
+      <span class="tab-label">More</span>
+    </button>
+  </nav>
 
   <SoundscapeDock />
   <AssistantDrawer />
@@ -566,9 +619,86 @@
     }
   }
 
+  .mobile-tab-bar {
+    display: none;
+  }
+
   /* The bar's own height comes from --header-h, which app.css redeclares as 3.25rem
      inside this same breakpoint. All six offsets above follow it without being restated. */
   @media (width < 38rem) {
+    .shell {
+      padding-bottom: calc(var(--soundscape-dock-height, 0px) + 3.75rem + env(safe-area-inset-bottom, 0px));
+    }
+
+    .mobile-tab-bar {
+      display: flex;
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: var(--soundscape-dock-height, 0px);
+      z-index: 45;
+      height: calc(3.5rem + env(safe-area-inset-bottom, 0px));
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+      background-color: var(--header-bg);
+      -webkit-backdrop-filter: var(--glass-blur);
+      backdrop-filter: var(--glass-blur);
+      border-top: 1px solid var(--header-border);
+      justify-content: space-around;
+      align-items: center;
+    }
+
+    @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+      .mobile-tab-bar {
+        background-color: var(--card-bg);
+      }
+    }
+
+    .tab-link {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0.15rem;
+      min-height: 2.75rem;
+      padding: 0.25rem 0.2rem;
+      border: 0;
+      background: transparent;
+      color: var(--nav-inactive);
+      font-size: var(--text-2xs);
+      font-weight: 500;
+      text-decoration: none;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
+      transition: color 0.15s ease;
+    }
+
+    .tab-link:hover,
+    .tab-link.active {
+      color: var(--primary);
+    }
+
+    .tab-action .tab-action-icon {
+      display: grid;
+      place-items: center;
+      width: 2rem;
+      height: 2rem;
+      border-radius: var(--radius-md);
+      background-color: var(--primary-soft);
+      color: var(--primary);
+      transition: transform 0.15s ease, background-color 0.15s ease;
+    }
+
+    .tab-action:active .tab-action-icon {
+      transform: scale(0.92);
+      background-color: var(--primary);
+      color: var(--text-inverse);
+    }
+
+    .tab-label {
+      line-height: 1;
+    }
+
     .bar {
       padding-inline: var(--space-5);
     }

@@ -115,7 +115,7 @@
   .slot-meta {
     display: flex;
     gap: 0.6rem;
-    font-size: 0.75rem;
+    font-size: var(--text-xs);
     color: var(--text-secondary, #d4d4d8);
   }
 

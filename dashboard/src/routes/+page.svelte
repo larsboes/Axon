@@ -393,6 +393,21 @@
     </a>
   </header>
 
+  <nav class="mobile-quick-actions" aria-label="Quick actions">
+    <a class="quick-chip" href={link("/feed")}>
+      <Icon name="plus" size={13} />
+      <span>Add link</span>
+    </a>
+    <a class="quick-chip" href={link("/travel")}>
+      <Icon name="map-pin" size={13} />
+      <span>Plan travel</span>
+    </a>
+    <a class="quick-chip" href={link("/feed?view=discover")}>
+      <Icon name="compass" size={13} />
+      <span>Scan sources</span>
+    </a>
+  </nav>
+
   {#if actionError}
     <div class="notice error" role="alert">
       <Icon name="alert" size={15} />
@@ -1372,7 +1387,49 @@
     }
   }
 
+  .mobile-quick-actions {
+    display: none;
+  }
+
   @media (width < 38rem) {
+    .mobile-quick-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      overflow-x: auto;
+      padding: 0.25rem 0 0.75rem;
+      margin-top: 0.25rem;
+      scrollbar-width: none;
+    }
+
+    .mobile-quick-actions::-webkit-scrollbar {
+      display: none;
+    }
+
+    .quick-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.4rem 0.75rem;
+      border: 1px solid var(--card-border);
+      border-radius: var(--radius-md);
+      background-color: var(--surface);
+      color: var(--text-primary);
+      font-size: var(--text-xs);
+      font-weight: 600;
+      text-decoration: none;
+      white-space: nowrap;
+      min-height: 2.35rem;
+      -webkit-tap-highlight-color: transparent;
+      transition: background-color 0.15s ease, border-color 0.15s ease;
+    }
+
+    .quick-chip:active {
+      background-color: var(--card-bg);
+      border-color: var(--primary);
+      color: var(--primary);
+    }
+
     .briefing {
       align-items: flex-start;
       flex-direction: column;

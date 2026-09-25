@@ -678,4 +678,10 @@
       bottom: calc(var(--soundscape-dock-height, 0px) + max(1rem, env(safe-area-inset-bottom, 12px)));
     }
   }
+
+  @media (width < 38rem) {
+    .assistant-trigger-fab {
+      display: none;
+    }
+  }
 </style>

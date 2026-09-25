@@ -48,11 +48,31 @@ export function extractRouteContext(pathname: string): RouteContext {
     };
   }
 
+  if (pathname.startsWith('/systems')) {
+    return {
+      pathname,
+      domain: 'system',
+      label: 'Systems',
+      contextSummary: 'Systems: health and telemetry from axon-status and macmon.',
+      quickPrompts: ['System health', 'Hardware status'],
+    };
+  }
+
+  if (pathname.startsWith('/feed')) {
+    return {
+      pathname,
+      domain: 'feed',
+      label: 'Feed',
+      contextSummary: 'Feed: reading and link ingestion through comms.',
+      quickPrompts: ['Recent unread feed'],
+    };
+  }
+
   return {
     pathname,
     domain: 'general',
     label: 'Axon',
     contextSummary: 'No capability bias on this page.',
-    quickPrompts: ['Find a 2-hour focus block tomorrow', 'Train from Frankfurt to Berlin tomorrow'],
+    quickPrompts: ['Find a 2-hour focus block tomorrow', 'Train from Frankfurt to Berlin tomorrow', 'System health'],
   };
 }

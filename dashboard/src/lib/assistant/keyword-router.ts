@@ -26,6 +26,14 @@ const CUES: Record<Exclude<IntentDomain, 'general'>, string[]> = {
     'expense', 'expenses', 'spending', 'money', 'eur', 'euro', 'ledger', 'balance',
     'portfolio', 'invest', 'receipt', 'budget',
   ],
+  system: [
+    'system', 'systems', 'health', 'status', 'machine', 'cpu', 'ram', 'temp', 'temperature',
+    'memory', 'hardware', 'power',
+  ],
+  feed: [
+    'feed', 'reading', 'read', 'article', 'articles', 'ingest', 'comms', 'newsletter',
+    'unread',
+  ],
 };
 
 /** Lower-cased words joined by single spaces and padded, so a cue matches only on word

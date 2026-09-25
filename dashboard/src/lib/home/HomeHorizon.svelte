@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { link } from "$lib/nav";
   import Icon from "$lib/Icon.svelte";
   import { contextLink, entryReaderLink, kindConfig } from "$lib/calendar/types";
@@ -11,6 +12,15 @@
     contexts: CalendarContext[];
     entries: CalendarEntry[];
   } = $props();
+
+  let now = $state(new Date());
+
+  onMount(() => {
+    const timer = setInterval(() => {
+      now = new Date();
+    }, 30_000);
+    return () => clearInterval(timer);
+  });
 
   /// Four rows before the Calendar page is the better surface. Past that this
   /// stops being a horizon and starts being a second calendar.
@@ -25,6 +35,25 @@
 
   function entryTime(entry: CalendarEntry) {
     return entry.all_day ? "all day" : entry.starts_at.slice(11, 16);
+  }
+
+  function getProximity(entry: CalendarEntry): { isNow: boolean; text: string } | null {
+    if (entry.all_day) return null;
+    const start = new Date(entry.starts_at).getTime();
+    const end = new Date(entry.ends_at).getTime();
+    const current = now.getTime();
+
+    if (current >= start && current <= end) {
+      return { isNow: true, text: "Now" };
+    }
+    const diffMin = Math.round((start - current) / 60_000);
+    if (diffMin > 0 && diffMin <= 120) {
+      return {
+        isNow: false,
+        text: diffMin < 60 ? `in ${diffMin}m` : `in ${Math.floor(diffMin / 60)}h ${diffMin % 60}m`,
+      };
+    }
+    return null;
   }
 
   /// A context is a span, so it reads as one: "1–2 Sept", or a single date when
@@ -43,6 +72,7 @@
     {#if entries.length > 0}
       <ol class="entries">
         {#each entries.slice(0, ENTRY_LIMIT) as entry (entry.id)}
+          {@const proximity = getProximity(entry)}
           <li>
             <!-- Reader, not the edit form: from Home you want to know what this
                  is and what it links to, not to move it. -->
@@ -52,7 +82,15 @@
                 style={`--entry-color: ${kindConfig(entry.kind).color}`}
                 class:planned={entry.commitment !== "committed"}
               ></i>
-              <strong>{entry.title}</strong>
+              <span class="entry-main">
+                <strong>{entry.title}</strong>
+                {#if proximity}
+                  <span class="live-badge" class:now={proximity.isNow}>
+                    <span class="pulse-dot"></span>
+                    {proximity.text}
+                  </span>
+                {/if}
+              </span>
               <small>
                 <span class="when">{entryTime(entry)}</span>
                 {#if entry.location}<span class="where">{entry.location}</span>{/if}
@@ -135,6 +173,57 @@
     font-weight: 550;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .entry-main {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    min-width: 0;
+  }
+
+  .live-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.05rem 0.4rem;
+    border-radius: var(--radius-sm);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    color: var(--primary);
+    background-color: var(--primary-soft);
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .live-badge.now {
+    color: var(--success);
+    background-color: var(--success-soft);
+  }
+
+  .pulse-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background-color: currentColor;
+    animation: pulse-glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  @keyframes pulse-glow {
+    0%, 100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.4;
+      transform: scale(0.85);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pulse-dot {
+      animation: none;
+    }
   }
 
   /* Two facts, separated by space rather than by a middle dot. "all day · Telekom,

@@ -1,4 +1,4 @@
-import { axonStatus, calendar, interior, transit, trips, type IntentDraft, type Journey } from '$lib/api';
+import { axonStatus, calendar, comms, interior, macmon, transit, trips, type IntentDraft, type Journey } from '$lib/api';
 import { addDays, findFreeSlots, localDate, unreadableEntries } from './calendar-slots';
 import { matchedCues, routeByKeywords } from './keyword-router';
 import type { ActionCard, AssistantMessage, IntentDomain, RouteContext } from './types';
@@ -67,6 +67,10 @@ export class AssistantEngine {
         return Promise.resolve({
           content: 'The drawer cannot answer finance questions yet. Open Finance for balances and the review queue.',
         });
+      case 'system':
+        return this.system();
+      case 'feed':
+        return this.feed(prompt);
       default:
         return Promise.resolve({
           content:
@@ -214,6 +218,65 @@ export class AssistantEngine {
       };
     } catch (err) {
       return didNotAnswer('interior', err, 'No layout is shown.');
+    }
+  }
+
+  private async system(): Promise<Reply> {
+    const [healthResult, macmonSample] = await Promise.allSettled([
+      axonStatus.health(),
+      macmon.json(),
+    ]);
+
+    const lines: string[] = [];
+    if (healthResult.status === 'fulfilled') {
+      const h = healthResult.value;
+      lines.push(h.ok ? 'All systems are healthy.' : 'Systems need attention.');
+      const caps = Object.values(h.capabilities ?? {});
+      if (caps.length > 0) {
+        const upCount = caps.filter((c) => c.up).length;
+        lines.push(`${upCount} of ${caps.length} capabilities running.`);
+      }
+    } else {
+      lines.push(`axon-status did not answer: ${reason(healthResult.reason)}.`);
+    }
+
+    if (macmonSample.status === 'fulfilled') {
+      const m = macmonSample.value;
+      const cpu = m.temp?.cpu_temp_avg != null ? `${m.temp.cpu_temp_avg.toFixed(0)}°` : '--';
+      const gpu = m.temp?.gpu_temp_avg != null ? `${m.temp.gpu_temp_avg.toFixed(0)}°` : '--';
+      const ram = m.memory?.ram_usage ? (m.memory.ram_usage / 1073741824).toFixed(1) : '--';
+      const totalRam = m.memory?.ram_total ? (m.memory.ram_total / 1073741824).toFixed(0) : '--';
+      const power = m.all_power != null ? `${m.all_power.toFixed(1)} W` : '--';
+      lines.push(`Hardware: CPU ${cpu} (GPU ${gpu}), RAM ${ram} GB / ${totalRam} GB, Power ${power}.`);
+    }
+
+    return { content: lines.join('\n') };
+  }
+
+  private async feed(prompt: string): Promise<Reply> {
+    const urlMatch = prompt.match(/https?:\/\/[^\s]+/i);
+    if (urlMatch) {
+      const url = urlMatch[0];
+      try {
+        const entry = await comms.ingest(url);
+        return { content: `Ingested into Comms feed: ${entry.title ?? url}.` };
+      } catch (err) {
+        return didNotAnswer('comms', err, 'The URL was not ingested.');
+      }
+    }
+
+    try {
+      const entries = await comms.feed({ days: 7 });
+      if (!entries || entries.length === 0) {
+        return { content: 'Your feed has no recent items in the last 7 days.' };
+      }
+      const lines = [`Comms feed has ${entries.length} recent item(s):`];
+      for (const e of entries.slice(0, 3)) {
+        lines.push(`• ${e.title ?? e.url} (${e.author ?? 'article'})`);
+      }
+      return { content: lines.join('\n') };
+    } catch (err) {
+      return didNotAnswer('comms', err, 'Could not read feed.');
     }
   }
 }
