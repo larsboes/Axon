@@ -535,6 +535,18 @@ export const transit = {
     ),
 };
 
+/// Calendar pulls a plan's stages and booking deadlines only when asked
+/// (capabilities/calendar/src/server.rs, sync_trip_plan), and until 2026-09-25
+/// nothing asked, so no trip ever reached the calendar. A stage or booking change
+/// asks. Fire-and-forget: the plan write already succeeded, and a calendar that is
+/// down must not turn it into an error.
+function syncTripToCalendar(planId: string): void {
+  request<unknown>(
+    `/calendar/api/trip-plans/${encodeURIComponent(planId)}/sync`,
+    jsonInit('POST', {}),
+  ).catch((err) => console.warn('calendar trip sync failed', err));
+}
+
 export const trips = {
   list: () => request<TripPlan[]>('/trips/api/plans'),
   create: (plan: {
@@ -571,7 +583,10 @@ export const trips = {
     request<TripPlan>(
       `/trips/api/plans/${encodeURIComponent(id)}`,
       jsonInit('PATCH', patch),
-    ),
+    ).then((plan) => {
+      if ('stages' in patch || 'status' in patch) syncTripToCalendar(id);
+      return plan;
+    }),
   get: (id: string) => request<PlanDetails>(`/trips/api/plans/${encodeURIComponent(id)}`),
   delete: (id: string) =>
     request<void>(`/trips/api/plans/${encodeURIComponent(id)}`, { method: 'DELETE' }),
@@ -588,7 +603,10 @@ export const trips = {
     request<PlanItem>(
       `/trips/api/plans/${encodeURIComponent(planId)}/items`,
       jsonInit('POST', item),
-    ),
+    ).then((saved) => {
+      if (item.item_type === 'booking') syncTripToCalendar(planId);
+      return saved;
+    }),
   deleteItem: (planId: string, itemId: string) =>
     request<void>(
       `/trips/api/plans/${encodeURIComponent(planId)}/items/${encodeURIComponent(itemId)}`,

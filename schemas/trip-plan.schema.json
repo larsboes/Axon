@@ -618,6 +618,20 @@
             "string",
             "null"
           ]
+        },
+        "booked": {
+          "description": "True once the stay is actually booked. A stay copied from a search result is a candidate, and trips' cost roll-up counts its price as booked only when this is true or `order_ref` is set.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "order_ref": {
+          "description": "The provider's booking reference, once booked. Its presence also marks the stay as booked.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     },

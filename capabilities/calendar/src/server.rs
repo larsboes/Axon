@@ -126,7 +126,8 @@ const ROUTES: &[route_manifest::Route] = &[
     r(
         "POST",
         "/api/trip-plans/:plan_id/sync",
-        "Write a plan's option_selected and booked stages back as away entries, and any \
+        "Write a plan's stages back as away entries (booked committed, option_selected planned, \
+         planning and open possible), and any \
          booking's free-cancellation date as a deadline entry. Idempotent by external_id; \
          deletes nothing.",
     ),
@@ -849,12 +850,15 @@ async fn sync_trip_plan(State(state): State<AppState>, Path(plan_id): Path<Strin
             .unwrap_or_default()
         {
             let status = stage.get("status").and_then(|s| s.as_str()).unwrap_or("");
-            // `planning` is not a decision yet, and `completed` is history: writing
-            // either would block days for trips that are not happening or already
-            // happened.
+            // `planning` and `open` are not a decision yet, so they are written as
+            // `possible`, which never blocks a day: the trip is visible in the
+            // calendar without making the week look taken. Until 2026-09-25 they
+            // were skipped, and a trip twelve days out with no leg booked did not
+            // appear at all. `completed` is history and stays out.
             let commitment = match status {
                 "booked" => Commitment::Committed,
                 "option_selected" => Commitment::Planned,
+                "planning" | "open" => Commitment::Possible,
                 _ => continue,
             };
             let stage_id = stage.get("id").and_then(|s| s.as_str()).unwrap_or_default();

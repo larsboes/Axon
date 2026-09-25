@@ -4,8 +4,11 @@
 //! Three sources, three grains, and the whole point is that they are kept apart:
 //!
 //! - **Intent** is `trips_plans.budget_cents`, in the plan's own currency.
-//! - **Committed** is `booking.amount_cents` and `stay.amount_cents`: integer
-//!   minor units with an ISO code beside them.
+//! - **Committed** is `booking.amount_cents`, and `stay.amount_cents` for a stay
+//!   that carries evidence of a booking: integer minor units with an ISO code
+//!   beside them. A stay copied from a search result has a price and no booking,
+//!   and counting it put EUR 707 of "booked" on a plan with nothing booked
+//!   (Berlin, 2026-09-25).
 //! - **Offered** is `option_set` and `transport` prices, which are plain floats
 //!   with no currency field anywhere in the schema. They are reported in their
 //!   own block labelled offered-not-paid and are NEVER summed into the committed
@@ -108,8 +111,25 @@ pub struct CostRollup {
 const OFFERED_NOT_PAID: &str = "offered, not paid; these prices are floats with no currency \
      (schemas/trip-plan.schema.json optionSetPayload, transportPayload)";
 
-/// The two item types that carry an integer minor-unit price with an ISO code.
-const PRICED_TYPES: [&str; 2] = ["booking", "stay"];
+/// Whether an item's price is money committed rather than money offered.
+///
+/// A `booking` is always a purchase made elsewhere. A `stay` is one only when it
+/// says so: `booked: true`, or the provider's `order_ref`. Both item types carry
+/// an integer minor-unit price with an ISO code.
+fn is_committed(item: &crate::store::PlanItem) -> bool {
+    match item.item_type.as_str() {
+        "booking" => true,
+        "stay" => {
+            item.payload.get("booked").and_then(Value::as_bool) == Some(true)
+                || item
+                    .payload
+                    .get("order_ref")
+                    .and_then(Value::as_str)
+                    .is_some_and(|reference| !reference.trim().is_empty())
+        }
+        _ => false,
+    }
+}
 
 fn cents(payload: &Value) -> Option<i64> {
     payload.get("amount_cents")?.as_i64()
@@ -202,7 +222,7 @@ pub fn roll_up(details: &PlanDetails, spending: Result<TripSpending, Unreachable
     for item in details
         .items
         .iter()
-        .filter(|item| PRICED_TYPES.contains(&item.item_type.as_str()))
+        .filter(|item| is_committed(item))
     {
         let Some(amount) = cents(&item.payload) else {
             continue;
@@ -306,7 +326,7 @@ pub fn roll_up(details: &PlanDetails, spending: Result<TripSpending, Unreachable
     for item in details
         .items
         .iter()
-        .filter(|item| PRICED_TYPES.contains(&item.item_type.as_str()))
+        .filter(|item| is_committed(item))
     {
         let Some(amount) = cents(&item.payload) else {
             continue;
@@ -600,7 +620,7 @@ mod tests {
                     item(
                         "stay",
                         "s1",
-                        json!({"check_in":"2026-01-01","check_out":"2026-01-03","latitude":0,"longitude":0,"amount_cents":9_000,"currency":"USD","stage_id":"stage:1"}),
+                        json!({"check_in":"2026-01-01","check_out":"2026-01-03","latitude":0,"longitude":0,"amount_cents":9_000,"currency":"USD","stage_id":"stage:1","booked":true}),
                     ),
                     // Bound to no stage, and in two units again.
                     item(
@@ -820,5 +840,34 @@ mod tests {
         // No budget is not a zero budget.
         assert_eq!(rolled.planned_cents, None);
         assert_eq!(rolled.selected_options.total, None);
+    }
+
+    /// A stay copied from a search result is a candidate, not a purchase. The
+    /// Berlin plan reported EUR 707.35 booked on 2026-09-25 with nothing booked.
+    #[test]
+    fn a_stay_counts_as_booked_only_with_evidence_of_a_booking() {
+        let stay = |id: &str, extra: Value| {
+            let mut payload = json!({"check_in":"2026-10-07","check_out":"2026-10-13","latitude":52.5,"longitude":13.4,"amount_cents":70_735,"currency":"EUR"});
+            payload.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            item("stay", id, payload)
+        };
+        let candidate = roll_up(
+            &details(Some("EUR"), None, Vec::new(), vec![stay("s1", json!({}))]),
+            Ok(spending()),
+        );
+        assert_eq!(candidate.booked_cents, Some(0));
+
+        for evidence in [json!({"booked": true}), json!({"order_ref": "4711"})] {
+            let booked = roll_up(
+                &details(Some("EUR"), None, Vec::new(), vec![stay("s1", evidence)]),
+                Ok(spending()),
+            );
+            assert_eq!(booked.booked_cents, Some(70_735));
+        }
+        let blank = roll_up(
+            &details(Some("EUR"), None, Vec::new(), vec![stay("s1", json!({"order_ref": " "}))]),
+            Ok(spending()),
+        );
+        assert_eq!(blank.booked_cents, Some(0));
     }
 }
