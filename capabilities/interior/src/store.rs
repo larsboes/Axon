@@ -580,6 +580,11 @@ impl Store {
                 ON {prefix}_item_state(item_id, since DESC);
             CREATE INDEX IF NOT EXISTS {prefix}_idx_placement_flat
                 ON {prefix}_placement(flat);
+            CREATE TABLE IF NOT EXISTS {prefix}_sync_operation (
+                operation_id TEXT PRIMARY KEY,
+                revision INTEGER NOT NULL,
+                processed_at TEXT NOT NULL
+            );
             ",
             prefix = prefix
         ))?;
@@ -852,6 +857,36 @@ impl Store {
 
     /// Wie viele Eintraege es gibt. Die Frage, an der `interior import` entscheidet, ob es
     /// eine Migration ist oder ein Ueberschreiben (PRD Q64).
+    /// Returns the canonical revision recorded for a previously applied sync operation.
+    pub fn sync_operation_revision(&self, operation_id: &str) -> Result<Option<i64>, Fehler> {
+        let conn = self.conn()?;
+        Ok(conn
+            .query_row(
+                &format!(
+                    "SELECT revision FROM {}_sync_operation WHERE operation_id = ?1",
+                    self.prefix
+                ),
+                params![operation_id],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Records an applied operation. The primary key makes a retry visible instead of applying
+    /// the same mutation twice.
+    pub fn record_sync_operation(&self, operation_id: &str, revision: i64) -> Result<(), Fehler> {
+        let conn = self.conn()?;
+        conn.execute(
+            &format!(
+                "INSERT INTO {}_sync_operation (operation_id, revision, processed_at)
+                 VALUES (?1, ?2, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+                self.prefix
+            ),
+            params![operation_id, revision],
+        )?;
+        Ok(())
+    }
+
     pub fn item_count(&self) -> Result<i64, Fehler> {
         let p = &self.prefix;
         let conn = self.conn()?;

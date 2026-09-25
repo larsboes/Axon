@@ -1,17 +1,17 @@
 /**
- * The app's way to the Mac. Inside the Tauri bundle a relative `fetch` resolves
+ * The app's way to the canonical Axon node. Inside the Tauri bundle a relative `fetch` resolves
  * against the app's own origin and reaches nothing, so `request()` in `./api.ts`
- * hands Mac paths to the native `mac_request` command instead
+ * hands node paths to the native `mac_request` command instead
  * (`src-tauri/src/mac_bridge.rs`, which states why the call leaves from Rust).
  *
- * The Mac's address is not in this file or in any other: it is a house fact and
+ * The node address is not in this file or in any other: it is a deployment fact and
  * the repository is public. The operator sets it in the app, and the app keeps it
  * in its own data directory.
  */
 import { invoke } from '@tauri-apps/api/core';
 
 /** Mirrors `NOT_CONFIGURED` in `src-tauri/src/mac_bridge.rs`. */
-export const NOT_CONFIGURED = 'mac-bridge: not configured';
+export const NOT_CONFIGURED = 'axon-node: not configured';
 
 /** The path the settings panel calls to test the address. It is on the allow-list. */
 export const HEALTH_PATH = '/axon-status/api/axon-status/health';
@@ -32,8 +32,10 @@ export const STALE_BYTES_STATUS = 203;
 /** Mirrors `QUEUED_STATUS` in `src-tauri/src/sync.rs`: an item edit went into the outbox. */
 export const QUEUED_STATUS = 202;
 
-export interface MacSettings {
-  base_url: string | null;
+export interface ConnectionSettings {
+  protocol_version: 'axon-node/v1';
+  node_id: string;
+  canonical_base_url: string | null;
 }
 
 export function inTauri(): boolean {
@@ -49,13 +51,13 @@ function headerPairs(headers: HeadersInit | undefined): [string, string][] {
 }
 
 /**
- * Sends one request to the Mac. Rejects with the native error string when the
+ * Sends one request to the canonical node. Rejects with the native error string when the
  * request never got an answer (no address set, refused path, network down).
  */
 export async function macRequest(path: string, init?: RequestInit): Promise<MacResponse> {
   const body = init?.body;
   if (body != null && typeof body !== 'string') {
-    throw new Error('mac-bridge: only a text body can be sent to the Mac');
+    throw new Error('axon-node: only a text body can be sent to the canonical node');
   }
   return invoke<MacResponse>('mac_request', {
     request: {
@@ -123,7 +125,7 @@ export function decodeBytesFrame(raw: ArrayBuffer | ArrayBufferView | number[]):
 }
 
 /**
- * Fetches one Mac path as bytes (GET only). The native side refuses an answer
+ * Fetches one canonical-node path as bytes (GET only). The native side refuses an answer
  * above 64 MiB. Rejects with the native error string, as `macRequest` does.
  */
 export async function macRequestBytes(path: string): Promise<MacBytes> {
@@ -142,7 +144,7 @@ export function syncEntries(): Promise<OutboxEntry[]> {
   return invoke<OutboxEntry[]>('sync_entries');
 }
 
-/** Sends pending edits now. Without a Mac address it sends nothing. */
+/** Sends pending edits now. Without a canonical node address it sends nothing. */
 export function syncFlush(): Promise<SyncStatus> {
   return invoke<SyncStatus>('sync_flush');
 }
@@ -152,12 +154,12 @@ export function syncResolve(id: number, action: 'keep_mine' | 'discard'): Promis
   return invoke<SyncStatus>('sync_resolve', { id, action });
 }
 
-export function getMacSettings(): Promise<MacSettings> {
-  return invoke<MacSettings>('mac_settings_get');
+export function getConnectionSettings(): Promise<ConnectionSettings> {
+  return invoke<ConnectionSettings>('connection_settings_get');
 }
 
-export function setMacBaseUrl(baseUrl: string): Promise<MacSettings> {
-  return invoke<MacSettings>('mac_settings_set', { baseUrl });
+export function setCanonicalBaseUrl(canonicalBaseUrl: string): Promise<ConnectionSettings> {
+  return invoke<ConnectionSettings>('connection_settings_set', { canonicalBaseUrl });
 }
 
 /** The error text of a failed `invoke`, which Tauri rejects with as a bare string. */

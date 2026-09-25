@@ -133,7 +133,7 @@
   <Overlay title="Changes on this device" onClose={() => (open = false)} {busy} width="640px">
     {#if error}<p class="bad">{error}</p>{/if}
     {#if entries.length === 0}
-      <p>Nothing waits. Every change reached the Mac.</p>
+      <p>Nothing waits. Every change reached the canonical node.</p>
     {/if}
     {#each entries as entry (entry.id)}
       <section class="entry" class:conflict={entry.state === "conflict"}>
@@ -144,10 +144,10 @@
         </header>
         {#if entry.state === "conflict"}
           <p class="hint">
-            The Mac changed this item after you read it. Nothing was overwritten. Pick one.
+            The canonical node changed this item after you read it. Nothing was overwritten. Pick one.
           </p>
           <table>
-            <thead><tr><th scope="col">Field</th><th scope="col">Yours</th><th scope="col">On the Mac</th></tr></thead>
+            <thead><tr><th scope="col">Field</th><th scope="col">Yours</th><th scope="col">On the canonical node</th></tr></thead>
             <tbody>
               {#each fieldDiff(entry) as d (d.field)}
                 <tr><td class="mono">{d.field}</td><td>{showValue(d.mine)}</td><td>{showValue(d.theirs)}</td></tr>
@@ -165,7 +165,7 @@
             </button>
           </div>
         {:else if entry.state === "failed"}
-          <p class="bad">The Mac refused this change: {entry.error ?? "no reason given"}</p>
+          <p class="bad">The canonical node refused this change: {entry.error ?? "no reason given"}</p>
           <div class="actions">
             <button type="button" disabled={busy} onclick={() => void resolve(entry.id, "discard")}>
               Discard mine

@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axon.local/schemas/axon-sync.schema.json",
+  "title": "Axon node-neutral synchronization protocol",
+  "description": "Portable mutations, acknowledgements, revisions and conflicts for an offline-capable Axon device and canonical node. The protocol does not assume that the canonical node is a Mac.",
+  "$defs": {
+    "node_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$"
+    },
+    "device_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$"
+    },
+    "entity_type": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9._-]{0,63}$"
+    },
+    "entity_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "operation_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$"
+    },
+    "revision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Opaque to the client. A current deployment may use a decimal SQLite revision; a future node may use a hash or a composite revision."
+    },
+    "mutation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation_id",
+        "entity_type",
+        "entity_id",
+        "action",
+        "base_revision",
+        "fields",
+        "actor_device_id",
+        "created_at"
+      ],
+      "properties": {
+        "operation_id": { "$ref": "#/$defs/operation_id" },
+        "entity_type": { "$ref": "#/$defs/entity_type" },
+        "entity_id": { "$ref": "#/$defs/entity_id" },
+        "action": { "enum": ["upsert", "patch", "delete"] },
+        "base_revision": {
+          "anyOf": [
+            { "$ref": "#/$defs/revision" },
+            { "type": "null" }
+          ]
+        },
+        "fields": {
+          "type": "object",
+          "description": "The fields changed by the operation. A delete normally sends an empty object.",
+          "additionalProperties": true
+        },
+        "actor_device_id": { "$ref": "#/$defs/device_id" },
+        "created_at": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "acknowledgement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operation_id", "status", "processed_at"],
+      "properties": {
+        "operation_id": { "$ref": "#/$defs/operation_id" },
+        "status": { "enum": ["accepted", "duplicate", "conflict", "rejected"] },
+        "revision": { "$ref": "#/$defs/revision" },
+        "processed_at": { "type": "integer", "minimum": 1 },
+        "error": { "type": ["string", "null"], "maxLength": 2000 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "enum": ["accepted", "duplicate"] } } },
+          "then": { "required": ["revision"] }
+        },
+        {
+          "if": { "properties": { "status": { "enum": ["conflict", "rejected"] } } },
+          "then": { "required": ["error"] }
+        }
+      ]
+    },
+    "conflict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "conflict_id",
+        "operation_id",
+        "entity_type",
+        "entity_id",
+        "base_revision",
+        "canonical_revision",
+        "local_fields",
+        "canonical_fields",
+        "detected_at",
+        "state"
+      ],
+      "properties": {
+        "conflict_id": { "$ref": "#/$defs/operation_id" },
+        "operation_id": { "$ref": "#/$defs/operation_id" },
+        "entity_type": { "$ref": "#/$defs/entity_type" },
+        "entity_id": { "$ref": "#/$defs/entity_id" },
+        "base_revision": {
+          "anyOf": [
+            { "$ref": "#/$defs/revision" },
+            { "type": "null" }
+          ]
+        },
+        "canonical_revision": { "$ref": "#/$defs/revision" },
+        "local_fields": { "type": "object", "additionalProperties": true },
+        "canonical_fields": { "type": "object", "additionalProperties": true },
+        "detected_at": { "type": "integer", "minimum": 1 },
+        "state": { "enum": ["open", "accepted_local", "accepted_canonical", "merged"] }
+      }
+    },
+    "sync_envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "envelope_id",
+        "origin_node_id",
+        "target_node_id",
+        "actor_device_id",
+        "cursor",
+        "mutations",
+        "acknowledgements",
+        "conflicts",
+        "sent_at"
+      ],
+      "properties": {
+        "protocol_version": { "const": "axon-sync/v1" },
+        "envelope_id": { "$ref": "#/$defs/operation_id" },
+        "origin_node_id": { "$ref": "#/$defs/node_id" },
+        "target_node_id": { "$ref": "#/$defs/node_id" },
+        "actor_device_id": { "$ref": "#/$defs/device_id" },
+        "cursor": { "type": ["string", "null"], "maxLength": 512 },
+        "mutations": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": { "$ref": "#/$defs/mutation" }
+        },
+        "acknowledgements": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": { "$ref": "#/$defs/acknowledgement" }
+        },
+        "conflicts": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": { "$ref": "#/$defs/conflict" }
+        },
+        "sent_at": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "encrypted_envelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol_version",
+        "envelope_id",
+        "origin_node_id",
+        "target_node_id",
+        "sender_device_id",
+        "algorithm",
+        "nonce",
+        "ciphertext",
+        "aad",
+        "sent_at"
+      ],
+      "properties": {
+        "protocol_version": { "const": "axon-sync/encrypted/v1" },
+        "envelope_id": { "$ref": "#/$defs/operation_id" },
+        "origin_node_id": { "$ref": "#/$defs/node_id" },
+        "target_node_id": { "$ref": "#/$defs/node_id" },
+        "sender_device_id": { "$ref": "#/$defs/device_id" },
+        "algorithm": { "const": "xchacha20poly1305" },
+        "nonce": { "type": "string", "pattern": "^[A-Za-z0-9_-]{32}$" },
+        "ciphertext": { "type": "string", "minLength": 1 },
+        "aad": { "type": "string" },
+        "sent_at": { "type": "integer", "minimum": 1 }
+      }
+    }
+  },
+  "oneOf": [
+    { "$ref": "#/$defs/sync_envelope" },
+    { "$ref": "#/$defs/encrypted_envelope" }
+  ]
+}

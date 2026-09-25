@@ -8,14 +8,17 @@
   "permissions": [
     "core:default",
     "roomplan:default",
+    "foundation-models:default",
     "notification:default",
     "allow-mac-request",
     "allow-mac-request-bytes",
-    "allow-mac-settings-get",
-    "allow-mac-settings-set",
+    "allow-connection-settings-get",
+    "allow-connection-settings-set",
     "allow-sync-status",
     "allow-sync-entries",
     "allow-sync-flush",
-    "allow-sync-resolve"
+    "allow-sync-resolve",
+    "allow-device-identity-get",
+    "allow-device-identity-reset"
   ]
 }

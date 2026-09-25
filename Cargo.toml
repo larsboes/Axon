@@ -3,6 +3,7 @@ members = [
     "capabilities/axon-status",
     "capabilities/calendar",
     "capabilities/comms",
+    "capabilities/devices",
     "capabilities/entities",
     "capabilities/finance",
     "capabilities/host-net",
@@ -86,6 +87,7 @@ license = "MIT"
 aho-corasick = "1.1"
 axum = "0.7"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+getrandom = "0.3"
 reqwest = "0.13"
 rusqlite = { version = "0.40", features = ["bundled"] }
 serde = "1.0"

@@ -1,15 +1,15 @@
 <script lang="ts">
-  // The app's Mac address setting. Rendered only inside the Tauri app: the web shell
+  // The app's canonical Axon node setting. Rendered only inside the Tauri app: the web shell
   // reaches the Mac through its own proxy and has nothing to set.
   import { onMount } from "svelte";
   import Overlay from "./Overlay.svelte";
   import {
     bridgeErrorText,
-    getMacSettings,
+    getConnectionSettings,
     HEALTH_PATH,
     inTauri,
     macRequest,
-    setMacBaseUrl,
+    setCanonicalBaseUrl,
   } from "./mac-bridge";
 
   const shown = inTauri();
@@ -22,7 +22,7 @@
   onMount(async () => {
     if (!shown) return;
     try {
-      saved = (await getMacSettings()).base_url;
+      saved = (await getConnectionSettings()).canonical_base_url;
       draft = saved ?? "";
     } catch (error) {
       result = { ok: false, text: bridgeErrorText(error) };
@@ -33,7 +33,7 @@
     busy = true;
     result = null;
     try {
-      saved = (await setMacBaseUrl(draft)).base_url;
+      saved = (await setCanonicalBaseUrl(draft)).canonical_base_url;
       draft = saved ?? "";
       result = { ok: true, text: saved ? "Saved." : "Cleared." };
     } catch (error) {
@@ -60,10 +60,10 @@
 
 {#if shown}
   <button class="link" type="button" onclick={() => (open = true)}>
-    Mac connection{saved ? "" : " (not set)"}
+    Axon connection{saved ? "" : " (not set)"}
   </button>
   {#if open}
-    <Overlay title="Mac connection" onClose={() => (open = false)} {busy}>
+    <Overlay title="Axon connection" onClose={() => (open = false)} {busy}>
       <form
         onsubmit={(event) => {
           event.preventDefault();
@@ -71,7 +71,7 @@
         }}
       >
         <label>
-          Mac address
+          Canonical node address
           <input
             type="url"
             bind:value={draft}
@@ -82,7 +82,7 @@
           />
         </label>
         <p class="hint">
-          The Mac's tailnet https address. The app keeps it on this device only.
+          The HTTPS address of the canonical Axon node. The app keeps it on this device only. The Mac is the canonical node for now; a home server can replace it later.
         </p>
         <div class="actions">
           <button type="submit" disabled={busy}>Save</button>

@@ -2,8 +2,8 @@
  * The words and the diff behind the app's sync status line and conflicts view
  * (`./SyncStatus.svelte`). Pure functions, so `vite/sync-status.test.ts` runs them without Tauri.
  *
- * The state they read comes from the device's local store (`src-tauri/src/sync.rs`). The Mac
- * stays the authority (PRD Q113): a conflict shows both values and a person picks one.
+ * The state they read comes from the device's local store (`src-tauri/src/sync.rs`). The canonical
+ * node stays the authority for this phase: a conflict shows both values and a person picks one.
  */
 import type { OutboxEntry, SyncStatus } from './mac-bridge';
 
@@ -17,7 +17,7 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 
 /**
  * The parts of the status line, most urgent first. Empty when there is nothing to say: the
- * Mac answers and nothing waits.
+ * canonical node answers and nothing waits.
  */
 export function statusParts(status: SyncStatus, time: (ms: number) => string = clockTime): string[] {
   const parts: string[] = [];
@@ -25,11 +25,11 @@ export function statusParts(status: SyncStatus, time: (ms: number) => string = c
     parts.push(
       status.showing_from !== null
         ? `Offline — showing data from ${time(status.showing_from)}`
-        : 'Offline — the Mac does not answer',
+        : 'Offline — the canonical node does not answer',
     );
   }
   if (status.conflicts > 0) parts.push(plural(status.conflicts, 'conflict', 'conflicts'));
-  if (status.failed > 0) parts.push(`${plural(status.failed, 'change', 'changes')} refused by the Mac`);
+  if (status.failed > 0) parts.push(`${plural(status.failed, 'change', 'changes')} refused by the canonical node`);
   if (status.pending > 0) parts.push(`${plural(status.pending, 'change', 'changes')} waiting`);
   if (status.store_error) parts.push(`Offline copy unavailable: ${status.store_error}`);
   return parts;
@@ -61,8 +61,8 @@ function same(a: unknown, b: unknown): boolean {
 }
 
 /**
- * The fields where the operator's queued edit and the Mac's current item differ. A field the
- * edit does not name is not shown: the edit leaves it alone (PATCH), or the Mac's value stands
+ * The fields where the operator's queued edit and the canonical node's current item differ. A field the
+ * edit does not name is not shown: the edit leaves it alone (PATCH), or the canonical node's value stands
  * anyway once the operator picks. Without the Mac's item every named field is shown with
  * `theirs: null`.
  */

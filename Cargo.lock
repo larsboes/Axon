@@ -1420,6 +1420,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7cd812cc2bc1d69d4764bd80df88b4317eaef9e773c75226407d9bc0876b211c"
 
 [[package]]
+name = "devices"
+version = "0.1.0"
+dependencies = [
+ "axon-config",
+ "axon-server",
+ "axon-store",
+ "axum",
+ "getrandom 0.3.4",
+ "ring",
+ "route-manifest",
+ "rusqlite",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2524,6 +2543,7 @@ dependencies = [
  "axon-server",
  "axon-store",
  "axum",
+ "devices",
  "markdown-root",
  "rayon",
  "route-manifest",

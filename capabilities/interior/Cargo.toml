@@ -27,6 +27,8 @@ route-manifest = { path = "../../libs/route-manifest" }
 # Das Inventar sind Zeilen (PRD Q58/B25). Eine Datei fuer alle Capabilities, `interior_`
 # als Praefix — libs/axon-store/README.md hat das Warum.
 axon-store = { path = "../../libs/axon-store" }
+# Shared Ed25519 device verification for the authenticated sync ingress.
+devices = { path = "../devices" }
 # Die eine Art, eine Datei aus einer erklaerten Vault-Wurzel zu holen, plus die markierte
 # Region. Null Abhaengigkeiten, und die Konflikterkennung liegt in der Datei selbst.
 markdown-root = { path = "../../libs/markdown-root" }

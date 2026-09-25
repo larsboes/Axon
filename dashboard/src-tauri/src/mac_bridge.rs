@@ -43,10 +43,12 @@
 //! queued. [`ReqwestTransport`] is the only code here that touches the network.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, Runtime, State};
 
 use crate::sync::{self, LocalStore, Outgoing, Reply, SendError, SyncStatus, Transport};
@@ -82,14 +84,21 @@ use crate::sync::{self, LocalStore, Outgoing, Reply, SendError, SyncStatus, Tran
 /// it only if the shell has no token configured. This is Q94's exposure, not a
 /// new one.
 ///
+/// `/foundation-models/` is the Mac rung of the app's model ladder
+/// (`src/lib/intelligence/`), admitted 2026-09-25 so a phone without Apple
+/// Intelligence still reaches a model. It is the same exposure as the other
+/// mounts: the operator's tailnet identity plus this device's signed headers.
+///
 /// Not listed: capabilities the shell proxies but the dashboard does not call
-/// (foundation-models, punctuality, soundscape) and scouting's `/discover`.
+/// (punctuality, soundscape) and scouting's `/discover`.
 pub const ALLOWED_PATHS: &[&str] = &[
     "/axon-status/",
     "/calendar/api/",
     "/comms/",
+    "/devices/api/",
     "/entities/api/",
     "/finance/api/",
+    "/foundation-models/",
     "/interior/api/",
     "/knowledge-graph/",
     "/macmon/",
@@ -113,8 +122,11 @@ pub const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 /// The methods a capability API uses.
 const ALLOWED_METHODS: &[&str] = &["GET", "POST", "PUT", "PATCH", "DELETE"];
 
-/// The settings file, in the app data directory.
-pub const SETTINGS_FILE: &str = "mac-bridge.json";
+/// The node connection settings file, in the app data directory.
+pub const SETTINGS_FILE: &str = "axon-node.json";
+/// The pre-node-neutral settings file. It remains readable so existing installs keep working.
+const LEGACY_SETTINGS_FILE: &str = "mac-bridge.json";
+pub const NODE_PROTOCOL_VERSION: &str = "axon-node/v1";
 
 /// A request that is not answered in this time fails.
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -124,10 +136,51 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 /// connection through a DERP relay usually opens in well under this (not measured here).
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Settings {
+    pub protocol_version: String,
+    /// Stable identity of this canonical Axon node. It survives URL changes and migration.
+    #[serde(default = "default_node_id")]
+    pub node_id: String,
     /// For example `https://<name>.ts.net`. `None` until the operator sets it.
-    pub base_url: Option<String>,
+    pub canonical_base_url: Option<String>,
+}
+
+fn default_node_id() -> String {
+    "node_mac".to_string()
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            protocol_version: NODE_PROTOCOL_VERSION.to_string(),
+            node_id: default_node_id(),
+            canonical_base_url: None,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct LegacySettings {
+    base_url: Option<String>,
+}
+
+fn settings_from_legacy(legacy: LegacySettings) -> Settings {
+    Settings {
+        canonical_base_url: legacy.base_url,
+        ..Settings::default()
+    }
+}
+
+fn parse_settings(text: &str) -> Result<Settings, String> {
+    let settings: Settings = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    if settings.protocol_version != NODE_PROTOCOL_VERSION {
+        return Err(format!(
+            "unsupported protocol version {:?}; expected {NODE_PROTOCOL_VERSION}",
+            settings.protocol_version
+        ));
+    }
+    Ok(settings)
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,7 +217,7 @@ impl From<MacRequest> for Outgoing {
 
 /// The prefix the TypeScript side matches to tell "no base URL" from a
 /// network failure. Keep it in sync with `dashboard/src/lib/mac-bridge.ts`.
-pub const NOT_CONFIGURED: &str = "mac-bridge: not configured";
+pub const NOT_CONFIGURED: &str = "axon-node: not configured";
 
 /// Checks a base URL and returns it normalized to `scheme://host[:port]`.
 ///
@@ -285,19 +338,31 @@ pub fn validate_method(method: &str) -> Result<reqwest::Method, String> {
     reqwest::Method::from_bytes(upper.as_bytes()).map_err(|e| e.to_string())
 }
 
-fn settings_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
+fn settings_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    app.path()
         .app_data_dir()
-        .map_err(|e| format!("app data directory is not available: {e}"))?;
-    Ok(dir.join(SETTINGS_FILE))
+        .map_err(|e| format!("app data directory is not available: {e}"))
+}
+
+fn settings_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    Ok(settings_dir(app)?.join(SETTINGS_FILE))
 }
 
 fn read_settings<R: Runtime>(app: &AppHandle<R>) -> Result<Settings, String> {
-    let path = settings_path(app)?;
+    let dir = settings_dir(app)?;
+    let path = dir.join(SETTINGS_FILE);
     match std::fs::read_to_string(&path) {
-        Ok(text) => serde_json::from_str(&text).map_err(|e| format!("{SETTINGS_FILE}: {e}")),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
+        Ok(text) => parse_settings(&text).map_err(|e| format!("{SETTINGS_FILE}: {e}")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let legacy_path = dir.join(LEGACY_SETTINGS_FILE);
+            match std::fs::read_to_string(&legacy_path) {
+                Ok(text) => serde_json::from_str::<LegacySettings>(&text)
+                    .map(settings_from_legacy)
+                    .map_err(|e| format!("{LEGACY_SETTINGS_FILE}: {e}")),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Settings::default()),
+                Err(e) => Err(format!("{LEGACY_SETTINGS_FILE}: {e}")),
+            }
+        }
         Err(e) => Err(format!("{SETTINGS_FILE}: {e}")),
     }
 }
@@ -307,22 +372,28 @@ fn allow_loopback() -> bool {
 }
 
 #[tauri::command]
-pub async fn mac_settings_get<R: Runtime>(app: AppHandle<R>) -> Result<Settings, String> {
+pub async fn connection_settings_get<R: Runtime>(app: AppHandle<R>) -> Result<Settings, String> {
     read_settings(&app)
 }
 
-/// Stores the base URL. An empty value clears it.
+#[cfg(mobile)]
+pub fn connection_settings<R: Runtime>(app: &AppHandle<R>) -> Result<Settings, String> {
+    read_settings(app)
+}
+
+/// Stores the canonical node URL. An empty value clears it.
 #[tauri::command]
-pub async fn mac_settings_set<R: Runtime>(
+pub async fn connection_settings_set<R: Runtime>(
     app: AppHandle<R>,
-    base_url: String,
+    canonical_base_url: String,
 ) -> Result<Settings, String> {
-    let settings = if base_url.trim().is_empty() {
+    let settings = if canonical_base_url.trim().is_empty() {
         Settings::default()
     } else {
-        let url = validate_base(&base_url, allow_loopback())?;
+        let url = validate_base(&canonical_base_url, allow_loopback())?;
         Settings {
-            base_url: Some(url.origin().ascii_serialization()),
+            canonical_base_url: Some(url.origin().ascii_serialization()),
+            ..Settings::default()
         }
     };
     let path = settings_path(&app)?;
@@ -336,20 +407,54 @@ pub async fn mac_settings_set<R: Runtime>(
 
 /// The Mac as a [`Transport`]. Every request is checked here, whichever command sent it, so
 /// every command applies the same rules.
+trait RequestSigner: Send + Sync {
+    fn device_id(&self) -> &str;
+    fn sign(&self, message: &[u8]) -> Result<Vec<u8>, String>;
+}
+
+#[cfg(mobile)]
+struct NativeRequestSigner<R: Runtime> {
+    app: AppHandle<R>,
+    device_id: String,
+}
+
+#[cfg(mobile)]
+impl<R: Runtime> RequestSigner for NativeRequestSigner<R> {
+    fn device_id(&self) -> &str {
+        &self.device_id
+    }
+
+    fn sign(&self, message: &[u8]) -> Result<Vec<u8>, String> {
+        self.app
+            .state::<tauri_plugin_device_identity::DeviceIdentity<R>>()
+            .sign(message)
+            .map_err(|error| error.to_string())
+    }
+}
+
 pub struct ReqwestTransport {
     base: Url,
     client: reqwest::Client,
+    signer: Option<Arc<dyn RequestSigner>>,
 }
 
 impl ReqwestTransport {
     pub fn new(base: Url) -> Result<Self, String> {
+        Self::with_signer(base, None)
+    }
+
+    fn with_signer(base: Url, signer: Option<Arc<dyn RequestSigner>>) -> Result<Self, String> {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(TIMEOUT)
             .connect_timeout(CONNECT_TIMEOUT)
             .build()
             .map_err(|e| format!("mac-bridge: {e}"))?;
-        Ok(Self { base, client })
+        Ok(Self {
+            base,
+            client,
+            signer,
+        })
     }
 }
 
@@ -375,17 +480,72 @@ fn classify(error: reqwest::Error, what: &str) -> SendError {
     }
 }
 
+fn signed_path(path: &str) -> &str {
+    if path == "/api" || path.starts_with("/api/") {
+        return path;
+    }
+    // The shell mounts capabilities at /<name>/..., then strips that first segment before
+    // forwarding. Sign the upstream target, not the shell mount.
+    path[1..].find('/').map_or("/", |index| &path[index + 1..])
+}
+
+fn body_digest(body: &[u8]) -> String {
+    Sha256::digest(body)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn signed_request(
+    signer: &dyn RequestSigner,
+    method: &str,
+    path: &str,
+    body: &[u8],
+) -> Result<[(String, String); 4], String> {
+    let timestamp = now_ms() / 1000;
+    let mut nonce_bytes = [0u8; 16];
+    getrandom::fill(&mut nonce_bytes).map_err(|error| format!("secure random source: {error}"))?;
+    let nonce = hex(&nonce_bytes);
+    let message = format!(
+        "axon-device-auth/v1\n{}\n{}\n{}\n{}\n{}\n{}\n",
+        signer.device_id(),
+        timestamp,
+        nonce,
+        method.to_ascii_uppercase(),
+        signed_path(path),
+        body_digest(body),
+    );
+    let signature = hex(&signer.sign(message.as_bytes())?);
+    Ok([
+        ("x-axon-device-id".into(), signer.device_id().into()),
+        ("x-axon-timestamp".into(), timestamp.to_string()),
+        ("x-axon-nonce".into(), nonce),
+        ("x-axon-signature".into(), signature),
+    ])
+}
+
 impl Transport for ReqwestTransport {
     async fn send(&self, request: &Outgoing, max_bytes: usize) -> Result<Reply, SendError> {
         let url = target_url(&self.base, &request.path).map_err(SendError::Failed)?;
         let method = validate_method(&request.method).map_err(SendError::Failed)?;
-        let headers = filter_headers(&request.headers).map_err(SendError::Failed)?;
+        let mut headers = filter_headers(&request.headers).map_err(SendError::Failed)?;
+        let body = request.body.as_deref().unwrap_or("").as_bytes();
+        if let Some(signer) = &self.signer {
+            headers.extend(
+                signed_request(signer.as_ref(), method.as_str(), &request.path, body)
+                    .map_err(SendError::Failed)?,
+            );
+        }
         let mut builder = self.client.request(method, url);
         for (name, value) in headers {
             builder = builder.header(name, value);
         }
-        if let Some(body) = &request.body {
-            builder = builder.body(body.clone());
+        if request.body.is_some() {
+            builder = builder.body(body.to_vec());
         }
         let mut response = builder
             .send()
@@ -410,15 +570,31 @@ impl Transport for ReqwestTransport {
     }
 }
 
-/// The transport to the configured Mac, or the "not configured" error.
+/// The transport to the configured canonical node, or the "not configured" error.
 pub fn transport<R: Runtime>(app: &AppHandle<R>) -> Result<ReqwestTransport, String> {
     let settings = read_settings(app)?;
-    let Some(base) = settings.base_url.filter(|b| !b.trim().is_empty()) else {
+    let Some(base) = settings.canonical_base_url.filter(|b| !b.trim().is_empty()) else {
         return Err(format!(
-            "{NOT_CONFIGURED}: set the Mac address in Settings, Mac connection"
+            "{NOT_CONFIGURED}: set the Axon node address in Settings, Axon connection"
         ));
     };
-    ReqwestTransport::new(validate_base(&base, allow_loopback())?)
+    let base = validate_base(&base, allow_loopback())?;
+    #[cfg(mobile)]
+    {
+        let identity = app
+            .state::<tauri_plugin_device_identity::DeviceIdentity<R>>()
+            .get()
+            .map_err(|error| error.to_string())?;
+        return ReqwestTransport::with_signer(
+            base,
+            Some(Arc::new(NativeRequestSigner {
+                app: app.clone(),
+                device_id: identity.id,
+            })),
+        );
+    }
+    #[cfg(not(mobile))]
+    ReqwestTransport::new(base)
 }
 
 fn content_type_of(response: &reqwest::Response) -> Option<String> {
@@ -597,7 +773,7 @@ pub async fn sync_entries(local: State<'_, Local>) -> Result<Vec<sync::OutboxEnt
     local.store()?.entries()
 }
 
-/// Sends pending edits now ("Sync now", app start, foreground). Without a Mac address it
+/// Sends pending edits now ("Sync now", app start, foreground). Without a canonical node address it
 /// sends nothing and answers the status.
 #[tauri::command]
 pub async fn sync_flush<R: Runtime>(
@@ -606,7 +782,28 @@ pub async fn sync_flush<R: Runtime>(
 ) -> Result<SyncStatus, String> {
     let store = local.store()?;
     if let Ok(t) = transport(&app) {
-        sync::flush(store, &t, now_ms()).await;
+        let now = now_ms();
+        #[cfg(mobile)]
+        {
+            let settings = read_settings(&app)?;
+            let identity = app
+                .state::<tauri_plugin_device_identity::DeviceIdentity<R>>()
+                .get()
+                .map_err(|error| error.to_string())?;
+            sync::flush_protocol(
+                store,
+                &t,
+                now,
+                &format!("node_{}", identity.id),
+                &settings.node_id,
+                &identity.id,
+            )
+            .await;
+        }
+        #[cfg(not(mobile))]
+        {
+            sync::flush(store, &t, now).await;
+        }
     }
     status_of(&local)
 }
@@ -625,7 +822,28 @@ pub async fn sync_resolve<R: Runtime>(
         "keep_mine" => {
             store.keep_mine(id, now_ms())?;
             if let Ok(t) = transport(&app) {
-                sync::flush(store, &t, now_ms()).await;
+                let now = now_ms();
+                #[cfg(mobile)]
+                {
+                    let settings = read_settings(&app)?;
+                    let identity = app
+                        .state::<tauri_plugin_device_identity::DeviceIdentity<R>>()
+                        .get()
+                        .map_err(|error| error.to_string())?;
+                    sync::flush_protocol(
+                        store,
+                        &t,
+                        now,
+                        &format!("node_{}", identity.id),
+                        &settings.node_id,
+                        &identity.id,
+                    )
+                    .await;
+                }
+                #[cfg(not(mobile))]
+                {
+                    sync::flush(store, &t, now).await;
+                }
             }
         }
         "discard" => store.discard(id)?,
@@ -649,6 +867,46 @@ mod tests {
 
     fn base(url: &str) -> Url {
         validate_base(url, true).expect("valid base")
+    }
+
+    #[test]
+    fn signed_path_matches_the_upstream_capability_path() {
+        assert_eq!(signed_path("/devices/api/devices/me"), "/api/devices/me");
+        assert_eq!(
+            signed_path("/interior/api/items/item-1?room=kitchen"),
+            "/api/items/item-1?room=kitchen"
+        );
+        assert_eq!(
+            signed_path("/api/suggest?q=Berlin"),
+            "/api/suggest?q=Berlin"
+        );
+        assert_eq!(signed_path("/devices"), "/");
+    }
+
+    #[test]
+    fn settings_use_the_node_protocol_and_legacy_settings_map_forward() {
+        let current = Settings {
+            canonical_base_url: Some("https://node.example.ts.net".into()),
+            ..Settings::default()
+        };
+        let encoded = serde_json::to_string(&current).unwrap();
+        assert!(encoded.contains("axon-node/v1"));
+        assert!(encoded.contains("canonical_base_url"));
+        assert!(encoded.contains("node_id"));
+        assert!(parse_settings(&encoded).is_ok());
+        assert!(parse_settings(
+            r#"{\"protocol_version\":\"axon-node/v0\",\"canonical_base_url\":null}"#
+        )
+        .is_err());
+
+        let legacy = settings_from_legacy(LegacySettings {
+            base_url: Some("https://mac.example.ts.net".into()),
+        });
+        assert_eq!(legacy.protocol_version, NODE_PROTOCOL_VERSION);
+        assert_eq!(
+            legacy.canonical_base_url.as_deref(),
+            Some("https://mac.example.ts.net")
+        );
     }
 
     #[test]
@@ -706,7 +964,10 @@ mod tests {
             "/calendar/api/entries",
             "/comms/feed?limit=5",
             "/comms/ingest",
+            "/devices/api/devices",
             "/finance/api/accounts",
+            "/foundation-models/health",
+            "/foundation-models/v1/chat/completions",
             "/knowledge-graph/api/graph/unit/x",
             "/macmon/json",
             "/places/api/places",
@@ -725,7 +986,6 @@ mod tests {
     fn refuses_non_allow_listed_prefixes() {
         for bad in [
             // Shell-proxied, but the dashboard does not call them.
-            "/foundation-models/health",
             "/punctuality/api/x",
             "/soundscape/api/soundscape/stream",
             "/discover/x",
@@ -742,6 +1002,7 @@ mod tests {
             "/apix/suggest",
             // A bare prefix admits nothing: there must be a path below it.
             "/comms/",
+            "/devices/",
             "/api/",
             "/",
             "/feed/library",

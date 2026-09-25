@@ -249,6 +249,51 @@ Same-host addressing also survives the shell being reached over Tailscale, where
 `127.0.0.1` would point at the phone. The dashboard deliberately links to the project
 instead of embedding it, so each SvelteKit site owns its own navigation and storage.
 
+## Device mesh boundary
+
+The phone is a client of an Axon deployment, not an always-on Axon server. The first device
+mesh slice (2026-09-25) keeps the Mac as the canonical node so the current installation remains
+working, but addresses it through the versioned `axon-node/v1` connection contract in
+`schemas/device-mesh.schema.json`. A future home server occupies the same canonical-node slot;
+the phone does not need a second UI architecture or a second data model for that move.
+
+Each device keeps its own app-private `axon-local.db`. Its `snapshot` table is a bounded cache of
+explicitly admitted offline views, and its `outbox` is a queue of idempotent, revision-checked
+item edits. The database file is never synchronized as a file. Offline answers are marked stale;
+conflicts are visible and require a person to resolve them.
+
+The deployment choices are deliberately staged:
+
+1. **Direct canonical node — selected now.** The phone connects to the configured Axon node over
+   HTTPS/Tailscale. Today that node is the Mac. This is the smallest safe change and keeps the
+   existing bridge and local outbox useful.
+2. **Home canonical node — selected as the next deployment.** A home server runs the same Axon
+   contracts and replaces the Mac without changing the phone's connection model. The Mac becomes
+   an administration, development or inference peer rather than a runtime dependency.
+3. **Encrypted relay — optional later.** Cloudflare or another small public service may carry
+   opaque, encrypted sync envelopes when direct phone-to-home reachability is inconvenient. It is
+   a mailbox, not a second Axon database and cannot query capability state.
+4. **Full peer-to-peer multi-master mesh — deferred.** It would require stable node identities,
+   per-record operation clocks, merge rules and more difficult conflict semantics. “Mesh” first
+   means several devices attached to one canonical deployment, not every device silently becoming
+   an authority.
+
+The first node-side pairing contract lives in `capabilities/devices` and
+`schemas/device-pairing.schema.json`: it creates a ten-minute challenge, accepts one claim with an
+Ed25519 public key, lists registered devices, and revokes active devices. The code is stored only
+as a hash and consumed transactionally. When that capability is enabled, the dashboard footer
+exposes the operator device panel with challenge/code, payload, registry management, and an iOS
+claim form. The iOS Tauri plugin creates the signing key in Keychain and submits only its public
+key; browser and desktop builds have no software-key fallback. Manual node URLs remain the
+bootstrap fallback. Phone-side Foundation Models are a separate adapter: they may classify,
+extract and summarize locally, but they do not become an unrestricted capability executor or an
+authority for synchronized state.
+
+The next sync contract is `schemas/axon-sync.schema.json`. It makes operation IDs, opaque
+revisions, acknowledgements, conflicts, and optional encrypted envelopes node-neutral. The
+existing local outbox still speaks to the current canonical node; this schema is the migration
+target, not a claim that the current Mac transport is already multi-node.
+
 ## Client
 
 One client module per domain, and no component calls `fetch`. `src/lib/api.ts` holds the

@@ -38,9 +38,14 @@ use crate::mac_bridge::MacResponse;
 /// The local database, in the app data directory.
 pub const DB_FILE: &str = "axon-local.db";
 
-/// The paths whose GET answers are kept for offline reads. Q110: C1 apartment and item data
-/// only. Adding a prefix here is a data-class decision, not a convenience.
+/// The paths whose GET answers are kept for offline reads. These are bounded read projections,
+/// not full offline parity: edits still require the canonical node.
 pub const C1_PREFIXES: &[&str] = &["/interior/api/"];
+pub const OFFLINE_PROJECTION_PATHS: &[&str] = &[
+    "/vault/api/tasks",
+    "/vault/api/people",
+    "/calendar/api/entries",
+];
 
 /// The largest single answer the snapshot keeps. A larger one is served online and not kept.
 pub const MAX_SNAPSHOT_ENTRY_BYTES: usize = 20 * 1024 * 1024;
@@ -63,7 +68,8 @@ const INVENTORY_PATH: &str = "/interior/api/inventory";
 const WISHLIST_PATH: &str = "/interior/api/wishlist";
 
 /// Each entry runs once, in order, inside one transaction. Never edit a shipped entry; add one.
-pub const MIGRATIONS: &[&str] = &["
+pub const MIGRATIONS: &[&str] = &[
+    "
     CREATE TABLE snapshot (
         path         TEXT    NOT NULL,
         kind         TEXT    NOT NULL CHECK (kind IN ('text', 'bytes')),
@@ -90,7 +96,13 @@ pub const MIGRATIONS: &[&str] = &["
         updated_at INTEGER NOT NULL
     );
     CREATE INDEX outbox_item_state ON outbox (item_id, state);
-"];
+",
+    "
+    ALTER TABLE outbox ADD COLUMN operation_id TEXT;
+    UPDATE outbox SET operation_id = 'op_legacy_' || id WHERE operation_id IS NULL;
+    CREATE UNIQUE INDEX outbox_operation_id ON outbox (operation_id);
+",
+];
 
 // ─── Transport ────────────────────────────────────────────────────────────────
 
@@ -144,12 +156,23 @@ fn route_of(path: &str) -> &str {
     path.split_once('?').map_or(path, |(route, _)| route)
 }
 
-/// True for a path whose answer the snapshot may keep (Q110: C1 only).
+/// True for a path whose answer the snapshot may keep.
 pub fn is_c1(path: &str) -> bool {
     let route = route_of(path);
     C1_PREFIXES
         .iter()
         .any(|prefix| route.starts_with(prefix) && route.len() > prefix.len())
+}
+
+/// The first offline projections beyond the apartment cache. Exact list endpoints avoid
+/// accidentally caching a provider action or an unbounded graph dump.
+pub fn is_offline_projection(path: &str) -> bool {
+    let route = route_of(path);
+    is_c1(path)
+        || OFFLINE_PROJECTION_PATHS.contains(&route)
+        || (route.starts_with("/knowledge-graph/api/graph/unit/")
+            && route.len() > "/knowledge-graph/api/graph/unit/".len())
+        || is_trip_offline(path)
 }
 
 /// The plan list. Its offline copy holds only the plans that have not ended.
@@ -289,6 +312,8 @@ pub struct Snapshot {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct OutboxEntry {
     pub id: i64,
+    /// Stable protocol operation id. Retries reuse this value for server-side deduplication.
+    pub operation_id: String,
     pub item_id: String,
     pub method: String,
     pub path: String,
@@ -507,7 +532,9 @@ impl LocalStore {
     pub fn drop_trip_details_except(&self, keep: &[String]) -> Result<(), String> {
         let conn = self.conn();
         let mut stmt = conn
-            .prepare("SELECT path FROM snapshot WHERE kind = 'text' AND path LIKE '/trips/api/plans/%'")
+            .prepare(
+                "SELECT path FROM snapshot WHERE kind = 'text' AND path LIKE '/trips/api/plans/%'",
+            )
             .map_err(db_err)?;
         let stored: Vec<String> = stmt
             .query_map([], |r| r.get(0))
@@ -635,10 +662,20 @@ impl LocalStore {
             .map_err(db_err)?;
             return Ok(pending.id);
         }
+        let operation_id = new_operation_id()?;
         conn.execute(
-            "INSERT INTO outbox (item_id, method, path, body, if_match, state, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?6)",
-            params![item_id, method, path, Value::Object(body).to_string(), if_match, now],
+            "INSERT INTO outbox
+                (operation_id, item_id, method, path, body, if_match, state, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?7)",
+            params![
+                operation_id,
+                item_id,
+                method,
+                path,
+                Value::Object(body).to_string(),
+                if_match,
+                now
+            ],
         )
         .map_err(db_err)?;
         Ok(conn.last_insert_rowid())
@@ -801,34 +838,46 @@ impl LocalStore {
     }
 }
 
+fn new_operation_id() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes)
+        .map_err(|error| format!("local store: secure random source: {error}"))?;
+    let mut id = String::from("op_");
+    for byte in bytes {
+        id.push_str(&format!("{byte:02x}"));
+    }
+    Ok(id)
+}
+
 fn entries_in(
     conn: &Connection,
     clause: &str,
     args: &[&dyn rusqlite::ToSql],
 ) -> Result<Vec<OutboxEntry>, String> {
     let sql = format!(
-        "SELECT id, item_id, method, path, body, if_match, state, error, current, attempts,
-                created_at, updated_at
+        "SELECT id, operation_id, item_id, method, path, body, if_match, state, error, current,
+                attempts, created_at, updated_at
          FROM outbox {clause} ORDER BY id"
     );
     let mut stmt = conn.prepare(&sql).map_err(db_err)?;
     let rows = stmt
         .query_map(args, |r| {
-            let body: String = r.get(4)?;
-            let current: Option<String> = r.get(8)?;
+            let body: String = r.get(5)?;
+            let current: Option<String> = r.get(9)?;
             Ok(OutboxEntry {
                 id: r.get(0)?,
-                item_id: r.get(1)?,
-                method: r.get(2)?,
-                path: r.get(3)?,
+                operation_id: r.get(1)?,
+                item_id: r.get(2)?,
+                method: r.get(3)?,
+                path: r.get(4)?,
                 body: serde_json::from_str(&body).unwrap_or(Value::Null),
-                if_match: r.get(5)?,
-                state: r.get(6)?,
-                error: r.get(7)?,
+                if_match: r.get(6)?,
+                state: r.get(7)?,
+                error: r.get(8)?,
                 current: current.and_then(|c| serde_json::from_str(&c).ok()),
-                attempts: r.get(9)?,
-                created_at: r.get(10)?,
-                updated_at: r.get(11)?,
+                attempts: r.get(10)?,
+                created_at: r.get(11)?,
+                updated_at: r.get(12)?,
             })
         })
         .map_err(db_err)?;
@@ -990,7 +1039,7 @@ async fn read_text<T: Transport>(
     record_reach(store, &result, now);
     match result {
         Ok(reply) => {
-            if is_success(reply.status) && is_c1(path) {
+            if is_success(reply.status) && is_offline_projection(path) {
                 if let Err(e) = store.put_snapshot(path, Kind::Text, &reply, now) {
                     log::warn!("{e}");
                 }
@@ -1005,7 +1054,7 @@ async fn read_text<T: Transport>(
             }
             Ok(response)
         }
-        Err(SendError::Unreachable(message)) if is_c1(path) || is_trip_offline(path) => {
+        Err(SendError::Unreachable(message)) if is_offline_projection(path) => {
             match store.get_snapshot(path, Kind::Text, now) {
                 Ok(Some(snap)) => {
                     let Ok(body) = String::from_utf8(snap.body) else {
@@ -1048,7 +1097,9 @@ async fn keep_trips<T: Transport>(store: &LocalStore, t: &T, path: &str, reply: 
         let result = if plan_ended(&body, now) {
             store.drop_snapshot(&detail, Kind::Text)
         } else {
-            store.put_snapshot(&detail, Kind::Text, reply, now).map(|_| ())
+            store
+                .put_snapshot(&detail, Kind::Text, reply, now)
+                .map(|_| ())
         };
         if let Err(e) = result {
             log::warn!("{e}");
@@ -1083,7 +1134,10 @@ async fn keep_trips<T: Transport>(store: &LocalStore, t: &T, path: &str, reply: 
         log::warn!("{e}");
     }
     for detail in keep {
-        if store.snapshot_fetched_at(&detail, Kind::Text).is_some_and(|at| now - at < 600_000) {
+        if store
+            .snapshot_fetched_at(&detail, Kind::Text)
+            .is_some_and(|at| now - at < 600_000)
+        {
             continue;
         }
         let request = Outgoing {
@@ -1306,6 +1360,214 @@ pub async fn flush<T: Transport>(store: &LocalStore, t: &T, now: i64) -> FlushRe
         }
     }
     report
+}
+
+/// Flushes the mobile outbox through the authenticated axon-sync/v1 endpoint.
+///
+/// The desktop keeps the legacy canonical REST path because it is the canonical node itself;
+/// paired mobile nodes use this envelope so the device signature and operation id cover the whole
+/// mutation.
+#[cfg(mobile)]
+pub async fn flush_protocol<T: Transport>(
+    store: &LocalStore,
+    t: &T,
+    now: i64,
+    origin_node_id: &str,
+    target_node_id: &str,
+    actor_device_id: &str,
+) -> FlushReport {
+    if store.flushing.swap(true, Ordering::SeqCst) {
+        return FlushReport {
+            busy: true,
+            ..FlushReport::default()
+        };
+    }
+    let _guard = FlushGuard(&store.flushing);
+    let pending = match store.pending() {
+        Ok(pending) => pending,
+        Err(error) => {
+            log::warn!("{error}");
+            return FlushReport::default();
+        }
+    };
+    if pending.is_empty() {
+        return FlushReport::default();
+    }
+    let sent_at = now.div_euclid(1000);
+    let mutations: Vec<Value> = pending
+        .iter()
+        .map(|entry| {
+            let fields = entry.body.clone();
+            serde_json::json!({
+                "operation_id": entry.operation_id,
+                "entity_type": "interior.item",
+                "entity_id": entry.item_id,
+                "action": if entry.method == "PUT" { "upsert" } else { "patch" },
+                "base_revision": entry.if_match.trim_matches('"'),
+                "fields": fields,
+                "actor_device_id": actor_device_id,
+                "created_at": entry.created_at.div_euclid(1000)
+            })
+        })
+        .collect();
+    let body = serde_json::json!({
+        "protocol_version": "axon-sync/v1",
+        "envelope_id": new_operation_id().unwrap_or_else(|_| format!("env_{sent_at}")),
+        "origin_node_id": origin_node_id,
+        "target_node_id": target_node_id,
+        "actor_device_id": actor_device_id,
+        "cursor": null,
+        "mutations": mutations,
+        "acknowledgements": [],
+        "conflicts": [],
+        "sent_at": sent_at
+    });
+    let request = Outgoing {
+        method: "POST".into(),
+        path: "/interior/api/sync".into(),
+        headers: vec![("content-type".into(), "application/json".into())],
+        body: Some(body.to_string()),
+    };
+    let result = t.send(&request, MAX_SNAPSHOT_ENTRY_BYTES).await;
+    record_reach(store, &result, now);
+    let reply = match result {
+        Ok(reply) if is_success(reply.status) => reply,
+        Ok(reply) => {
+            let message = String::from_utf8_lossy(&reply.body).into_owned();
+            for entry in &pending {
+                let _ = store.note_attempt(entry.id, Some(&message), now);
+            }
+            return FlushReport {
+                outcomes: pending
+                    .into_iter()
+                    .map(|entry| (entry.id, Outcome::Deferred))
+                    .collect(),
+                busy: false,
+            };
+        }
+        Err(error) => {
+            let message = error.message();
+            for entry in &pending {
+                let _ = store.note_attempt(entry.id, Some(&message), now);
+            }
+            return FlushReport {
+                outcomes: pending
+                    .into_iter()
+                    .map(|entry| (entry.id, Outcome::Deferred))
+                    .collect(),
+                busy: false,
+            };
+        }
+    };
+    let parsed: Value = match serde_json::from_slice(&reply.body) {
+        Ok(value) => value,
+        Err(error) => {
+            log::warn!("sync response was not JSON: {error}");
+            return FlushReport {
+                outcomes: pending
+                    .into_iter()
+                    .map(|entry| (entry.id, Outcome::Deferred))
+                    .collect(),
+                busy: false,
+            };
+        }
+    };
+    let conflicts = parsed
+        .get("conflicts")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut outcomes = Vec::with_capacity(pending.len());
+    for entry in pending {
+        let ack = parsed
+            .get("acknowledgements")
+            .and_then(Value::as_array)
+            .and_then(|acks| {
+                acks.iter().find(|ack| {
+                    ack.get("operation_id").and_then(Value::as_str)
+                        == Some(entry.operation_id.as_str())
+                })
+            });
+        let Some(ack) = ack else {
+            outcomes.push((entry.id, Outcome::Deferred));
+            continue;
+        };
+        let status = ack
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("rejected");
+        let revision = ack
+            .get("revision")
+            .and_then(Value::as_str)
+            .and_then(|value| value.parse::<i64>().ok());
+        let outcome = match status {
+            "accepted" | "duplicate" => store
+                .mark_sent(&entry, revision, now)
+                .map(|_| Outcome::Sent { revision }),
+            "conflict" => {
+                let current = conflicts.iter().find(|conflict| {
+                    conflict.get("operation_id").and_then(Value::as_str)
+                        == Some(entry.operation_id.as_str())
+                });
+                let current = current.map(|conflict| {
+                    let mut item = conflict
+                        .get("canonical_fields")
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    if let Some(object) = item.as_object_mut() {
+                        if !object.contains_key("id") {
+                            if let Some(entity_id) = conflict.get("entity_id") {
+                                object.insert("id".into(), entity_id.clone());
+                            }
+                        }
+                        if let Some(revision) = conflict.get("canonical_revision") {
+                            object.insert("revision".into(), revision.clone());
+                        }
+                    }
+                    serde_json::json!({ "item": item, "state": null })
+                });
+                store
+                    .set_state(
+                        entry.id,
+                        "conflict",
+                        ack.get("error").and_then(Value::as_str),
+                        current.as_ref(),
+                        now,
+                    )
+                    .map(|_| Outcome::Conflict)
+            }
+            _ => store
+                .set_state(
+                    entry.id,
+                    "failed",
+                    ack.get("error").and_then(Value::as_str),
+                    None,
+                    now,
+                )
+                .map(|_| Outcome::Failed),
+        };
+        outcomes.push((entry.id, outcome.unwrap_or(Outcome::Deferred)));
+    }
+    if outcomes
+        .iter()
+        .any(|(_, outcome)| matches!(outcome, Outcome::Sent { .. }))
+    {
+        let refresh = Outgoing {
+            method: "GET".into(),
+            path: INVENTORY_PATH.into(),
+            headers: vec![("accept".into(), "application/json".into())],
+            body: None,
+        };
+        if let Ok(reply) = t.send(&refresh, usize::MAX).await {
+            if is_success(reply.status) {
+                let _ = store.put_snapshot(INVENTORY_PATH, Kind::Text, &reply, now);
+            }
+        }
+    }
+    FlushReport {
+        outcomes,
+        busy: false,
+    }
 }
 
 async fn send_entry<T: Transport>(
@@ -1608,13 +1870,11 @@ mod tests {
     }
 
     #[test]
-    fn non_c1_path_is_not_cached_and_fails_offline() {
+    fn non_projected_path_is_not_cached_and_fails_offline() {
         let (_d, s) = store();
         for path in [
-            "/calendar/api/entries",
             "/comms/feed?limit=5",
             "/finance/api/accounts",
-            "/trips/api/plans",
             "/places/api/places",
         ] {
             let ok = Fake::new(|_| json(200, serde_json::json!({"x": 1})));
@@ -2280,6 +2540,26 @@ mod tests {
     }
 
     #[test]
+    fn bounded_offline_projections_are_explicit() {
+        for path in [
+            "/vault/api/tasks",
+            "/vault/api/people",
+            "/calendar/api/entries",
+            "/knowledge-graph/api/graph/unit/comms",
+            "/trips/api/plans",
+        ] {
+            assert!(is_offline_projection(path), "{path}");
+        }
+        for path in [
+            "/calendar/api/google/import",
+            "/knowledge-graph/api/graph",
+            "/knowledge-graph/api/graph/stats",
+        ] {
+            assert!(!is_offline_projection(path), "{path}");
+        }
+    }
+
+    #[test]
     fn only_the_list_and_a_plan_detail_are_trip_paths() {
         assert!(is_trip_offline("/trips/api/plans"));
         assert!(is_trip_offline("/trips/api/plans/trip%3Aplan%3A1"));
@@ -2291,8 +2571,14 @@ mod tests {
 
     #[test]
     fn a_plan_ends_after_its_last_day_with_a_day_of_slack() {
-        assert!(!plan_ended(&plan("p", "2026-10-07", "2026-10-13"), TODAY_MS));
-        assert!(!plan_ended(&plan("p", "2026-09-20", "2026-09-24"), TODAY_MS));
+        assert!(!plan_ended(
+            &plan("p", "2026-10-07", "2026-10-13"),
+            TODAY_MS
+        ));
+        assert!(!plan_ended(
+            &plan("p", "2026-09-20", "2026-09-24"),
+            TODAY_MS
+        ));
         assert!(plan_ended(&plan("p", "2026-09-20", "2026-09-23"), TODAY_MS));
         assert!(!plan_ended(&serde_json::json!({ "id": "p" }), TODAY_MS));
     }
@@ -2300,7 +2586,13 @@ mod tests {
     #[test]
     fn upcoming_plans_are_readable_offline_without_being_opened() {
         let (_dir, store) = store();
-        block(request_text(&store, &plans_online(), get(TRIPS_LIST), TODAY_MS)).unwrap();
+        block(request_text(
+            &store,
+            &plans_online(),
+            get(TRIPS_LIST),
+            TODAY_MS,
+        ))
+        .unwrap();
 
         let offline = Fake::offline();
         let list = block(request_text(&store, &offline, get(TRIPS_LIST), TODAY_MS)).unwrap();
@@ -2320,7 +2612,10 @@ mod tests {
         ))
         .unwrap();
         assert!(detail.stale);
-        assert!(detail.body.contains("4711"), "the booking reference is readable offline");
+        assert!(
+            detail.body.contains("4711"),
+            "the booking reference is readable offline"
+        );
 
         let ended = block(request_text(
             &store,
@@ -2334,7 +2629,13 @@ mod tests {
     #[test]
     fn a_plan_gone_from_the_list_loses_its_offline_copy() {
         let (_dir, store) = store();
-        block(request_text(&store, &plans_online(), get(TRIPS_LIST), TODAY_MS)).unwrap();
+        block(request_text(
+            &store,
+            &plans_online(),
+            get(TRIPS_LIST),
+            TODAY_MS,
+        ))
+        .unwrap();
         let path = "/trips/api/plans/trip%3Aplan%3Aberlin";
         assert!(store.snapshot_fetched_at(path, Kind::Text).is_some());
 
@@ -2348,7 +2649,13 @@ mod tests {
         let (_dir, store) = store();
         let fake = plans_online();
         block(request_text(&store, &fake, get(TRIPS_LIST), TODAY_MS)).unwrap();
-        block(request_text(&store, &fake, get(TRIPS_LIST), TODAY_MS + 60_000)).unwrap();
+        block(request_text(
+            &store,
+            &fake,
+            get(TRIPS_LIST),
+            TODAY_MS + 60_000,
+        ))
+        .unwrap();
         let detail_calls = fake
             .calls()
             .iter()

@@ -10,18 +10,24 @@
 use crate::clearance::check_layout;
 use crate::model::Model;
 use crate::plan;
-use axum::extract::{Path, State};
+#[path = "sync.rs"]
+mod sync;
+use axum::body::{to_bytes, Body};
+use axum::extract::{Extension, Path, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
+use axum::middleware;
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 struct AppState {
     flat: String,
+    device_store: devices::store::DevicesStore,
     /// Die SQLite-Datei, einmal beim Start aufgeloest. Ein Feld und kein Aufruf je Anfrage,
     /// damit ein Test den verdrahteten Router gegen eine Temp-Datei fahren kann statt gegen
     /// die Datenbank der Installation.
@@ -205,6 +211,11 @@ const ROUTES: &[route_manifest::Route] = &[
         "Jedes Stueck und jeder Bedarf, mit Zustand (owned/wanted/gone).",
     ),
     r(
+        "POST",
+        "/api/sync",
+        "Authenticated axon-sync/v1 mutations for paired devices.",
+    ),
+    r(
         "GET",
         "/api/wishlist",
         "Was noch fehlt, was es kostet, und wie viele Monatssalden das sind.",
@@ -329,6 +340,215 @@ async fn api_flats(
     let alle =
         crate::model::flats().map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(serde_json::json!({ "flats": alle, "aktiv": s.flat })))
+}
+
+fn node_id() -> String {
+    std::env::var("AXON_NODE_ID").unwrap_or_else(|_| "node_mac".to_string())
+}
+
+async fn signed_sync_auth(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: middleware::Next,
+) -> Response {
+    let signed = match devices::auth::SignedRequest::from_headers(request.headers()) {
+        Ok(signed) => signed,
+        Err(error) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({ "error": error })),
+            )
+                .into_response()
+        }
+    };
+    let method = request.method().as_str().to_string();
+    let path_and_query = request.uri().path_and_query().map_or_else(
+        || request.uri().path().to_string(),
+        |value| value.as_str().to_string(),
+    );
+    let (parts, body) = request.into_parts();
+    let body = match to_bytes(body, 8 * 1024 * 1024).await {
+        Ok(body) => body,
+        Err(_) => return (StatusCode::PAYLOAD_TOO_LARGE, "request body too large").into_response(),
+    };
+    let result = tokio::task::spawn_blocking({
+        let state = Arc::clone(&state);
+        let body = body.to_vec();
+        move || {
+            state
+                .device_store
+                .authenticate(&signed, &method, &path_and_query, &body)
+        }
+    })
+    .await;
+    let device = match result {
+        Ok(Ok(device)) => device,
+        Ok(Err(error)) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            )
+                .into_response()
+        }
+    };
+    let mut request = Request::from_parts(parts, Body::from(body));
+    request.extensions_mut().insert(device);
+    next.run(request).await
+}
+
+async fn api_sync(
+    State(state): State<Arc<AppState>>,
+    Extension(device): Extension<devices::store::Device>,
+    Json(envelope): Json<sync::Envelope>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs() as i64);
+    if envelope.protocol_version != "axon-sync/v1" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "unsupported sync protocol version".into(),
+        ));
+    }
+    if envelope.target_node_id != node_id() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "sync envelope targets a different node".into(),
+        ));
+    }
+    if envelope.actor_device_id != device.id {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            "envelope actor does not match the signed device".into(),
+        ));
+    }
+    let st = store(&state)?;
+    let mut response = sync::empty_response(&envelope, now);
+    for mutation in envelope.mutations {
+        let operation_id = mutation.operation_id.clone();
+        let processed_at = now;
+        if let Some(revision) = st.sync_operation_revision(&operation_id).map_err(boom)? {
+            response.acknowledgements.push(sync::Acknowledgement {
+                operation_id,
+                status: "duplicate",
+                revision: Some(revision.to_string()),
+                processed_at,
+                error: None,
+            });
+            continue;
+        }
+        if mutation.actor_device_id != device.id {
+            response.acknowledgements.push(sync::Acknowledgement {
+                operation_id,
+                status: "rejected",
+                revision: None,
+                processed_at,
+                error: Some("mutation actor does not match the signed device".into()),
+            });
+            continue;
+        }
+        if mutation.entity_type != "interior.item"
+            || !matches!(mutation.action.as_str(), "patch" | "upsert")
+        {
+            response.acknowledgements.push(sync::Acknowledgement {
+                operation_id,
+                status: "rejected",
+                revision: None,
+                processed_at,
+                error: Some(
+                    "initial sync supports only interior.item patch or upsert mutations".into(),
+                ),
+            });
+            continue;
+        }
+        let Some(base_revision) = mutation.base_revision.as_deref() else {
+            response.acknowledgements.push(sync::Acknowledgement {
+                operation_id,
+                status: "rejected",
+                revision: None,
+                processed_at,
+                error: Some("base_revision is required for an offline mutation".into()),
+            });
+            continue;
+        };
+        let expected = match base_revision.parse::<i64>() {
+            Ok(value) => value,
+            Err(_) => {
+                response.acknowledgements.push(sync::Acknowledgement {
+                    operation_id,
+                    status: "rejected",
+                    revision: None,
+                    processed_at,
+                    error: Some("base_revision must be a decimal revision".into()),
+                });
+                continue;
+            }
+        };
+        let current = st.item(&mutation.entity_id).map_err(boom)?.ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                format!("no item `{}`", mutation.entity_id),
+            )
+        })?;
+        let mut merged = merge_patch(&current.0, Value::Object(mutation.fields.clone()))?;
+        merged.id = mutation.entity_id.clone();
+        match st
+            .update_item_if_revision(&merged, expected)
+            .map_err(boom)?
+        {
+            crate::store::Schreibergebnis::Geschrieben(revision) => {
+                st.record_sync_operation(&mutation.operation_id, revision)
+                    .map_err(boom)?;
+                response.acknowledgements.push(sync::Acknowledgement {
+                    operation_id,
+                    status: "accepted",
+                    revision: Some(revision.to_string()),
+                    processed_at,
+                    error: None,
+                });
+            }
+            crate::store::Schreibergebnis::Fehlt => {
+                response.acknowledgements.push(sync::Acknowledgement {
+                    operation_id,
+                    status: "rejected",
+                    revision: None,
+                    processed_at,
+                    error: Some("item does not exist".into()),
+                })
+            }
+            crate::store::Schreibergebnis::Veraltet(actual, state) => {
+                let canonical = serde_json::to_value(&*actual).unwrap_or(Value::Null);
+                response.conflicts.push(serde_json::json!({
+                    "conflict_id": mutation.operation_id,
+                    "operation_id": mutation.operation_id,
+                    "entity_type": mutation.entity_type,
+                    "entity_id": mutation.entity_id,
+                    "base_revision": mutation.base_revision,
+                    "canonical_revision": actual.revision.to_string(),
+                    "local_fields": mutation.fields,
+                    "canonical_fields": canonical,
+                    "detected_at": processed_at,
+                    "state": "open"
+                }));
+                response.acknowledgements.push(sync::Acknowledgement {
+                    operation_id,
+                    status: "conflict",
+                    revision: Some(actual.revision.to_string()),
+                    processed_at,
+                    error: Some(format!("canonical revision is {}", actual.revision)),
+                });
+                let _ = state;
+            }
+        }
+    }
+    Ok(Json(response))
 }
 
 async fn api_inventory(
@@ -1300,9 +1520,13 @@ async fn index(State(s): State<Arc<AppState>>) -> Result<Html<String>, (StatusCo
 }
 
 pub async fn serve(flat: &str, port: u16) {
+    let database = axon_config::database_path();
+    let device_store = devices::store::DevicesStore::open(&database)
+        .unwrap_or_else(|error| panic!("interior: cannot open device registry: {error}"));
     let state = Arc::new(AppState {
         flat: flat.to_string(),
-        database: axon_config::database_path(),
+        device_store,
+        database,
     });
     axon_server::serve_local("interior", port, build_router(state)).await;
 }
@@ -1324,6 +1548,13 @@ const CAPABILITY: &str = "interior";
 /// einem `.layer()`-Aufruf registriert wurden (axum 0.7 `src/docs/routing/layer.md`), eine
 /// darunter angehaengte Route verloere sie stillschweigend.
 fn build_router(state: Arc<AppState>) -> Router {
+    let signed_sync =
+        Router::new()
+            .route("/api/sync", post(api_sync))
+            .layer(middleware::from_fn_with_state(
+                Arc::clone(&state),
+                signed_sync_auth,
+            ));
     Router::new()
         .route("/", get(index))
         .route("/health", get(health))
@@ -1341,6 +1572,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/placements", put(api_put_placements))
         .route("/api/flats", get(api_flats))
         .route("/api/inventory", get(api_inventory))
+        .merge(signed_sync)
         .route("/api/media/*pfad", get(api_media))
         .route("/api/roomplan/reference", get(api_roomplan_reference))
         .route("/api/roomplan/asset", get(api_roomplan_asset))
@@ -1414,9 +1646,11 @@ mod origin_tests {
         if let Some(origin) = origin {
             anfrage = anfrage.header("origin", origin);
         }
+        let database = axon_config::database_path();
         build_router(Arc::new(AppState {
             flat: "wohnung".to_string(),
-            database: axon_config::database_path(),
+            device_store: devices::store::DevicesStore::open(&database).unwrap(),
+            database,
         }))
         .oneshot(anfrage.body(Body::empty()).unwrap())
         .await
@@ -1953,8 +2187,10 @@ mod revision_tests {
             std::process::id()
         ));
         let _ = std::fs::remove_file(&pfad);
+        let device_store = devices::store::DevicesStore::open(&pfad).unwrap();
         let r = build_router(Arc::new(AppState {
             flat: "wohnung".to_string(),
+            device_store,
             database: pfad.clone(),
         }));
         (r, pfad)

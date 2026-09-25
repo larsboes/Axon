@@ -18,7 +18,7 @@ const quiet: SyncStatus = {
 const time = (ms: number) => `t${ms}`;
 
 describe('statusLine', () => {
-  test('says nothing when the Mac answers and nothing waits', () => {
+  test('says nothing when the canonical node answers and nothing waits', () => {
     expect(statusLine(quiet)).toBeNull();
     expect(statusParts(quiet)).toEqual([]);
   });
@@ -29,8 +29,8 @@ describe('statusLine', () => {
     );
   });
 
-  test('offline before any copy was shown says the Mac does not answer', () => {
-    expect(statusLine({ ...quiet, offline: true, offline_since: 5 }, time)).toBe('Offline — the Mac does not answer');
+  test('offline before any copy was shown says the canonical node does not answer', () => {
+    expect(statusLine({ ...quiet, offline: true, offline_since: 5 }, time)).toBe('Offline — the canonical node does not answer');
   });
 
   test('counts conflicts, refusals and waiting changes, with singular and plural', () => {
@@ -39,7 +39,7 @@ describe('statusLine', () => {
     expect(statusLine({ ...quiet, conflicts: 1 })).toBe('1 conflict');
     expect(
       statusLine({ ...quiet, offline: true, showing_from: 1, conflicts: 2, failed: 1, pending: 4 }, time),
-    ).toBe('Offline — showing data from t1 · 2 conflicts · 1 change refused by the Mac · 4 changes waiting');
+    ).toBe('Offline — showing data from t1 · 2 conflicts · 1 change refused by the canonical node · 4 changes waiting');
   });
 
   test('a store that did not open is said, not hidden', () => {
@@ -58,7 +58,7 @@ describe('statusLine', () => {
 });
 
 describe('fieldDiff', () => {
-  test('shows each named field that differs, mine next to the Mac value', () => {
+  test('shows each named field that differs, mine next to the canonical node value', () => {
     const diff = fieldDiff({
       body: { b: 120, label: 'Schrank', hinweis: null },
       current: { item: { id: 'schrank', b: 90, label: 'Schrank', hinweis: 'alt', revision: 2 }, state: 'owned' },
@@ -77,7 +77,7 @@ describe('fieldDiff', () => {
     expect(diff).toEqual([]);
   });
 
-  test('without the Mac item every field shows with theirs null', () => {
+  test('without the canonical node item every field shows with theirs null', () => {
     expect(fieldDiff({ body: { b: 1 }, current: null })).toEqual([{ field: 'b', mine: 1, theirs: null }]);
   });
 

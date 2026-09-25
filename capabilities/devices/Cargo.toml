@@ -1,0 +1,27 @@
+[package]
+name = "devices"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Axon device registry: one-time pairing challenges, device public keys and revocation."
+publish = false
+
+[[bin]]
+name = "devices-server"
+path = "src/server.rs"
+
+[dependencies]
+axon-config = { path = "../../libs/axon-config" }
+axon-server = { path = "../../libs/axon-server" }
+axon-store = { path = "../../libs/axon-store" }
+route-manifest = { path = "../../libs/route-manifest" }
+axum.workspace = true
+getrandom.workspace = true
+rusqlite.workspace = true
+schemars = "1.2.2"
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
+ring = "0.17"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

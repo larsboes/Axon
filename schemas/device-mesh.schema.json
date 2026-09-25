@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axon.local/schemas/device-mesh.schema.json",
+  "title": "Axon canonical-node connection",
+  "description": "The app-private connection contract for a device joining one Axon deployment. The current canonical node may be a Mac; a future home server uses the same slot.",
+  "type": "object",
+  "required": ["protocol_version", "node_id", "canonical_base_url"],
+  "additionalProperties": false,
+  "properties": {
+    "protocol_version": { "const": "axon-node/v1" },
+    "node_id": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$",
+      "description": "Stable identity of this canonical node. It survives URL changes and migration."
+    },
+    "canonical_base_url": {
+      "type": ["string", "null"],
+      "description": "The address of the deployment's canonical Axon node. Runtime validation restricts it to an allowed HTTPS tailnet origin, or desktop loopback during development."
+    }
+  }
+}

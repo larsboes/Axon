@@ -62,7 +62,7 @@ export interface Answer {
 }
 
 /**
- * In the Tauri app a relative path has no server behind it, so a Mac path goes
+ * In the Tauri app a relative path has no server behind it, so a node path goes
  * through the native bridge (`./mac-bridge.ts`). An absolute URL, such as the
  * Wikipedia lookups below, is not a Mac path and stays a plain fetch.
  */
@@ -74,7 +74,7 @@ export async function send(path: string, init?: RequestInit): Promise<Answer> {
     } catch (error) {
       const message = bridgeErrorText(error);
       if (message.startsWith(NOT_CONFIGURED)) {
-        throw new ApiError(0, 'The Mac address is not set. Set it in Mac connection (footer).');
+        throw new ApiError(0, 'The Axon node address is not set. Set it in Axon connection (footer).');
       }
       throw new ApiError(0, message);
     }

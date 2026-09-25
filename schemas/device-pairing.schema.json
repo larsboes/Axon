@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://axon.local/schemas/device-pairing.schema.json",
+  "title": "Axon device pairing",
+  "description": "The one-time invitation and claim shapes used to register a device public key. Private keys never enter this contract.",
+  "$defs": {
+    "challenge": {
+      "type": "object",
+      "required": ["protocol_version", "challenge_id", "code", "expires_at", "qr_payload"],
+      "additionalProperties": false,
+      "properties": {
+        "protocol_version": { "const": "axon-pairing/v1" },
+        "challenge_id": { "type": "string", "pattern": "^pair_[0-9a-f]{32}$" },
+        "code": { "type": "string", "pattern": "^[A-Z2-9]{10}$" },
+        "expires_at": { "type": "integer", "minimum": 1 },
+        "qr_payload": { "type": "string", "minLength": 1 }
+      }
+    },
+    "claim": {
+      "type": "object",
+      "required": ["challenge_id", "code", "label", "platform", "algorithm", "public_key"],
+      "additionalProperties": false,
+      "properties": {
+        "challenge_id": { "type": "string", "pattern": "^pair_[0-9a-f]{32}$" },
+        "code": { "type": "string", "pattern": "^[A-Z2-9]{10}$" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "platform": { "type": "string", "minLength": 1, "maxLength": 40 },
+        "algorithm": { "const": "ed25519" },
+        "public_key": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" }
+      }
+    }
+  }
+}
