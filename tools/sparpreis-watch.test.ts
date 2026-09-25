@@ -1,6 +1,17 @@
 import { describe, expect, test } from "bun:test";
 
-import { dropped, portInManifest, previousCheapest, railWatchesOf, watchKey } from "./sparpreis-watch.ts";
+import {
+  dropped,
+  historyOf,
+  legacyObservations,
+  lowestSeen,
+  portInManifest,
+  railWatchesOf,
+  stageWatchesOf,
+  stillPlanned,
+  watchKey,
+  withObservation,
+} from "./sparpreis-watch.ts";
 
 describe("railWatchesOf", () => {
   const railItem = {
@@ -40,27 +51,105 @@ describe("railWatchesOf", () => {
   });
 });
 
-describe("previousCheapest", () => {
+describe("stageWatchesOf", () => {
+  const stage = (over: Record<string, unknown>) => ({
+    id: "stage:a",
+    date: "2026-10-07",
+    status: "planning",
+    transport_modes: ["train"],
+    origin: { name: "Bonn" },
+    destination: { name: "Stuttgart" },
+    ...over,
+  });
+
+  test("an unbooked upcoming train stage is watched by place name on its date", () => {
+    expect(stageWatchesOf("p1", [stage({})], "2026-09-25")).toEqual([
+      { planId: "p1", from: "Bonn", to: "Stuttgart", time: "2026-10-07T07:00:00", stageId: "stage:a" },
+    ]);
+  });
+
+  test("booked, completed, past, undated and non-train stages are not watched", () => {
+    const stages = [
+      stage({ status: "booked" }),
+      stage({ status: "completed" }),
+      stage({ date: "2026-09-01" }),
+      stage({ date: null }),
+      stage({ transport_modes: ["flight"] }),
+      stage({ origin: {} }),
+    ];
+    expect(stageWatchesOf("p1", stages, "2026-09-25")).toEqual([]);
+  });
+});
+
+describe("stillPlanned", () => {
+  const watch = { planId: "p", from: "8000044", to: "8011160", time: "2026-10-07T08:00:00" };
+
+  // The Berlin plan, 2026-09-25: its option_set searched Bonn -> Berlin while its
+  // stages had become Bonn -> Stuttgart -> Berlin.
+  test("an option_set whose route no stage resolved to is not watched", () => {
+    const legs = new Set(["8000044:8000096:2026-10-07"]);
+    expect(stillPlanned(watch, true, legs)).toBe(false);
+    expect(stillPlanned(watch, true, new Set(["8000044:8011160:2026-10-07"]))).toBe(true);
+  });
+
+  test("a plan with no train stage keeps every option_set watch", () => {
+    expect(stillPlanned(watch, false, new Set())).toBe(true);
+  });
+});
+
+describe("history", () => {
   const key = "8000207:8000105:2026-09-01T08:00:00:bc25";
-  const observation = (day: string, prices: Array<number | null>) => ({
+  const legacy = (day: string, prices: Array<number | null>) => ({
+    id: `i-${day}`,
     item_type: "option_set",
     external_id: `sparpreis-watch:${key}:${day}`,
     payload: { options: prices.map((total_price) => ({ total_price })) },
   });
 
-  test("the newest observation's cheapest fare wins", () => {
-    const items = [
-      observation("2026-08-10", [29.99, 45.0]),
-      observation("2026-08-11", [35.99, null, 52.0]),
-    ];
-    expect(previousCheapest(items, key)).toBe(35.99);
+  test("per-day items group under their watch key", () => {
+    const groups = legacyObservations([legacy("2026-08-10", [29.99]), legacy("2026-08-11", [35.99])]);
+    expect([...groups.keys()]).toEqual([key]);
+    expect(groups.get(key)?.map((o) => o.day)).toEqual(["2026-08-10", "2026-08-11"]);
   });
 
-  test("no prior observation means null, and a different watch key does not bleed in", () => {
-    expect(previousCheapest([], key)).toBeNull();
-    const other = observation("2026-08-11", [9.99]);
+  test("the single item and legacy items merge, one entry per day", () => {
+    const single = {
+      item_type: "option_set",
+      external_id: `sparpreis-watch:${key}`,
+      payload: { history: [{ day: "2026-08-11", prices: [33.0] }, { day: "2026-08-12", prices: [40.0] }] },
+    };
+    const history = historyOf([legacy("2026-08-10", [29.99, null]), legacy("2026-08-11", [35.99]), single], key);
+    expect(history).toEqual([
+      { day: "2026-08-10", prices: [29.99] },
+      { day: "2026-08-11", prices: [33.0] },
+      { day: "2026-08-12", prices: [40.0] },
+    ]);
+  });
+
+  test("a different watch key does not bleed in", () => {
+    const other = legacy("2026-08-11", [9.99]);
     other.external_id = "sparpreis-watch:8000000:8000001:2026-09-01T08:00:00:2026-08-11";
-    expect(previousCheapest([other], key)).toBeNull();
+    expect(historyOf([other], key)).toEqual([]);
+  });
+
+  // €67.99 -> €47.99 was reported as a drop on 2026-09-23 although €39.99 had been
+  // seen on 2026-08-15. The comparison is against the lowest, not the latest.
+  test("a new low is measured against every earlier observation", () => {
+    const history = [
+      { day: "2026-08-15", prices: [39.99] },
+      { day: "2026-09-22", prices: [67.99] },
+    ];
+    expect(lowestSeen(history)).toBe(39.99);
+    expect(dropped(lowestSeen(history), 47.99)).toBe(false);
+    expect(dropped(lowestSeen(history), 34.99)).toBe(true);
+    expect(lowestSeen([])).toBeNull();
+  });
+
+  test("today's observation replaces an earlier one from the same day", () => {
+    const history = [{ day: "2026-09-25", prices: [50] }];
+    expect(withObservation(history, { day: "2026-09-25", prices: [45] })).toEqual([
+      { day: "2026-09-25", prices: [45] },
+    ]);
   });
 });
 
