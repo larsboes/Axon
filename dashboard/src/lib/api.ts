@@ -3870,6 +3870,8 @@ export interface PeoplePinProperties {
   person: string;
   place_name: string;
   since: string | null;
+  /** Null means still there. */
+  until?: string | null;
   confidence_bp: number;
   source: string;
 }

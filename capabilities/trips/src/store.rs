@@ -1380,10 +1380,60 @@ const DECLARED_PAYLOADS: &[(&str, &[&str])] = &[
 /// A caller that guesses a payload shape used to get a 201 and a row nobody could
 /// read back. Naming the field is the whole point: "invalid payload" sends the
 /// caller back to the source, one field name sends it back to its own request.
+/// The states a meetup moves through. `idea` is where every meetup starts.
+pub const MEETUP_STATUSES: &[&str] = &["idea", "asked", "confirmed", "declined", "done"];
+
+/// A meetup is an `activity` whose payload names people in `with` (2026-09-25).
+///
+/// Not a new `item_type`: that is a `CHECK` rebuild of the one table holding rows that
+/// exist nowhere else, for what is an activity with company. `activity` stays permissive,
+/// because 54 rows on one plan already use it with another shape, so only the part a
+/// meetup adds is checked: `with` is a non-empty list of `{person}`, where `person` is the
+/// note name under `Atlas/People/` (the same key `places_person_places.person` uses), and
+/// a `status`, when present, is one of [`MEETUP_STATUSES`].
+fn validate_meetup(payload: &serde_json::Value) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(with) = payload.get("with") else {
+        return Ok(());
+    };
+    let people = with
+        .as_array()
+        .filter(|people| !people.is_empty())
+        .ok_or("a meetup's 'with' must be a non-empty list of {person}")?;
+    for entry in people {
+        let named = entry
+            .get("person")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|person| !person.trim().is_empty());
+        if !named {
+            return Err(
+                "every entry in a meetup's 'with' needs a non-empty 'person' \
+                 (the note name under Atlas/People/)"
+                    .into(),
+            );
+        }
+    }
+    if let Some(status) = payload.get("status") {
+        let known = status
+            .as_str()
+            .is_some_and(|s| MEETUP_STATUSES.contains(&s));
+        if !known {
+            return Err(format!(
+                "a meetup's 'status' must be one of: {}",
+                MEETUP_STATUSES.join(", ")
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
 fn validate_payload(
     item_type: &str,
     payload: &serde_json::Value,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    if item_type == "activity" {
+        validate_meetup(payload)?;
+    }
     let Some((_, required)) = DECLARED_PAYLOADS.iter().find(|(t, _)| *t == item_type) else {
         return Ok(());
     };
@@ -1751,6 +1801,32 @@ mod tests {
         )
         .expect_err("option_set without options must be rejected");
         assert!(missing_options.to_string().contains("options"));
+
+        // A meetup is an activity with people. The existing activity shape (no
+        // `with`) is untouched; a `with` must name people, and its status is a
+        // meetup status.
+        assert!(
+            validate_payload("activity", &json!({ "status": "proposed", "venue": "x" })).is_ok()
+        );
+        assert!(validate_payload(
+            "activity",
+            &json!({ "with": [{ "person": "Jonas" }], "status": "idea", "activity": "bouldering" })
+        )
+        .is_ok());
+        for bad in [
+            json!({ "with": [] }),
+            json!({ "with": [{ "person": " " }] }),
+            json!({ "with": "Jonas" }),
+        ] {
+            let err = validate_payload("activity", &bad).expect_err("a meetup must name people");
+            assert!(err.to_string().contains("person"), "{err}");
+        }
+        let wrong_status = validate_payload(
+            "activity",
+            &json!({ "with": [{ "person": "Jonas" }], "status": "proposed" }),
+        )
+        .expect_err("a meetup status comes from MEETUP_STATUSES");
+        assert!(wrong_status.to_string().contains("idea"));
 
         // A stay without coordinates is exactly the row A2's coordinate matcher
         // could never use, so the write is refused and names what it lacks.

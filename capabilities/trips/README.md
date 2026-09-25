@@ -35,6 +35,13 @@ are validated on write, and name the missing field on rejection:
   because the place matching downstream runs on them, and the provider's URL, price and
   rating ride along unvalidated.
 
+A **meetup** is an `activity` whose payload carries `with`: a non-empty list of
+`{person}`, where `person` is the note name under `Atlas/People/`, the same key the places
+companion register uses. Its `status` is one of `idea`, `asked`, `confirmed`, `declined`,
+`done`. Only those two fields are checked, and only when `with` is present. `activity`
+stays permissive for every other writer, and a new `item_type` would have meant rebuilding
+the items table's `CHECK` over rows that exist nowhere else (2026-09-25).
+
 Every other type stays permissive on purpose. `event` alone is written by three producers with
 three different shapes (a scouting opportunity, a whole search result, a calendar anchor), so
 declaring one shape for it would reject two of them. A variant is declared where there is

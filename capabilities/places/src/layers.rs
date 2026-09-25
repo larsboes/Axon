@@ -704,7 +704,7 @@ pub fn people_layer(store: &PlacesStore, today: &str) -> Fallible<Value> {
         .query_all(
             &format!(
                 "SELECT pp.id, pp.person, pp.date_start, pp.confidence_bp, pp.source,
-                        pl.name, pl.latitude, pl.longitude
+                        pl.name, pl.latitude, pl.longitude, pp.date_end
                  FROM {prefix}_person_places pp
                  JOIN {prefix}_places pl ON pl.id = pp.place_id
                  WHERE pp.state = 'confirmed'
@@ -722,6 +722,9 @@ pub fn people_layer(store: &PlacesStore, today: &str) -> Fallible<Value> {
                         "person": row.get::<_, String>(1)?,
                         "place_name": row.get::<_, String>(5)?,
                         "since": row.get::<_, Option<String>>(2)?,
+                        // Null means "still there". A planner asking about a day
+                        // after today needs the end as much as the start.
+                        "until": row.get::<_, Option<String>>(8)?,
                         "confidence_bp": i64::from(row.get::<_, i16>(3)?),
                         "source": row.get::<_, String>(4)?,
                     }),

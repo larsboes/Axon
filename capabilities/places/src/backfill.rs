@@ -1154,6 +1154,21 @@ pub fn frontmatter_coordinates(
     Some((lat.trim().parse().ok()?, lon.trim().parse().ok()?))
 }
 
+/// The `home` frontmatter key: the city a person lives in, as plain text (`home: Bonn`).
+///
+/// Added 2026-09-25 because a city is what a person note's author knows, and a coordinate
+/// pair is not: 5 of 89 notes carried `coordinates` that day. `coordinates` still wins when
+/// both are set, because it is the more precise fact. An empty value, `[]` or a quoted
+/// empty string is no home.
+pub fn frontmatter_home(scalars: &BTreeMap<String, String>) -> Option<String> {
+    let raw = scalars
+        .get("home")?
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'');
+    let home = raw.trim();
+    (!home.is_empty() && home != "[]").then(|| home.to_string())
+}
+
 /// Great-circle distance in kilometres — haversine in code, the no-PostGIS
 /// decision (README "Deliberately not built", following
 /// `dashboard/src/lib/travel/travel-candidates.ts`).
@@ -1283,6 +1298,7 @@ pub fn vault(store: &PlacesStore, today: &str) -> Fallible<()> {
     let mut proposals = 0_usize;
     let mut proposals_existing = 0_usize;
     let mut reverse_named = 0_usize;
+    let mut home_notes = 0_usize;
     if people.is_dir() {
         let known = store.places_with_coordinates()?;
         let mut paths: Vec<PathBuf> = std::fs::read_dir(&people)?
@@ -1298,6 +1314,50 @@ pub fn vault(store: &PlacesStore, today: &str) -> Fallible<()> {
             let body = std::fs::read_to_string(&path)?;
             let (scalars, lists) = parse_frontmatter(&body);
             let Some(coordinates) = frontmatter_coordinates(&scalars, &lists) else {
+                // No coordinate: a `home` city is the second way in. A registered city
+                // of that name is reused; otherwise the city text is geocoded. Only the
+                // city text reaches the provider, never the person's name (README D3).
+                let Some(home) = frontmatter_home(&scalars) else {
+                    continue;
+                };
+                let wanted = home.to_lowercase();
+                let registered = known
+                    .iter()
+                    .find(|place| place.kind == "city" && place.name.to_lowercase() == wanted)
+                    .map(|place| place.id.clone());
+                let place_id = match registered {
+                    Some(id) => id,
+                    None => {
+                        let outcome = geocoder.geocode(
+                            &GeocodeQuery::Free(home.clone()),
+                            Some("city"),
+                            today,
+                        )?;
+                        match outcome.place {
+                            Some(place) => place.id,
+                            None => {
+                                eprintln!("backfill vault: home {home:?} of one person note did not geocode; skipped");
+                                continue;
+                            }
+                        }
+                    }
+                };
+                home_notes += 1;
+                let id = stable_id("pp", &format!("vault-home:{person}:{wanted}"));
+                if store.propose_person_place(
+                    &id,
+                    &person,
+                    &place_id,
+                    None,
+                    None,
+                    5000,
+                    "vault-home",
+                    today,
+                )? {
+                    proposals += 1;
+                } else {
+                    proposals_existing += 1;
+                }
                 continue;
             };
             person_notes += 1;
@@ -1358,7 +1418,8 @@ pub fn vault(store: &PlacesStore, today: &str) -> Fallible<()> {
     println!(
         "backfill vault: {place_notes} place notes, {imported} places imported, \
          {place_existing} already present, {skipped} without coordinates (skipped), \
-         {person_notes} person notes with coordinates, {proposals} proposals written, \
+         {person_notes} person notes with coordinates, {home_notes} with a home city only, \
+         {proposals} proposals written, \
          {proposals_existing} proposals already present, \
          {reverse_named} coordinate-only places named by reverse geocode"
     );
@@ -1901,6 +1962,21 @@ pub fn takeout(store: &PlacesStore, today: &str) -> Fallible<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_home_city_is_read_plain_or_quoted_and_empty_is_none() {
+        let with = |value: &str| BTreeMap::from([("home".to_string(), value.to_string())]);
+        assert_eq!(frontmatter_home(&with("Bonn")), Some("Bonn".into()));
+        assert_eq!(
+            frontmatter_home(&with(" \"Berlin\" ")),
+            Some("Berlin".into())
+        );
+        assert_eq!(frontmatter_home(&with("'Köln'")), Some("Köln".into()));
+        for empty in ["", "  ", "[]", "\"\""] {
+            assert_eq!(frontmatter_home(&with(empty)), None, "{empty:?}");
+        }
+        assert_eq!(frontmatter_home(&BTreeMap::new()), None);
+    }
 
     #[test]
     fn the_recomputed_fingerprint_matches_finances_algorithm() {

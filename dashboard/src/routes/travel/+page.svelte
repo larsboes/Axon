@@ -10,6 +10,8 @@
   import RailSection from "$lib/rail/RailSection.svelte";
   import RelatedTools from "$lib/RelatedTools.svelte";
   import CompanionRail from "$lib/travel/CompanionRail.svelte";
+  import WhoIsAround from "$lib/travel/WhoIsAround.svelte";
+  import { stageCoordinate } from "$lib/travel/who-is-around";
   import JourneyOption from "$lib/travel/JourneyOption.svelte";
   import PlanEditor from "$lib/travel/PlanEditor.svelte";
   import PlanSearchPanel from "$lib/travel/PlanSearchPanel.svelte";
@@ -58,6 +60,7 @@
     trips,
     JOURNEY_PRIORITIES,
     type JourneyOverride,
+    type PeopleLayer,
     type PersonPlaceProposal,
     type CalendarEntry,
     type CalendarCandidateVerdict,
@@ -314,6 +317,41 @@
     } finally {
       companionLoading = false;
     }
+  }
+
+  // Who is around each leg: confirmed register rows, joined here (who-is-around.ts).
+  let peopleLayer = $state<PeopleLayer | null>(null);
+  let peopleNotice = $state<string | null>(null);
+  let legCoordinates = $state<Record<string, [number, number] | null>>({});
+  async function loadWhoIsAround(plan: TripPlan): Promise<void> {
+    try {
+      peopleLayer = await places.peopleLayer();
+      peopleNotice = null;
+    } catch (caught) {
+      peopleLayer = null;
+      peopleNotice = caught instanceof Error ? caught.message : String(caught);
+    }
+    // A leg without its own coordinate borrows the registered city of that name,
+    // the way the accommodation flow resolves a stage (capabilities/trips/README.md).
+    const resolved: Record<string, [number, number] | null> = {};
+    for (const stage of plan.stages) {
+      const own = stageCoordinate(stage);
+      if (own) {
+        resolved[stage.id] = own;
+        continue;
+      }
+      try {
+        const found = await places.list(stage.destination.name, "city");
+        const wanted = stage.destination.name.trim().toLowerCase();
+        const city = found.places.find(
+          (place) => place.name.trim().toLowerCase() === wanted && place.latitude != null && place.longitude != null,
+        );
+        resolved[stage.id] = city ? [city.latitude!, city.longitude!] : null;
+      } catch {
+        resolved[stage.id] = null;
+      }
+    }
+    legCoordinates = resolved;
   }
 
   /** Which tab of the planner overlay is showing. */
@@ -886,6 +924,7 @@
       const details = await trips.get(plan.id);
       items = details.items;
       planRetrospective = details.retrospective;
+      void loadWhoIsAround(details);
       void loadClimate(details);
       void loadCalendarEntries(details);
       if (details.date_end < todayKey) {
@@ -1952,6 +1991,19 @@
 
   {#if planCostRollup}
     <CostCard cost={planCostRollup} />
+  {/if}
+
+  {#if !viewingPast}
+    <section class="who-around" aria-labelledby="who-around-heading">
+      <h3 id="who-around-heading">Who's around</h3>
+      <WhoIsAround
+        stages={activePlan.stages}
+        {items}
+        layer={peopleLayer}
+        coordinates={legCoordinates}
+        notice={peopleNotice}
+      />
+    </section>
   {/if}
 
   {#if viewingPast}
@@ -4188,5 +4240,17 @@
     .hub {
       grid-template-columns: minmax(0, 1fr) 19rem;
     }
+  }
+
+  .who-around {
+    padding: 0.9rem 1rem;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    background: var(--card-bg);
+  }
+
+  .who-around h3 {
+    margin: 0 0 0.4rem;
+    font-size: var(--text-sm);
   }
 </style>
