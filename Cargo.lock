@@ -567,6 +567,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "axon-fda-launcher"
+version = "0.1.0"
+
+[[package]]
 name = "axon-http"
 version = "0.1.0"
 dependencies = [

@@ -21,3 +21,7 @@ command  = ["tools/backup-all.sh"]
 # whole interval later, which is exactly the gap that left this machine with `runs = 0` after a
 # reboot landed past 13:00.
 schedule = "24h"
+# macOS: run through the signed axon-fda-launcher, because the vault sits in Obsidian's iCloud
+# container and the destination is iCloud Drive, and a launchd job as /bin/bash may read
+# neither. Measured 2026-09-25: every scheduled run since 2026-09-06 exited 1.
+full_disk_access = "true"

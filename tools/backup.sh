@@ -680,7 +680,15 @@ if [ "$TARGET_KIND" = "local" ]; then
     echo "→ retain every prior archive (--no-prune)"
   else
     echo "→ prune destination to last $RETAIN"
-    ls -1t "$LOCAL_DIR/$CAP-"*.tar.gz 2>/dev/null | tail -n +$((RETAIN + 1)) | while IFS= read -r old; do rm -f "$old"; done
+    # A listing that fails is said, not swallowed. Under launchd without Full Disk Access the
+    # glob matched nothing, `ls` failed, and pipefail ended the run here with no message, after
+    # the archive had been written (2026-09-25).
+    if ! listing="$(ls -1t "$LOCAL_DIR/$CAP-"*.tar.gz 2>&1)"; then
+      echo "backup.sh: cannot list $LOCAL_DIR to prune it: $listing" >&2
+      echo "  On macOS a scheduled run needs full_disk_access = true in the manifest." >&2
+      exit 1
+    fi
+    printf '%s\n' "$listing" | tail -n +$((RETAIN + 1)) | while IFS= read -r old; do rm -f "$old"; done
   fi
   # A local destination can be a directory something else replicates, and replication can also
   # take files AWAY. macOS with `com.apple.bird optimize-storage = 1` evicts the contents of an

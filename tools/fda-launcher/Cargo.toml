@@ -1,0 +1,14 @@
+[package]
+name = "axon-fda-launcher"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Runs one command as a child and waits, so macOS attributes the child's file access to this signed binary and its Full Disk Access grant."
+publish = false
+
+[[bin]]
+name = "axon-fda-launcher"
+path = "src/main.rs"
+
+# No dependencies. std::process is the whole job.

@@ -230,6 +230,11 @@ AUTOSTART="$(toml_get autostart "$MANIFEST")"
 # question (how does this capability get started when nobody types a command), and a manifest
 # answering both at once is a contradiction this file refuses rather than picks a winner for.
 SCHEDULE="$(toml_get schedule "$MANIFEST")"
+# `full_disk_access = true`: on macOS a scheduled run starts through the signed
+# axon-fda-launcher, which holds the Full Disk Access grant, instead of as /bin/bash, which
+# has none. Measured 2026-09-25: without it the backup could not read the vault or list its
+# own iCloud Drive destination. tools/fda-launcher/src/main.rs says why it spawns, not execs.
+FULL_DISK_ACCESS="$(toml_get full_disk_access "$MANIFEST")"
 
 # The one local model runtime this machine has. `libs/inference` reads it as
 # AXON_INFERENCE_BACKEND and moves every role whose declared backend is loopback onto it,
@@ -1124,7 +1129,19 @@ render_persistence_unit() {
       ;;
     macos:scheduled)
       tmpl="$TOOLS_DIR/templates/launchd-schedule.plist.tmpl"
-      sed -e "s|__LABEL__|com.axon.$CAP|" \
+      local launcher_line=""
+      if [ "$FULL_DISK_ACCESS" = "true" ]; then
+        local launcher="$AXON_PERSONAL_ROOT/bin/axon-fda-launcher"
+        if [ ! -x "$launcher" ]; then
+          echo "service-runner.sh: $CAP declares full_disk_access but $launcher is not installed." >&2
+          echo "  Run tools/fda-launcher/install, grant it Full Disk Access, then install-persistence again." >&2
+          return 1
+        fi
+        launcher_line="    <string>$launcher</string>"
+      fi
+      sed -e "s|__LAUNCHER__|$launcher_line|" \
+          -e '/^$/d' \
+          -e "s|__LABEL__|com.axon.$CAP|" \
           -e "s|__RUNNER_PATH__|$runner|" \
           -e "s|__INTERVAL_SECONDS__|$secs|" \
           -e "s|__PATH__|$runtime_dir:/usr/bin:/bin:/usr/sbin:/sbin|" \
