@@ -52,6 +52,8 @@ pub struct SyncReport {
     pub updated: usize,
     pub unchanged: usize,
     pub homes_set: usize,
+    /// Records whose entity the operator deleted; skipped, never recreated.
+    pub excluded: usize,
     /// "<record>: <key>: <reason>", for values the field registry refused.
     pub refused: Vec<String>,
 }
@@ -191,6 +193,10 @@ pub fn apply(
     };
     let mut linked_to_system = store.linked_entity_ids(system)?;
     for record in records {
+        if store.is_excluded(system, &record.external_id)? {
+            report.excluded += 1;
+            continue;
+        }
         let people: Vec<(String, String)> = store
             .list(Some("person"), None)?
             .into_iter()

@@ -72,7 +72,8 @@ const ROUTES: &[route_manifest::Route] = &[
     route_manifest::get(
         "DELETE",
         "/api/entities/:id",
-        "Delete an entity with its values and facts.",
+        "Delete an entity with its values and facts. Its Google and Obsidian ids are remembered, \
+         so a sync does not recreate it.",
     ),
     route_manifest::Route {
         method: "POST",
@@ -448,7 +449,7 @@ fn run_sync(
     )
     .map_err(|e| e.to_string())?;
     println!(
-        "sync-{system}{}: {} records, {} created, {} linked by name, {} updated, {} unchanged, {} home bases set",
+        "sync-{system}{}: {} records, {} created, {} linked by name, {} updated, {} unchanged, {} home bases set, {} excluded",
         if dry_run { " (dry run)" } else { "" },
         report.records,
         report.created,
@@ -456,6 +457,7 @@ fn run_sync(
         report.updated,
         report.unchanged,
         report.homes_set,
+        report.excluded,
     );
     for refused in &report.refused {
         println!("  refused {refused}");

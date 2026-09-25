@@ -180,6 +180,14 @@ impl EntitiesStore {
                 synced_at   TEXT NOT NULL,
                 PRIMARY KEY (system, external_id)
             );
+            -- A deleted entity's external ids, so a sync does not bring it back.
+            CREATE TABLE IF NOT EXISTS {prefix}_excluded (
+                system      TEXT NOT NULL,
+                external_id TEXT NOT NULL,
+                name        TEXT NOT NULL,
+                excluded_at TEXT NOT NULL,
+                PRIMARY KEY (system, external_id)
+            );
             "
         ))?;
         // Built-ins are seeded, never overwritten: a label the operator edited stays edited.
@@ -558,14 +566,43 @@ impl EntitiesStore {
             .ok_or_else(|| StoreError::NotFound(format!("no entity {id}")))
     }
 
+    /// Deletes an entity with its values and facts. Its external ids are kept in `excluded`,
+    /// so the next Google or Obsidian sync does not recreate someone the operator removed.
     pub fn delete(&self, id: &str) -> Result<bool> {
+        let mut conn = self.conn()?;
+        let p = &self.prefix;
+        let tx = axon_store::write_transaction(&mut conn).map_err(db)?;
+        tx.execute(
+            &format!(
+                "INSERT OR IGNORE INTO {p}_excluded (system, external_id, name, excluded_at)
+                 SELECT x.system, x.external_id, e.name, ?2
+                 FROM {p}_external x JOIN {p}_entities e ON e.id = x.entity_id
+                 WHERE x.entity_id = ?1"
+            ),
+            params![id, now()],
+        )
+        .map_err(db)?;
+        let deleted = tx
+            .execute(
+                &format!("DELETE FROM {p}_entities WHERE id = ?1"),
+                params![id],
+            )
+            .map_err(db)?;
+        tx.commit().map_err(db)?;
+        Ok(deleted > 0)
+    }
+
+    /// Whether the operator deleted the entity this external record belonged to.
+    pub fn is_excluded(&self, system: &str, external_id: &str) -> Result<bool> {
         let conn = self.conn()?;
         let p = &self.prefix;
-        conn.execute(
-            &format!("DELETE FROM {p}_entities WHERE id = ?1"),
-            params![id],
+        conn.query_row(
+            &format!("SELECT 1 FROM {p}_excluded WHERE system = ?1 AND external_id = ?2"),
+            params![system, external_id],
+            |_| Ok(()),
         )
-        .map(|n| n > 0)
+        .optional()
+        .map(|found| found.is_some())
         .map_err(db)
     }
 
@@ -869,7 +906,15 @@ mod tests {
         assert!(store.add_fact(&ron.id, &backwards).is_err());
         assert_eq!(store.get(&ron.id).unwrap().unwrap().facts.len(), 1);
 
+        store
+            .link_external("google", "people/c1", &ron.id, None)
+            .unwrap();
         assert!(store.delete(&ron.id).unwrap());
+        assert!(
+            store.is_excluded("google", "people/c1").unwrap(),
+            "a deleted contact stays deleted"
+        );
+        assert!(!store.is_excluded("google", "people/c2").unwrap());
         let conn = store.conn().unwrap();
         let left: i64 = conn
             .query_row("SELECT COUNT(*) FROM entities_facts", [], |r| r.get(0))
