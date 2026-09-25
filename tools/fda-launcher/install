@@ -25,7 +25,9 @@ fi
 dest_dir="$AXON_PERSONAL_ROOT/bin"
 dest="$dest_dir/axon-fda-launcher"
 mkdir -p "$dest_dir"
-cp "$AXON_ROOT/target/release/axon-fda-launcher" "$dest.new"
+# CARGO_TARGET_DIR is honoured so a relocated target dir does not install a stale or
+# missing binary; same pattern as tools/storage/storage.
+cp "${CARGO_TARGET_DIR:-$AXON_ROOT/target}/release/axon-fda-launcher" "$dest.new"
 codesign --force --sign "$identity" --identifier dev.axon.fda-launcher --options runtime "$dest.new"
 mv "$dest.new" "$dest"
 codesign --verify --strict "$dest"

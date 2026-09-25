@@ -39,7 +39,9 @@ if ! command -v xcrun >/dev/null 2>&1; then
   exit 1
 fi
 
-OUT_DIR="$AXON_ROOT/target/tools"
+# CARGO_TARGET_DIR is honoured so the Swift binary lands beside the Rust output when the
+# target dir is relocated; same pattern as tools/storage/storage.
+OUT_DIR="${CARGO_TARGET_DIR:-$AXON_ROOT/target}/tools"
 mkdir -p "$OUT_DIR"
 xcrun swiftc -O "$TOOLS_DIR/visocr/visocr.swift" -o "$OUT_DIR/visocr"
 echo "visocr: built $OUT_DIR/visocr"

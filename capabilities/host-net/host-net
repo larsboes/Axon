@@ -9,9 +9,11 @@ _dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck source=../../tools/lib/paths.sh
 source "$_dir/../../tools/lib/paths.sh"
 
-# The shared workspace target/ at the repo root, which is where cargo puts every member's
-# binaries. Same path shape capabilities/punctuality/punctuality uses.
-BIN="$AXON_ROOT/target/release/host-net-cli"
+# The workspace target dir, which is where cargo puts every member's binaries. Same path
+# shape capabilities/punctuality/punctuality uses. CARGO_TARGET_DIR is honoured because a
+# relocated target dir is how build output is kept out of the checkout; see
+# tools/storage/storage, which has done this since it replaced the TypeScript.
+BIN="${CARGO_TARGET_DIR:-$AXON_ROOT/target}/release/host-net-cli"
 
 # Build on first use rather than making a clone's first run a confusing "not found".
 # Build output goes to stderr so `host-net check --json | jq` still works.

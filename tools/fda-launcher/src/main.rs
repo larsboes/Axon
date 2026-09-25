@@ -27,7 +27,10 @@ fn main() -> ExitCode {
     match Command::new(&program).args(args).status() {
         Ok(status) => ExitCode::from(exit_byte(status)),
         Err(error) => {
-            eprintln!("axon-fda-launcher: cannot start {}: {error}", program.to_string_lossy());
+            eprintln!(
+                "axon-fda-launcher: cannot start {}: {error}",
+                program.to_string_lossy()
+            );
             ExitCode::from(127)
         }
     }
@@ -54,16 +57,25 @@ mod tests {
 
     #[test]
     fn the_child_exit_code_passes_through() {
-        let status = Command::new("/bin/sh").args(["-c", "exit 3"]).status().unwrap();
+        let status = Command::new("/bin/sh")
+            .args(["-c", "exit 3"])
+            .status()
+            .unwrap();
         assert_eq!(exit_byte(status), 3);
-        let status = Command::new("/bin/sh").args(["-c", "exit 0"]).status().unwrap();
+        let status = Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .status()
+            .unwrap();
         assert_eq!(exit_byte(status), 0);
     }
 
     #[cfg(unix)]
     #[test]
     fn a_signalled_child_reports_128_plus_the_signal() {
-        let status = Command::new("/bin/sh").args(["-c", "kill -TERM $$"]).status().unwrap();
+        let status = Command::new("/bin/sh")
+            .args(["-c", "kill -TERM $$"])
+            .status()
+            .unwrap();
         assert_eq!(exit_byte(status), 128 + 15);
     }
 }
