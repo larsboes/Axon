@@ -12,6 +12,7 @@
  * Bitwarden. Run once — interactive, opens a browser for consent:
  *   bun capabilities/comms/auth/get-refresh-token.ts
  *   bun capabilities/comms/auth/get-refresh-token.ts --env entities.env --scope contacts.readonly
+ *   ... --clipboard   # take the client JSON from the clipboard instead
  */
 
 import { readFileSync, writeFileSync, mkdirSync, chmodSync } from "node:fs";
@@ -64,7 +65,31 @@ async function keychainClient(): Promise<OAuthClient | null> {
   });
   const out = await new Response(proc.stdout).text();
   if ((await proc.exited) !== 0) return null;
-  return clientFrom([out]) ?? die(`the keychain item "${BW_ITEM}" holds no OAuth client JSON`);
+  return (
+    clientFrom([out]) ??
+    die(
+      `the keychain item "${BW_ITEM}" holds no OAuth client JSON. The keychain prompt keeps only ` +
+        `128 characters, which truncates a pasted JSON. Copy the JSON and re-run with --clipboard.`,
+    )
+  );
+}
+
+/**
+ * `--clipboard`: the OAuth client JSON from the macOS clipboard (`pbpaste`), for a one-time
+ * mint. The keychain prompt (`security add-generic-password -w`) keeps only 128 characters
+ * of a typed or pasted value, and a client JSON is several hundred, so a pasted JSON stored
+ * that way is a truncated fragment (seen 2026-09-25). The clipboard is read by the child
+ * process only; the value is never printed or put on a command line.
+ */
+async function clipboardClient(): Promise<OAuthClient | null> {
+  if (!process.argv.includes("--clipboard")) return null;
+  const proc = Bun.spawn(["pbpaste"], { stdout: "pipe", stderr: "pipe" });
+  const out = await new Response(proc.stdout).text();
+  if ((await proc.exited) !== 0) die("pbpaste failed; --clipboard needs macOS");
+  return (
+    clientFrom([out]) ??
+    die("the clipboard holds no OAuth client JSON; copy the whole block from the first { to the last }")
+  );
 }
 
 /** The first candidate text that carries an OAuth client JSON, from its first `{` on. */
@@ -125,7 +150,8 @@ function upsertEnv(env: string, key: string, value: string): string {
 }
 
 // --- 1. credentials from Bitwarden ---
-const { client_id, client_secret, token_uri } = (await keychainClient()) ?? (await bwClient());
+const { client_id, client_secret, token_uri } =
+  (await clipboardClient()) ?? (await keychainClient()) ?? (await bwClient());
 
 // --- 2. build the consent URL (offline + forced consent → guarantees a refresh_token) ---
 const authUrl =
