@@ -180,6 +180,13 @@ impl EntitiesStore {
                 synced_at   TEXT NOT NULL,
                 PRIMARY KEY (system, external_id)
             );
+            -- Pairs the operator said are different people; never proposed again.
+            CREATE TABLE IF NOT EXISTS {prefix}_distinct (
+                a           TEXT NOT NULL,
+                b           TEXT NOT NULL,
+                marked_at   TEXT NOT NULL,
+                PRIMARY KEY (a, b)
+            );
             -- A deleted entity's external ids, so a sync does not bring it back.
             CREATE TABLE IF NOT EXISTS {prefix}_excluded (
                 system      TEXT NOT NULL,
@@ -592,6 +599,113 @@ impl EntitiesStore {
         Ok(deleted > 0)
     }
 
+    /// Pairs marked as different people, order-free.
+    pub fn distinct_pairs(&self) -> Result<std::collections::HashSet<(String, String)>> {
+        let conn = self.conn()?;
+        let p = &self.prefix;
+        let mut stmt = conn
+            .prepare(&format!("SELECT a, b FROM {p}_distinct"))
+            .map_err(db)?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(db)?;
+        rows.collect::<std::result::Result<_, _>>().map_err(db)
+    }
+
+    pub fn mark_distinct(&self, a: &str, b: &str) -> Result<()> {
+        if a == b {
+            return Err(StoreError::Invalid(
+                "a person is not distinct from themselves".into(),
+            ));
+        }
+        let (a, b) = crate::duplicates::pair(a, b);
+        let conn = self.conn()?;
+        let p = &self.prefix;
+        conn.execute(
+            &format!("INSERT OR IGNORE INTO {p}_distinct (a, b, marked_at) VALUES (?1, ?2, ?3)"),
+            params![a, b, now()],
+        )
+        .map(|_| ())
+        .map_err(db)
+    }
+
+    /// Merges `other` into `keep`, in one write transaction, and returns the kept entity.
+    ///
+    /// - A value `keep` lacks is taken from `other` with its source; a value both have keeps
+    ///   `keep`'s, because the caller chose which record to keep.
+    /// - Facts and external links move to `keep`; an identical fact (same predicate, place
+    ///   and dates) is kept once. Moving the links means both syncs now update `keep`.
+    /// - `keep` takes `other`'s note link when it has none, and `name` when given.
+    /// - `other` is deleted without an exclusion: its links live on in `keep`.
+    pub fn merge(&self, keep: &str, other: &str, name: Option<&str>) -> Result<Entity> {
+        if keep == other {
+            return Err(StoreError::Invalid(
+                "cannot merge a person into themselves".into(),
+            ));
+        }
+        let (Some(kept), Some(gone)) = (self.get(keep)?, self.get(other)?) else {
+            return Err(StoreError::NotFound("both entities must exist".into()));
+        };
+        if kept.kind != gone.kind {
+            return Err(StoreError::Invalid(format!(
+                "cannot merge a {} into a {}",
+                gone.kind, kept.kind
+            )));
+        }
+        if let Some(n) = name {
+            if n.trim().is_empty() {
+                return Err(StoreError::Invalid("name must not be empty".into()));
+            }
+        }
+        let mut conn = self.conn()?;
+        let p = &self.prefix;
+        let tx = axon_store::write_transaction(&mut conn).map_err(db)?;
+        let run = |sql: String, args: &[&dyn rusqlite::ToSql]| tx.execute(&sql, args).map_err(db);
+        run(
+            format!(
+                "INSERT OR IGNORE INTO {p}_values (entity_id, key, value, source, updated_at)
+                 SELECT ?1, key, value, source, updated_at FROM {p}_values WHERE entity_id = ?2"
+            ),
+            &[&keep, &other],
+        )?;
+        run(
+            format!("UPDATE {p}_facts SET entity_id = ?1 WHERE entity_id = ?2"),
+            &[&keep, &other],
+        )?;
+        run(
+            format!(
+                "DELETE FROM {p}_facts WHERE entity_id = ?1 AND id NOT IN (
+                    SELECT MIN(id) FROM {p}_facts WHERE entity_id = ?1
+                    GROUP BY predicate, lower(place), COALESCE(valid_from, ''), COALESCE(valid_to, ''))"
+            ),
+            &[&keep],
+        )?;
+        run(
+            format!("UPDATE {p}_external SET entity_id = ?1 WHERE entity_id = ?2"),
+            &[&keep, &other],
+        )?;
+        run(
+            format!(
+                "UPDATE {p}_entities SET
+                    note_ref = COALESCE(note_ref, ?2),
+                    name = COALESCE(?3, name),
+                    revision = revision + 1,
+                    updated_at = ?4
+                 WHERE id = ?1"
+            ),
+            &[&keep, &gone.note_ref, &name.map(str::trim), &now()],
+        )?;
+        run(
+            format!("DELETE FROM {p}_distinct WHERE a = ?1 OR b = ?1"),
+            &[&other],
+        )?;
+        run(format!("DELETE FROM {p}_entities WHERE id = ?1"), &[&other])?;
+        tx.commit().map_err(db)?;
+        drop(conn);
+        self.get(keep)?
+            .ok_or_else(|| StoreError::NotFound(format!("no entity {keep}")))
+    }
+
     /// Whether the operator deleted the entity this external record belonged to.
     pub fn is_excluded(&self, system: &str, external_id: &str) -> Result<bool> {
         let conn = self.conn()?;
@@ -873,6 +987,75 @@ mod tests {
             store.fields(Some("person")).unwrap().len(),
             builtin_fields().len() + 1
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_merge_keeps_the_kept_values_and_takes_the_rest() {
+        let (store, dir) = scratch("merge");
+        let note = store
+            .create(
+                "person",
+                "Ron",
+                Some("Atlas/People/Ron.md"),
+                &values(&[("relation", json!("colleague"))]),
+                "obsidian",
+            )
+            .unwrap();
+        let google = store
+            .create(
+                "person",
+                "Ron Mustermann",
+                None,
+                &values(&[("relation", json!("friend")), ("phones", json!(["+49 1"]))]),
+                "google",
+            )
+            .unwrap();
+        store
+            .link_external("google", "people/c9", &google.id, None)
+            .unwrap();
+        let home = NewFact {
+            predicate: "home_base".into(),
+            place: "Bonn".into(),
+            source: "google".into(),
+            ..NewFact::default()
+        };
+        store
+            .add_fact(
+                &note.id,
+                &NewFact {
+                    source: "obsidian".into(),
+                    ..home.clone()
+                },
+            )
+            .unwrap();
+        store.add_fact(&google.id, &home).unwrap();
+
+        let merged = store
+            .merge(&note.id, &google.id, Some("Ron Mustermann"))
+            .unwrap();
+        assert_eq!(merged.name, "Ron Mustermann");
+        assert_eq!(merged.note_ref.as_deref(), Some("Atlas/People/Ron.md"));
+        assert_eq!(
+            merged.values["relation"].value,
+            json!("colleague"),
+            "the kept value wins"
+        );
+        assert_eq!(
+            merged.values["phones"].source, "google",
+            "a missing value moves with its source"
+        );
+        assert_eq!(merged.facts.len(), 1, "the same home base is kept once");
+        assert_eq!(
+            store.external("google", "people/c9").unwrap(),
+            Some(merged.id.clone())
+        );
+        assert!(store.get(&google.id).unwrap().is_none());
+        assert!(
+            !store.is_excluded("google", "people/c9").unwrap(),
+            "a merged contact is not excluded"
+        );
+        assert!(store.merge(&note.id, &note.id, None).is_err());
         let _ = std::fs::remove_dir_all(dir);
     }
 

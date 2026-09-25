@@ -5,6 +5,7 @@
 //! binary and its HTTP surface.
 
 pub mod config;
+pub mod duplicates;
 pub mod google;
 pub mod model;
 pub mod obsidian;

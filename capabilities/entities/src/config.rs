@@ -11,6 +11,9 @@ pub struct Config {
     /// `capabilities/places`, for turning a city into a coordinate. Same variable and
     /// default as `capabilities/trips/src/upstream.rs`.
     pub places_url: String,
+    /// `capabilities/foundation-models`, the on-device model that advises on unclear
+    /// duplicates. Loopback only: C2 goes to it (PRD §6.1).
+    pub model_url: String,
 }
 
 impl Config {
@@ -20,6 +23,8 @@ impl Config {
             port: resolve_port(None, None, 8097),
             places_url: std::env::var("AXON_PLACES_URL")
                 .unwrap_or_else(|_| "http://127.0.0.1:8093".to_string()),
+            model_url: std::env::var("AXON_LOCAL_MODEL_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:8091".to_string()),
         }
     }
 }

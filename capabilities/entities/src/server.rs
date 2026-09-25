@@ -91,6 +91,27 @@ const ROUTES: &[route_manifest::Route] = &[
     ),
     route_manifest::get(
         "GET",
+        "/api/duplicates",
+        "People who are probably the same person, strongest first: a shared email or phone \
+         (strong), the same name (name), a first name that begins a full name (partial). \
+         ?limit= (default 10). ?judge=true asks the on-device model about each partial pair in \
+         the page; its verdict is advice. Pairs marked distinct are never listed.",
+    ),
+    route_manifest::Route {
+        method: "POST",
+        path: "/api/duplicates/distinct",
+        summary: "Mark two entities as different people: { a, b }. The pair is not proposed again.",
+        request_schema: Some(route_manifest::schema_of::<DistinctRequest>),
+    },
+    route_manifest::Route {
+        method: "POST",
+        path: "/api/entities/:id/merge",
+        summary: "Merge { other, name? } into this entity. Values it lacks come from other; \
+                  facts and Google/Obsidian links move; other is deleted. Returns the kept entity.",
+        request_schema: Some(route_manifest::schema_of::<MergeRequest>),
+    },
+    route_manifest::get(
+        "GET",
         "/api/located",
         "Where each person is on ?day=YYYY-MM-DD (default today): an away period covering it, \
          else the home base that holds. With coordinates and the sleeping option, for the \
@@ -144,6 +165,27 @@ struct FactRequest {
     source: Option<String>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct DistinctRequest {
+    a: String,
+    b: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct MergeRequest {
+    /// The entity merged into this one and then deleted.
+    other: String,
+    /// The kept entity's name after the merge; absent keeps it.
+    #[serde(default)]
+    name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DuplicatesQuery {
+    limit: Option<usize>,
+    judge: Option<bool>,
+}
+
 #[derive(Debug, Deserialize)]
 struct ListQuery {
     kind: Option<String>,
@@ -158,6 +200,7 @@ struct DayQuery {
 struct AppState {
     store: EntitiesStore,
     places_url: String,
+    model_url: String,
 }
 
 struct ApiError(StatusCode, Value);
@@ -358,6 +401,78 @@ async fn delete_fact(
     }
 }
 
+async fn duplicates(State(state): State<Arc<AppState>>, Query(q): Query<DuplicatesQuery>) -> Reply {
+    let limit = q.limit.unwrap_or(10).clamp(1, 50);
+    let judge = q.judge.unwrap_or(false);
+    let body = blocking(&state, move |s| {
+        let people = s.store.list(None, None)?;
+        let found = entities::duplicates::candidates(&people, &s.store.distinct_pairs()?);
+        let total = found.len();
+        let today = civil_date::today();
+        let by_id: std::collections::HashMap<&str, &entities::model::Entity> =
+            people.iter().map(|p| (p.id.as_str(), p)).collect();
+        let listed: Vec<Value> = found
+            .into_iter()
+            .take(limit)
+            .map(|c| {
+                let a = entities::duplicates::profile(by_id[c.a.as_str()], &today);
+                let b = entities::duplicates::profile(by_id[c.b.as_str()], &today);
+                let evidence = entities::duplicates::evidence(&a, &b);
+                // The model sees only fields both records carry; with none shared it has
+                // nothing to weigh, and the answer is "cannot tell" without asking it.
+                let verdict = (judge && c.strength == entities::duplicates::Strength::Partial)
+                    .then(|| {
+                        if evidence.same.is_empty() && evidence.different.is_empty() {
+                            entities::duplicates::Verdict {
+                                same: None,
+                                why: "the two records share no field to compare".into(),
+                            }
+                        } else {
+                            entities::duplicates::judge(
+                                &s.model_url,
+                                &entities::duplicates::shared_only(&a, &evidence),
+                                &entities::duplicates::shared_only(&b, &evidence),
+                            )
+                        }
+                    });
+                json!({
+                    "a": { "id": c.a, "profile": a },
+                    "b": { "id": c.b, "profile": b },
+                    "strength": c.strength,
+                    "reasons": c.reasons,
+                    "evidence": evidence,
+                    "verdict": verdict,
+                })
+            })
+            .collect();
+        Ok(json!({ "total": total, "candidates": listed }))
+    })
+    .await?;
+    Ok(Json(body))
+}
+
+async fn mark_distinct(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<DistinctRequest>,
+) -> Response {
+    match blocking(&state, move |s| s.store.mark_distinct(&body.a, &body.b)).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+async fn merge_entity(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<MergeRequest>,
+) -> Reply {
+    blocking(&state, move |s| {
+        s.store.merge(&id, &body.other, body.name.as_deref())
+    })
+    .await
+    .map(to_json)
+}
+
 async fn located(State(state): State<Arc<AppState>>, Query(q): Query<DayQuery>) -> Reply {
     let day = q.day.unwrap_or_else(civil_date::today);
     if !entities::model::is_day(&day) {
@@ -400,6 +515,9 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/api/entities/:id/facts", post(add_fact))
         .route("/api/entities/:id/facts/:fact_id", delete(delete_fact))
         .route("/api/located", get(located))
+        .route("/api/duplicates", get(duplicates))
+        .route("/api/duplicates/distinct", post(mark_distinct))
+        .route("/api/entities/:id/merge", post(merge_entity))
         // Below every route: `layer` wraps only what is registered before it
         // (libs/axon-server/src/origin.rs).
         .layer(middleware::from_fn_with_state(
@@ -469,6 +587,7 @@ pub async fn serve(config: Config, store: EntitiesStore) {
     let state = Arc::new(AppState {
         store,
         places_url: config.places_url.clone(),
+        model_url: config.model_url.clone(),
     });
     axon_server::serve_local("entities", config.port, router(state)).await;
 }
@@ -539,6 +658,7 @@ mod http_tests {
         let state = Arc::new(AppState {
             store,
             places_url: "http://127.0.0.1:9".into(),
+            model_url: "http://127.0.0.1:9".into(),
         });
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -636,6 +756,81 @@ mod http_tests {
             .await
             .unwrap();
         assert_eq!(foreign.status(), 403);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn duplicates_are_listed_judged_merged_and_dismissed() {
+        let (base, dir) = scratch_server("duplicates").await;
+        let client = reqwest::Client::new();
+        let create = |name: &'static str, values: Value| {
+            let client = client.clone();
+            let url = format!("{base}/api/entities");
+            async move {
+                let e: Value = client
+                    .post(url)
+                    .json(&json!({ "kind": "person", "name": name, "values": values }))
+                    .send()
+                    .await
+                    .unwrap()
+                    .json()
+                    .await
+                    .unwrap();
+                e["id"].as_str().unwrap().to_string()
+            }
+        };
+        let ron = create("Ron", json!({})).await;
+        let full = create("Ron Mustermann", json!({ "phones": ["+49 228 1234567"] })).await;
+        let anna = create("Anna", json!({})).await;
+        let anna2 = create("Anna", json!({})).await;
+
+        let listed: Value = reqwest::get(format!("{base}/api/duplicates?judge=true"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(listed["total"], json!(2));
+        assert_eq!(listed["candidates"][0]["strength"], json!("name"));
+        assert!(
+            listed["candidates"][0]["verdict"].is_null(),
+            "only partial pairs are judged"
+        );
+        let partial = &listed["candidates"][1];
+        assert_eq!(partial["strength"], json!("partial"));
+        assert_eq!(
+            partial["verdict"]["same"],
+            Value::Null,
+            "a model that does not answer is 'could not tell'"
+        );
+
+        let merged = client
+            .post(format!("{base}/api/entities/{ron}/merge"))
+            .json(&json!({ "other": full, "name": "Ron Mustermann" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(merged.status(), 200);
+        let merged: Value = merged.json().await.unwrap();
+        assert_eq!(
+            merged["values"]["phones"]["value"],
+            json!(["+49 228 1234567"])
+        );
+
+        let marked = client
+            .post(format!("{base}/api/duplicates/distinct"))
+            .json(&json!({ "a": anna, "b": anna2 }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(marked.status(), 204);
+        let after: Value = reqwest::get(format!("{base}/api/duplicates"))
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(after["total"], json!(0));
         let _ = std::fs::remove_dir_all(dir);
     }
 
