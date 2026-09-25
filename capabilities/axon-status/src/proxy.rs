@@ -90,6 +90,10 @@ pub(crate) struct Proxy {
     /// of the one that already existed. `None` stays fail-closed: comms answers 401 and the page
     /// says so, which is the honest outcome of an unconfigured credential.
     comms_authorization: Option<HeaderValue>,
+    /// The deployment token, sent upstream for a request the gate admitted on a device key.
+    /// A capability behind the shell gates on the tailnet identity or this token, and a device
+    /// arriving without the tailnet carries neither (PRD Q119).
+    device_authorization: Option<HeaderValue>,
     client: reqwest::Client,
     ui_dir: String,
 }
@@ -171,6 +175,9 @@ impl Proxy {
         Self {
             routes: Arc::new(routes),
             comms_authorization: comms_authorization(),
+            device_authorization: axon_server::InboundAuth::from_deployment()
+                .bearer_header()
+                .and_then(|value| HeaderValue::from_str(&value).ok()),
             client: reqwest::Client::new(),
             ui_dir,
         }
@@ -357,6 +364,14 @@ async fn forward(proxy: &Proxy, route: Route, req: Request) -> Response {
     }
     if route.inject_comms_auth {
         if let Some(auth) = &proxy.comms_authorization {
+            headers.insert(axum::http::header::AUTHORIZATION, auth.clone());
+        }
+    } else if parts
+        .extensions
+        .get::<axon_server::AdmittedDevice>()
+        .is_some()
+    {
+        if let Some(auth) = &proxy.device_authorization {
             headers.insert(axum::http::header::AUTHORIZATION, auth.clone());
         }
     }

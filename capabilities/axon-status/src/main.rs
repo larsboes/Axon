@@ -24,6 +24,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tower::Layer;
 
+mod device_gate;
 mod proxy;
 mod status;
 
@@ -106,7 +107,21 @@ async fn main() {
 
     // This process can start and stop the machine's capabilities, so it answers to
     // this machine only (axon_server binds loopback).
-    axon_server::serve_local("axon-status", port, build_router(shell)).await;
+    // A paired device is admitted on its key as well as the operator's tailnet identity
+    // (PRD Q119); the bind stays loopback.
+    let auth = match device_gate::RegistryVerifier::open() {
+        Some(verifier) => axon_server::InboundAuth::from_deployment()
+            .with_device_verifier(std::sync::Arc::new(verifier)),
+        None => axon_server::InboundAuth::from_deployment(),
+    };
+    axon_server::serve(
+        "axon-status",
+        axon_server::Reach::Loopback,
+        port,
+        build_router(shell),
+        auth,
+    )
+    .await;
 }
 
 /// This capability's name, for the origin guard's env var

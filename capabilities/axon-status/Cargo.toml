@@ -19,6 +19,9 @@ path = "src/main.rs"
 axon-config = { path = "../../libs/axon-config" }
 axon-store = { path = "../../libs/axon-store" }
 axon-server = { path = "../../libs/axon-server" }
+# The device registry, for one call: the shell admits a paired device on its signature
+# (src/device_gate.rs, PRD Q119). The protocol stays owned by capabilities/devices.
+devices = { path = "../devices" }
 route-manifest = { path = "../../libs/route-manifest" }
 axum.workspace = true
 # Not `full`: these are the drivers this crate reaches for, verified with a lone
@@ -35,3 +38,8 @@ reqwest = { workspace = true, features = ["json", "stream", "query", "form"] }
 # mounting them as the fallback outright -- the proxy has to get first refusal on the path.
 tower = { version = "0.4", features = ["util"] }   # ServiceExt::oneshot
 tower-http = { workspace = true, features = ["fs"] }
+
+# Signs a request with a real Ed25519 key in src/device_gate.rs's test, the same algorithm
+# capabilities/devices verifies with.
+[dev-dependencies]
+ring = "0.17"

@@ -29,7 +29,10 @@ pub mod origin;
 /// The identity `tailscale serve` proves, for the caller that cannot hold a secret.
 pub mod tailnet;
 
-pub use auth::{authenticated, token_from_file, InboundAuth};
+pub use auth::{
+    authenticated, device_signed_path, token_from_file, AdmittedDevice, DeviceVerifier,
+    InboundAuth, DEVICE_SIGNATURE_HEADER,
+};
 
 // Re-exported so a server binary that depends only on axon-server still gets the
 // port contract.
@@ -187,6 +190,135 @@ mod http_tests {
             let _ = axum::serve(listener, app).await;
         });
         format!("http://{addr}")
+    }
+
+    /// Admits exactly one signature value, and records what it was asked to verify.
+    struct FakeRegistry {
+        seen: std::sync::Mutex<Vec<(String, String, Vec<u8>)>>,
+    }
+
+    impl DeviceVerifier for FakeRegistry {
+        fn verify(
+            &self,
+            method: &str,
+            signed_path: &str,
+            headers: &axum::http::HeaderMap,
+            body: &[u8],
+        ) -> Result<String, String> {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((method.into(), signed_path.into(), body.to_vec()));
+            match headers.get(DEVICE_SIGNATURE_HEADER).map(|v| v.as_bytes()) {
+                Some(b"good") => Ok("dev_phone".into()),
+                _ => Err("signature is invalid".into()),
+            }
+        }
+    }
+
+    async fn serve_device_router(auth: InboundAuth) -> String {
+        use axum::routing::post;
+        let router = axum::Router::new()
+            .route(
+                "/interior/api/items",
+                post(
+                    |device: Option<axum::Extension<AdmittedDevice>>, body: String| async move {
+                        format!("{}:{body}", device.map(|d| d.0 .0).unwrap_or_default())
+                    },
+                ),
+            )
+            .route("/health", get(|| async { "ok" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = authenticated(router, auth);
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{addr}")
+    }
+
+    /// PRD Q119: a paired device gets in on its key, with no token and no tailnet identity,
+    /// and the handler still receives the body the gate buffered to check it.
+    #[tokio::test]
+    async fn a_valid_device_signature_admits_without_a_token_and_keeps_the_body() {
+        let registry = std::sync::Arc::new(FakeRegistry {
+            seen: Default::default(),
+        });
+        let auth =
+            InboundAuth::with_token(Some("s3cret".into())).with_device_verifier(registry.clone());
+        let base = serve_device_router(auth).await;
+        let response = reqwest::Client::new()
+            .post(format!("{base}/interior/api/items?room=k"))
+            .header(DEVICE_SIGNATURE_HEADER, "good")
+            .body("lamp")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.text().await.unwrap(), "dev_phone:lamp");
+        // The mount is removed, the query kept: what the phone signed (mac_bridge.rs signed_path).
+        assert_eq!(
+            registry.seen.lock().unwrap()[0],
+            ("POST".into(), "/api/items?room=k".into(), b"lamp".to_vec())
+        );
+    }
+
+    /// A bad signature is refused even when the request also holds the token: a forged key is
+    /// not a request that merely lacks credentials.
+    #[tokio::test]
+    async fn an_invalid_device_signature_is_refused_without_falling_through() {
+        let registry = std::sync::Arc::new(FakeRegistry {
+            seen: Default::default(),
+        });
+        let auth = InboundAuth::with_token(Some("s3cret".into())).with_device_verifier(registry);
+        let base = serve_device_router(auth).await;
+        let client = reqwest::Client::new();
+        let forged = client
+            .post(format!("{base}/interior/api/items"))
+            .header(DEVICE_SIGNATURE_HEADER, "forged")
+            .header("Authorization", "Bearer s3cret")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(forged.status(), 401);
+        let unsigned = client
+            .post(format!("{base}/interior/api/items"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            unsigned.status(),
+            401,
+            "no key and no token is still refused"
+        );
+        let health = client
+            .get(format!("{base}/health"))
+            .header(DEVICE_SIGNATURE_HEADER, "forged")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            health.status(),
+            200,
+            "exempt paths do not check a signature"
+        );
+    }
+
+    #[test]
+    fn the_signed_path_matches_the_phone() {
+        assert_eq!(
+            device_signed_path("/interior/api/items?x=1"),
+            "/api/items?x=1"
+        );
+        assert_eq!(
+            device_signed_path("/axon-status/api/axon-status/health"),
+            "/api/axon-status/health"
+        );
+        assert_eq!(
+            device_signed_path("/api/suggest?q=Berlin"),
+            "/api/suggest?q=Berlin"
+        );
+        assert_eq!(device_signed_path("/transit"), "/");
     }
 
     #[tokio::test]

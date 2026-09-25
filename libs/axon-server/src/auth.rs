@@ -65,6 +65,7 @@
 //! A deployment converges the two by pointing both references at one file.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, Method, StatusCode};
@@ -89,6 +90,49 @@ use serde_json::json;
 /// the failure the two paths above are exempt to prevent.
 const EXEMPT_PATHS: &[&str] = &["/health", "/ready", "/__axon/freshness"];
 
+/// The header whose presence makes a request a device-signed one (`axon-device-auth/v1`,
+/// `capabilities/devices/src/auth.rs`). The other three headers are read by the verifier.
+pub const DEVICE_SIGNATURE_HEADER: &str = "x-axon-signature";
+
+/// The largest body the gate buffers to check a device signature. Same ceiling as the shell's
+/// proxy (`capabilities/axon-status/src/proxy.rs`, `forward`), which buffers it anyway.
+const MAX_SIGNED_BODY_BYTES: usize = 8 * 1024 * 1024;
+
+/// Checks one `axon-device-auth/v1` signed request against the device registry.
+///
+/// A trait rather than a dependency because the registry is a capability
+/// (`capabilities/devices`) and this crate is under every capability. The shell supplies the
+/// implementation; a server without one never admits on a device key.
+pub trait DeviceVerifier: Send + Sync {
+    /// `Ok(device_id)` when the signature, the device and the nonce are all valid, else the
+    /// reason. `signed_path` is [`device_signed_path`] of the request target.
+    fn verify(
+        &self,
+        method: &str,
+        signed_path: &str,
+        headers: &HeaderMap,
+        body: &[u8],
+    ) -> Result<String, String>;
+}
+
+/// Set on a request the gate admitted on a device key, so a proxy behind it can authenticate
+/// the request to its upstream (which sees no tailnet identity on a LAN route).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmittedDevice(pub String);
+
+/// The target a device signs: the path the capability sees after the shell removes its mount.
+/// `/api/...` is not mounted and stays as it is. Mirrors `signed_path` in
+/// `dashboard/src-tauri/src/mac_bridge.rs`, which is the signing side.
+pub fn device_signed_path(path_and_query: &str) -> &str {
+    if path_and_query == "/api" || path_and_query.starts_with("/api/") {
+        return path_and_query;
+    }
+    match path_and_query.get(1..).and_then(|rest| rest.find('/')) {
+        Some(index) => &path_and_query[index + 1..],
+        None => "/",
+    }
+}
+
 /// The resolved inbound gate for one server.
 ///
 /// Cloned per request by axum's `State`, so the token is a `String` rather than
@@ -103,6 +147,8 @@ pub struct InboundAuth {
     /// one. See [`crate::tailnet`] for why a second gate exists and what it may
     /// not do.
     tailnet_operator: Option<String>,
+    /// The device registry, when this server admits paired devices by their key (PRD Q119).
+    device_verifier: Option<Arc<dyn DeviceVerifier>>,
 }
 
 /// Redacts the token. A capability that logs its own config must not turn this
@@ -116,6 +162,7 @@ impl std::fmt::Debug for InboundAuth {
             // "which operator is this deployment admitting" is the first thing
             // worth seeing when the phone is answered 401.
             .field("tailnet_operator", &self.tailnet_operator)
+            .field("device_verifier", &self.device_verifier.is_some())
             .finish()
     }
 }
@@ -146,6 +193,7 @@ impl InboundAuth {
             token,
             refuse_without_token: false,
             tailnet_operator: crate::tailnet::deployment_operator(),
+            device_verifier: None,
         }
     }
 
@@ -158,6 +206,7 @@ impl InboundAuth {
                 .filter(|t| !t.is_empty()),
             refuse_without_token: false,
             tailnet_operator: None,
+            device_verifier: None,
         }
     }
 
@@ -170,6 +219,23 @@ impl InboundAuth {
             .map(|o| o.trim().to_string())
             .filter(|o| !o.is_empty());
         self
+    }
+
+    /// Admit a request signed by a paired device (PRD Q119: the device key is the trust root,
+    /// and the network it arrived on is not).
+    ///
+    /// A request that carries [`DEVICE_SIGNATURE_HEADER`] is decided by its signature alone:
+    /// valid admits it, invalid answers `401` and does not fall through to the tailnet or token
+    /// rules, because a forged signature is not a request that merely lacks credentials. Like a
+    /// tailnet identity, a device key does not satisfy [`Self::refuse_without_token`].
+    pub fn with_device_verifier(mut self, verifier: Arc<dyn DeviceVerifier>) -> Self {
+        self.device_verifier = Some(verifier);
+        self
+    }
+
+    /// Whether this gate admits paired devices by key.
+    pub fn admits_devices(&self) -> bool {
+        self.device_verifier.is_some()
     }
 
     /// Answer `403` on the non-exempt routes when no token is configured,
@@ -203,7 +269,10 @@ impl InboundAuth {
     /// refusal is not layered onto the router, so an unconfigured deployment
     /// pays nothing per request.
     fn gates_anything(&self) -> bool {
-        self.token.is_some() || self.refuse_without_token || self.tailnet_operator.is_some()
+        self.token.is_some()
+            || self.refuse_without_token
+            || self.tailnet_operator.is_some()
+            || self.device_verifier.is_some()
     }
 
     /// `Some(rejection)` when this request must not reach a handler.
@@ -305,10 +374,64 @@ pub fn authenticated(router: Router, auth: InboundAuth) -> Router {
 }
 
 async fn gate(State(auth): State<InboundAuth>, request: Request, next: Next) -> Response {
+    let exempt =
+        request.method() == Method::OPTIONS || EXEMPT_PATHS.contains(&request.uri().path());
+    if let Some(verifier) = auth.device_verifier.as_ref() {
+        if !exempt && request.headers().contains_key(DEVICE_SIGNATURE_HEADER) {
+            return admit_device(&auth, verifier.as_ref(), request, next).await;
+        }
+    }
     match auth.reject(request.method(), request.uri().path(), request.headers()) {
         Some(rejection) => rejection,
         None => next.run(request).await,
     }
+}
+
+async fn admit_device(
+    auth: &InboundAuth,
+    verifier: &dyn DeviceVerifier,
+    request: Request,
+    next: Next,
+) -> Response {
+    let (mut parts, body) = request.into_parts();
+    let bytes = match axum::body::to_bytes(body, MAX_SIGNED_BODY_BYTES).await {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            return (
+                StatusCode::PAYLOAD_TOO_LARGE,
+                Json(json!({ "error": "signed request body is too large" })),
+            )
+                .into_response()
+        }
+    };
+    let target = parts
+        .uri
+        .path_and_query()
+        .map(|p| p.as_str())
+        .unwrap_or_else(|| parts.uri.path());
+    let device = match verifier.verify(
+        parts.method.as_str(),
+        device_signed_path(target),
+        &parts.headers,
+        &bytes,
+    ) {
+        Ok(device) => device,
+        Err(reason) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": format!("device signature rejected: {reason}") })),
+            )
+                .into_response()
+        }
+    };
+    if auth.refuse_without_token {
+        if let Some(rejection) = auth.reject(&parts.method, parts.uri.path(), &parts.headers) {
+            return rejection;
+        }
+    }
+    parts.extensions.insert(AdmittedDevice(device));
+    next.run(Request::from_parts(parts, axum::body::Body::from(bytes)))
+        .await
 }
 
 /// `Authorization: Bearer <token>` first, then `X-Axon-Token: <token>`.

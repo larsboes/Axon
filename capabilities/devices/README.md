@@ -20,6 +20,14 @@ nonce, uppercase method, capability path and SHA-256 body digest. Timestamps mus
 minutes of the node clock. Accepted nonces are retained for ten minutes and are unique per device;
 revocation is checked again at the nonce commit.
 
+The Axon status shell also admits a request on a valid device signature (PRD Q119: the device
+key, not the network, is the trust root). Its gate (`libs/axon-server/src/auth.rs`,
+`with_device_verifier`) checks every request that carries `X-Axon-Signature` against this registry
+through `DevicesStore::authenticate_scoped`, before it reaches any capability. A valid signature
+admits the request and the shell sends the deployment token upstream; an invalid one is refused
+with `401` and never falls through to the tailnet or token rules. The shell consumes the nonce in
+its own `shell` scope, so the same request is not a replay when it reaches `/api/devices/me`.
+
 The service is reached through the Axon status shell at `/devices/api/...`. It remains behind the
 existing deployment inbound gate and origin guard. Pairing and operator registry routes remain
 protected by that deployment gate; device data routes use the signed device identity as well.

@@ -336,6 +336,22 @@ impl DevicesStore {
         self.authenticate_at(request, method, path_and_query, body, now())
     }
 
+    /// [`Self::authenticate`] for a verifier other than this capability, such as the Axon
+    /// shell's inbound gate. The nonce is consumed in `scope`, so the shell admitting a request
+    /// does not make the same request a replay when it reaches `/api/devices/me` behind it.
+    /// Replay inside one scope is refused exactly as in the default scope.
+    pub fn authenticate_scoped(
+        &self,
+        scope: &str,
+        request: &SignedRequest,
+        method: &str,
+        path_and_query: &str,
+        body: &[u8],
+    ) -> Result<Device, StoreError> {
+        let nonce_key = format!("{scope}:{}", request.nonce);
+        self.authenticate_inner(request, &nonce_key, method, path_and_query, body, now())
+    }
+
     fn authenticate_at(
         &self,
         request: &SignedRequest,
@@ -344,12 +360,20 @@ impl DevicesStore {
         body: &[u8],
         current_time: i64,
     ) -> Result<Device, StoreError> {
-        self.authenticate_inner(request, method, path_and_query, body, current_time)
+        self.authenticate_inner(
+            request,
+            &request.nonce,
+            method,
+            path_and_query,
+            body,
+            current_time,
+        )
     }
 
     fn authenticate_inner(
         &self,
         request: &SignedRequest,
+        nonce_key: &str,
         method: &str,
         path_and_query: &str,
         body: &[u8],
@@ -421,7 +445,7 @@ impl DevicesStore {
              VALUES (?1, ?2, ?3, ?4)",
             params![
                 request.device_id,
-                request.nonce,
+                nonce_key,
                 current_time,
                 current_time + auth::NONCE_TTL_SECONDS
             ],
@@ -661,6 +685,55 @@ mod tests {
             .to_vec();
         assert!(matches!(
             store.authenticate_at(&after_revoke, "GET", "/api/devices/me", b"", current_time),
+            Err(StoreError::Unauthorized(_))
+        ));
+    }
+
+    /// The shell admits a request, then the same request reaches `/api/devices/me` behind it.
+    /// Both must pass once, and each scope must still refuse a replay.
+    #[test]
+    fn a_scoped_nonce_does_not_consume_the_default_scope() {
+        let (_dir, store) = store();
+        let keypair = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[9u8; 32]).unwrap();
+        let challenge = store.create_challenge().unwrap();
+        let device = store
+            .claim(
+                &challenge.challenge_id,
+                &challenge.code,
+                "iPhone".into(),
+                "ios".into(),
+                "ed25519".into(),
+                auth::hex(keypair.public_key().as_ref()),
+            )
+            .unwrap();
+        let mut request = SignedRequest {
+            device_id: device.id.clone(),
+            timestamp: now(),
+            nonce: "03".repeat(16),
+            signature: Vec::new(),
+        };
+        request.signature = keypair
+            .sign(&auth::signing_message(
+                &request,
+                "GET",
+                "/api/devices/me",
+                b"",
+            ))
+            .as_ref()
+            .to_vec();
+
+        store
+            .authenticate_scoped("shell", &request, "GET", "/api/devices/me", b"")
+            .unwrap();
+        assert!(matches!(
+            store.authenticate_scoped("shell", &request, "GET", "/api/devices/me", b""),
+            Err(StoreError::Unauthorized(_))
+        ));
+        store
+            .authenticate(&request, "GET", "/api/devices/me", b"")
+            .unwrap();
+        assert!(matches!(
+            store.authenticate(&request, "GET", "/api/devices/me", b""),
             Err(StoreError::Unauthorized(_))
         ));
     }
