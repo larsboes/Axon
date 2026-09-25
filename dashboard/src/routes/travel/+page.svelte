@@ -58,9 +58,11 @@
     scouting,
     transit,
     trips,
+    vault,
     JOURNEY_PRIORITIES,
     type JourneyOverride,
     type PeopleLayer,
+    type PersonFacts,
     type PersonPlaceProposal,
     type CalendarEntry,
     type CalendarCandidateVerdict,
@@ -323,7 +325,13 @@
   let peopleLayer = $state<PeopleLayer | null>(null);
   let peopleNotice = $state<string | null>(null);
   let legCoordinates = $state<Record<string, [number, number] | null>>({});
+  let peopleFacts = $state<PersonFacts[]>([]);
   async function loadWhoIsAround(plan: TripPlan): Promise<void> {
+    // Vault is optional here: without it the form has no name list and nobody hosts.
+    void vault
+      .people()
+      .then((facts) => (peopleFacts = facts))
+      .catch(() => (peopleFacts = []));
     try {
       peopleLayer = await places.peopleLayer();
       peopleNotice = null;
@@ -2001,7 +2009,9 @@
         {items}
         layer={peopleLayer}
         coordinates={legCoordinates}
+        people={peopleFacts}
         notice={peopleNotice}
+        onStated={() => activePlan && void loadWhoIsAround(activePlan)}
       />
     </section>
   {/if}

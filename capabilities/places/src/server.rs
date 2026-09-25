@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 
 use places::config::Config;
 use places::geocode::{GeocodeQuery, Geocoder, StructuredQuery};
-use places::store::{PlacesStore, Review, ReviewOutcome, PRESENCE_RADIUS_KM};
+use places::store::{stable_id, PlacesStore, Review, ReviewOutcome, PRESENCE_RADIUS_KM};
 use places::{layers, today};
 
 const ROUTES: &[route_manifest::Route] = &[
@@ -83,6 +83,13 @@ const ROUTES: &[route_manifest::Route] = &[
         "GET",
         "/api/people/proposals",
         "Proposed register rows awaiting human review.",
+    ),
+    r(
+        "POST",
+        "/api/people/places",
+        "Propose where a person is, as the operator states it. Body: { person, city, from?, to? } \
+         (dates YYYY-MM-DD). Only the city text is geocoded. Writes a PROPOSED row, source=operator; \
+         confirming it is still the confirm route's job.",
     ),
     r(
         "POST",
@@ -703,6 +710,107 @@ async fn list_proposals(State(state): State<AppState>) -> ApiResponse {
 
 /// The explicit human review path — with `dismiss` below, the ONLY code that
 /// can move a register row to `confirmed` (README D4, ISA PLC-7).
+#[derive(Deserialize)]
+struct StatedPlace {
+    person: String,
+    city: String,
+    from: Option<String>,
+    to: Option<String>,
+}
+
+/// `YYYY-MM-DD` by shape. The store compares dates as text, so the shape is what matters.
+fn is_day(value: &str) -> bool {
+    value.len() == 10
+        && value.bytes().enumerate().all(|(i, b)| match i {
+            4 | 7 => b == b'-',
+            _ => b.is_ascii_digit(),
+        })
+}
+
+/// Where someone is, as the operator states it: "Ron is in Bonn from 13 to 20 Oct".
+///
+/// Added 2026-09-25 (PRD Q116): the register had no way in except backfills, and "where
+/// is someone right now" is the fact a trip needs most. The operator is the source, so the
+/// row carries full confidence, but it is still written `proposed`: PLC-7 keeps the confirm
+/// route the one writer of `confirmed`, and the dashboard calls it in the same action.
+/// Only the city text reaches the geocoder, never the person's name (README D3).
+async fn state_person_place(
+    State(state): State<AppState>,
+    Json(body): Json<StatedPlace>,
+) -> ApiResponse {
+    let person = body.person.trim().to_string();
+    let city = body.city.trim().to_string();
+    if person.is_empty() || city.is_empty() {
+        return respond(
+            StatusCode::BAD_REQUEST,
+            json!({ "error": "person and city are both required" }),
+        );
+    }
+    let from = body.from.filter(|d| !d.trim().is_empty());
+    let to = body.to.filter(|d| !d.trim().is_empty());
+    for day in [&from, &to].into_iter().flatten() {
+        if !is_day(day) {
+            return respond(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": format!("{day:?} is not a YYYY-MM-DD date") }),
+            );
+        }
+    }
+    if let (Some(from), Some(to)) = (&from, &to) {
+        if from > to {
+            return respond(
+                StatusCode::BAD_REQUEST,
+                json!({ "error": "from must not be after to" }),
+            );
+        }
+    }
+    let database_path = state.database_path.clone();
+    let now = today();
+    match tokio::task::spawn_blocking(move || -> Result<Value, String> {
+        let store = PlacesStore::open(&database_path).map_err(|e| e.to_string())?;
+        let outcome = Geocoder::new(&store)
+            .geocode(&GeocodeQuery::Free(city.clone()), Some("city"), &now)
+            .map_err(|e| e.to_string())?;
+        let Some(place) = outcome.place else {
+            return Err(format!("no place found for {city:?}"));
+        };
+        let id = stable_id(
+            "pp",
+            &format!(
+                "operator:{person}:{}:{}:{}",
+                place.id,
+                from.as_deref().unwrap_or(""),
+                to.as_deref().unwrap_or("")
+            ),
+        );
+        store
+            .propose_person_place(
+                &id,
+                &person,
+                &place.id,
+                from.as_deref(),
+                to.as_deref(),
+                10_000,
+                "operator",
+                &now,
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(json!({ "id": id, "state": "proposed", "place_name": place.name }))
+    })
+    .await
+    {
+        Ok(Ok(body)) => respond(StatusCode::CREATED, body),
+        Ok(Err(error)) if error.starts_with("no place found") => {
+            respond(StatusCode::UNPROCESSABLE_ENTITY, json!({ "error": error }))
+        }
+        Ok(Err(error)) => respond(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": error })),
+        Err(error) => respond(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            json!({ "error": error.to_string() }),
+        ),
+    }
+}
+
 async fn confirm_proposal(State(state): State<AppState>, Path(id): Path<String>) -> ApiResponse {
     review(state, id, Review::Confirmed).await
 }
@@ -820,6 +928,7 @@ fn build_router(state: AppState) -> Router {
         .route("/api/unplaced", get(unplaced))
         .route("/api/unplaced/assign", post(assign_unplaced))
         .route("/api/people/proposals", get(list_proposals))
+        .route("/api/people/places", post(state_person_place))
         .route("/api/people/proposals/:id/confirm", post(confirm_proposal))
         .route("/api/people/proposals/:id/dismiss", post(dismiss_proposal))
         .route("/api/people/presence", get(people_presence))
@@ -924,6 +1033,42 @@ mod tests {
         // the UI says "run the fetch verb" instead of drawing an empty grid.
         assert_eq!(results[0]["fetched_at"], Value::Null);
         assert_eq!(results[0]["months"].as_array().unwrap().len(), 0);
+    }
+
+    /// Every refusal here happens before the geocoder is built, so no request leaves.
+    #[tokio::test]
+    async fn a_stated_place_is_refused_before_any_lookup_when_malformed() {
+        let state = AppState {
+            database_path: Arc::new(scratch_database("stated-place")),
+        };
+        for (person, city, from, to, needle) in [
+            ("Ron", " ", None, None, "required"),
+            (" ", "Bonn", None, None, "required"),
+            ("Ron", "Bonn", Some("14.10.2026"), None, "YYYY-MM-DD"),
+            (
+                "Ron",
+                "Bonn",
+                Some("2026-10-20"),
+                Some("2026-10-13"),
+                "after",
+            ),
+        ] {
+            let (status, Json(body)) = state_person_place(
+                State(state.clone()),
+                Json(StatedPlace {
+                    person: person.into(),
+                    city: city.into(),
+                    from: from.map(str::to_string),
+                    to: to.map(str::to_string),
+                }),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+            assert!(
+                body["error"].as_str().unwrap_or_default().contains(needle),
+                "{body}"
+            );
+        }
     }
 
     #[tokio::test]

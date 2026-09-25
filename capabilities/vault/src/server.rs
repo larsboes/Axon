@@ -61,7 +61,8 @@ const ROUTES: &[route_manifest::Route] = &[
     r(
         "GET",
         "/api/people",
-        "last_contact, met_at and mention_count per Atlas/People note, computed from Journal/ backlinks. Never stored.",
+        "last_contact, met_at and mention_count per Atlas/People note, computed from Journal/ backlinks, \
+         plus the note's home, host and host_note keys as typed. Never stored.",
     ),
 ];
 

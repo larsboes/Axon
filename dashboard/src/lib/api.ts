@@ -3142,7 +3142,23 @@ export const vault = {
       `/vault/api/tasks${status ? `?status=${status}` : ''}`,
       signal ? { signal } : undefined,
     ).then((response) => response.tasks),
+  /** Atlas/People as vault reads it live (capabilities/vault/src/people.rs). C2: names. */
+  people: (signal?: AbortSignal) =>
+    request<{ facts: PersonFacts[] }>('/vault/api/people', signal ? { signal } : undefined).then(
+      (response) => response.facts,
+    ),
 };
+
+export interface PersonFacts {
+  id: string;
+  name: string;
+  mention_count: number;
+  last_contact: string | null;
+  met_at: string | null;
+  home: string | null;
+  host: boolean;
+  host_note: string | null;
+}
 
 // ─── Finance ─────────────────────────────────────────────────────────────────
 
@@ -3975,6 +3991,12 @@ export const places = {
     request<{ proposals: PersonPlaceProposal[] }>(
       '/places/api/people/proposals',
       signal ? { signal } : undefined,
+    ),
+  /** Where someone is, as you state it. Written proposed; confirm it with confirmProposal. */
+  statePersonPlace: (body: { person: string; city: string; from?: string; to?: string }) =>
+    request<{ id: string; state: 'proposed'; place_name: string }>(
+      '/places/api/people/places',
+      jsonInit('POST', body),
     ),
   confirmProposal: (id: string) =>
     request<{ ok: boolean; state: 'confirmed' }>(

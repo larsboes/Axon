@@ -4,7 +4,7 @@
 // (GET /places/api/layers/people). Names never leave this machine: the join runs
 // in the dashboard, and nothing here is sent to a model (PRD §6.1, C2).
 
-import type { PeopleLayer, PlanItem, TripStage } from '../api';
+import type { PeopleLayer, PersonFacts, PlanItem, TripStage } from '../api';
 
 /** places' own disclosure radius (capabilities/places/README.md, D4). */
 export const AROUND_RADIUS_KM = 50;
@@ -88,4 +88,38 @@ export function meetupsOf(items: PlanItem[]): Meetup[] {
 export function stageCoordinate(stage: TripStage): [number, number] | null {
   const { latitude, longitude } = stage.destination;
   return latitude != null && longitude != null ? [latitude, longitude] : null;
+}
+
+export interface Host {
+  person: string;
+  placeName: string;
+  distanceKm: number;
+  note: string | null;
+}
+
+/**
+ * People near a leg who said they can host (`host: yes` in their note), nearest first.
+ * Where they are comes from the register, so a friend who is away that week drops out
+ * and one visiting the city shows up, as long as the row is confirmed.
+ */
+export function hostsAround(
+  destination: [number, number] | null,
+  day: string | null,
+  layer: PeopleLayer,
+  people: PersonFacts[],
+): Host[] {
+  const hosting = new Map(people.filter((p) => p.host).map((p) => [p.name, p]));
+  return whoIsAround(destination, day, layer)
+    .filter((around) => hosting.has(around.person))
+    .map((around) => ({ ...around, note: hosting.get(around.person)?.host_note ?? null }));
+}
+
+/** The stays already on the plan, for the leg's view of where to sleep. */
+export function staysOf(items: PlanItem[]): { title: string; checkIn: string | null; checkOut: string | null }[] {
+  return items
+    .filter((item) => item.item_type === 'stay')
+    .map((item) => {
+      const payload = (item.payload ?? {}) as { check_in?: string; check_out?: string };
+      return { title: item.title, checkIn: payload.check_in ?? null, checkOut: payload.check_out ?? null };
+    });
 }

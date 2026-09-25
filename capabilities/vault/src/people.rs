@@ -46,6 +46,28 @@ pub struct PersonFacts {
     pub stored: BTreeMap<String, String>,
     /// The keys whose stored value disagrees with the computed one.
     pub disagrees: Vec<String>,
+    /// The note's `home` key: the city the person lives in, as typed. PRD Q116 (2026-09-25):
+    /// who someone is stays in the note, and Axon reads it.
+    pub home: Option<String>,
+    /// `host: yes` in the note: Lars could ask to stay with this person at their place.
+    pub host: bool,
+    /// The note's `host_note`, as typed: "sofa, ask a week ahead".
+    pub host_note: Option<String>,
+}
+
+/// A frontmatter scalar without quotes or surrounding space, or `None` when empty.
+fn scalar(note: &Note, key: &str) -> Option<String> {
+    let value = note
+        .field(key)?
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'')
+        .trim();
+    (!value.is_empty() && value != "[]").then(|| value.to_string())
+}
+
+/// `yes`, `true` or `y`, in any case. Anything else, including absence, is no.
+fn yes(value: Option<String>) -> bool {
+    value.is_some_and(|v| matches!(v.to_lowercase().as_str(), "yes" | "true" | "y"))
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -178,6 +200,9 @@ pub fn report(notes: &[Note]) -> PeopleReport {
             met_at,
             stored,
             disagrees,
+            home: scalar(note, "home"),
+            host: yes(scalar(note, "host")),
+            host_note: scalar(note, "host_note"),
         });
     }
 
@@ -227,6 +252,26 @@ mod tests {
         assert_eq!(erika.mention_count, 2);
         assert_eq!(erika.met_at.as_deref(), Some("2026-01-05"));
         assert_eq!(erika.last_contact.as_deref(), Some("2026-03-09"));
+    }
+
+    #[test]
+    fn home_and_hosting_are_read_as_typed() {
+        let mut host = note("Atlas/People/Erika.md", "");
+        host.fields.insert("home".into(), "\"Bonn\"".into());
+        host.fields.insert("host".into(), "Yes".into());
+        host.fields
+            .insert("host_note".into(), "sofa, ask a week ahead".into());
+        let mut other = note("Atlas/People/Max.md", "");
+        other.fields.insert("host".into(), "maybe".into());
+        other.fields.insert("home".into(), " ".into());
+        let report = report(&[host, other]);
+        let erika = report.facts.iter().find(|f| f.name == "Erika").unwrap();
+        assert_eq!(erika.home.as_deref(), Some("Bonn"));
+        assert!(erika.host);
+        assert_eq!(erika.host_note.as_deref(), Some("sofa, ask a week ahead"));
+        let max = report.facts.iter().find(|f| f.name == "Max").unwrap();
+        assert_eq!(max.home, None);
+        assert!(!max.host, "only yes, true or y is a yes");
     }
 
     #[test]

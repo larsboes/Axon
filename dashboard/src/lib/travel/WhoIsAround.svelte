@@ -7,23 +7,67 @@
    */
   import { link } from "$lib/nav";
   import Icon from "$lib/Icon.svelte";
-  import type { PeopleLayer, PlanItem, TripStage } from "$lib/api";
-  import { AROUND_RADIUS_KM, meetupsOf, whoIsAround } from "$lib/travel/who-is-around";
+  import { places, type PeopleLayer, type PersonFacts, type PlanItem, type TripStage } from "$lib/api";
+  import { AROUND_RADIUS_KM, hostsAround, meetupsOf, staysOf, whoIsAround } from "$lib/travel/who-is-around";
 
   let {
     stages,
     items,
     layer,
     coordinates,
+    people = [],
     notice = null,
+    onStated,
   }: {
     stages: TripStage[];
     items: PlanItem[];
     layer: PeopleLayer | null;
     /** Each leg's destination coordinate, by stage id; null when none resolved. */
     coordinates: Record<string, [number, number] | null>;
+    /** Atlas/People as vault reads it: names for the form, `host` for places to stay. */
+    people?: PersonFacts[];
     notice?: string | null;
+    /** Called after a stated place is confirmed, so the page reloads the layer. */
+    onStated?: () => void;
   } = $props();
+
+  const stays = $derived(staysOf(items));
+
+  // "Where is someone": the operator states it, places writes it proposed, and this
+  // same action confirms it (capabilities/places/src/server.rs, state_person_place).
+  let formPerson = $state("");
+  let formCity = $state("");
+  let formFrom = $state("");
+  let formTo = $state("");
+  let formBusy = $state(false);
+  let formMessage = $state<string | null>(null);
+
+  async function statePlace(event: SubmitEvent): Promise<void> {
+    event.preventDefault();
+    formBusy = true;
+    formMessage = null;
+    try {
+      const stated = await places.statePersonPlace({
+        person: formPerson.trim(),
+        city: formCity.trim(),
+        from: formFrom || undefined,
+        to: formTo || undefined,
+      });
+      await places.confirmProposal(stated.id).catch((caught: unknown) => {
+        // 409: already confirmed, which is the state this form wants.
+        if (!(caught instanceof Error && caught.message.includes("409"))) throw caught;
+      });
+      formMessage = `Saved: ${formPerson.trim()} in ${stated.place_name}.`;
+      formCity = "";
+      formFrom = "";
+      formTo = "";
+      onStated?.();
+    } catch (caught) {
+      formMessage = caught instanceof Error ? caught.message : String(caught);
+    } finally {
+      formBusy = false;
+    }
+  }
 
   const meetups = $derived(meetupsOf(items));
   const legs = $derived(
@@ -31,6 +75,7 @@
       stage,
       resolved: coordinates[stage.id] != null,
       around: layer ? whoIsAround(coordinates[stage.id] ?? null, stage.date, layer) : [],
+      hosts: layer ? hostsAround(coordinates[stage.id] ?? null, stage.date, layer, people) : [],
     })),
   );
 </script>
@@ -73,9 +118,46 @@
           {leg.around.map((p) => `${p.person} (${p.distanceKm.toFixed(0)} km)`).join(", ")}
         </p>
       {/if}
+      {#if leg.hosts.length > 0}
+        <p class="stay-line">
+          <Icon name="home" size={12} /> Could stay with:
+          {leg.hosts.map((h) => (h.note ? `${h.person} (${h.note})` : h.person)).join(", ")}
+        </p>
+      {/if}
     </li>
   {/each}
 </ol>
+
+{#if stays.length > 0}
+  <p class="rail-hint">Stays on this plan</p>
+  <ol class="around-list">
+    {#each stays as stay (stay.title + stay.checkIn)}
+      <li>
+        <p class="who"><strong>{stay.title}</strong></p>
+        <p class="meta">{stay.checkIn ?? "?"} – {stay.checkOut ?? "?"}</p>
+      </li>
+    {/each}
+  </ol>
+{/if}
+
+<form class="state-form" onsubmit={statePlace}>
+  <p class="rail-hint">Where is someone? Saved as confirmed.</p>
+  <input aria-label="Person" placeholder="Person" list="people-names" bind:value={formPerson} required />
+  <datalist id="people-names">
+    {#each people as person (person.id)}
+      <option value={person.name}></option>
+    {/each}
+  </datalist>
+  <input aria-label="City" placeholder="City" bind:value={formCity} required />
+  <div class="dates">
+    <input aria-label="From" type="date" bind:value={formFrom} />
+    <input aria-label="To" type="date" bind:value={formTo} />
+  </div>
+  <button class="btn btn-outline" type="submit" disabled={formBusy}>
+    {formBusy ? "Saving…" : "Save"}
+  </button>
+  {#if formMessage}<p class="meta" aria-live="polite">{formMessage}</p>{/if}
+</form>
 
 <a class="btn btn-outline rail-action" href={link("/map")}>
   <Icon name="map-pin" size={13} /> Confirm people on the map
@@ -141,6 +223,42 @@
     margin: 0;
     font-size: var(--text-2xs);
     color: var(--text-tertiary);
+  }
+
+  .stay-line {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin: 0;
+    font-size: var(--text-xs);
+    color: var(--text-secondary);
+  }
+
+  .state-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin-top: 0.6rem;
+  }
+
+  .state-form input {
+    padding: 0.3rem 0.45rem;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius-sm);
+    background: var(--card-bg);
+    color: var(--text-primary);
+    font: inherit;
+    font-size: var(--text-xs);
+  }
+
+  .state-form .dates {
+    display: flex;
+    gap: 0.35rem;
+  }
+
+  .state-form .dates input {
+    flex: 1;
+    min-width: 0;
   }
 
   .rail-action {

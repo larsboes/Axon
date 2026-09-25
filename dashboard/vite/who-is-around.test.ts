@@ -56,3 +56,19 @@ describe('meetupsOf', () => {
     ]);
   });
 });
+
+describe('hostsAround', () => {
+  test('only nearby people whose note says host: yes, with their note', async () => {
+    const { hostsAround } = await import('../src/lib/travel/who-is-around');
+    const layer = {
+      type: 'FeatureCollection',
+      features: [pin('Ron', 50.735, 7.1), pin('Anna', 50.74, 7.09), pin('Away', 50.74, 7.1, null, '2026-10-01')],
+    } as unknown as PeopleLayer;
+    const people = [
+      { id: 'a', name: 'Ron', mention_count: 0, last_contact: null, met_at: null, home: 'Bonn', host: true, host_note: 'sofa' },
+      { id: 'b', name: 'Anna', mention_count: 0, last_contact: null, met_at: null, home: 'Bonn', host: false, host_note: null },
+      { id: 'c', name: 'Away', mention_count: 0, last_contact: null, met_at: null, home: 'Bonn', host: true, host_note: null },
+    ];
+    expect(hostsAround(BONN, '2026-10-14', layer, people).map((h) => [h.person, h.note])).toEqual([['Ron', 'sofa']]);
+  });
+});
