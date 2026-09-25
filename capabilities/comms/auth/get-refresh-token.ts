@@ -2,14 +2,14 @@
 /**
  * Axon · comms capability — one-time Google OAuth bootstrap.
  *
- * Reads the Desktop OAuth client JSON from Bitwarden/Vaultwarden (bw-native,
- * never hardcoded), runs a loopback consent flow for the Gmail + Calendar
+ * Reads the Desktop OAuth client JSON from the macOS login keychain or
+ * Bitwarden/Vaultwarden (never hardcoded), runs a loopback consent flow for the Gmail + Calendar
  * scopes the comms pipeline needs, and writes the resulting refresh token into
  * the axon-overlay overlay (config/comms.env, git-ignored via *.env). The
  * refresh token is never printed to the console.
  *
- * Run once — interactive, opens a browser for consent:
- *   bw unlock                 # then: export BW_SESSION="..."
+ * The OAuth client JSON comes from the macOS login keychain (see keychainClient), else
+ * Bitwarden. Run once — interactive, opens a browser for consent:
  *   bun capabilities/comms/auth/get-refresh-token.ts
  *   bun capabilities/comms/auth/get-refresh-token.ts --env entities.env --scope contacts.readonly
  */
@@ -46,18 +46,29 @@ function die(msg: string): never {
   process.exit(1);
 }
 
-/** Fetch the OAuth client credentials from Bitwarden (bw-native, no shell interpolation). */
-async function bwClient(): Promise<{ client_id: string; client_secret: string; token_uri: string }> {
-  if (!process.env.BW_SESSION) die("BW_SESSION not set — run `bw unlock` and export it first");
-  const proc = Bun.spawn(["bw", "get", "item", BW_ITEM], { env: process.env, stdout: "pipe", stderr: "pipe" });
+type OAuthClient = { client_id: string; client_secret: string; token_uri: string };
+
+/**
+ * The OAuth client JSON from the macOS login keychain, as a generic password whose service
+ * is BW_ITEM. Apple Passwords (the iCloud Keychain) is not readable by `security`, so the
+ * item is copied into the login keychain once, by hand:
+ *   security add-generic-password -a axon -s "Axon Google OAuth 2.0 Client IDs" -U -w
+ * (`-w` last with no value makes `security` prompt, so the JSON never enters shell history.)
+ * Returns null when there is no such item, so Bitwarden stays the fallback.
+ */
+async function keychainClient(): Promise<OAuthClient | null> {
+  if (process.platform !== "darwin") return null;
+  const proc = Bun.spawn(["security", "find-generic-password", "-s", BW_ITEM, "-w"], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
   const out = await new Response(proc.stdout).text();
-  if ((await proc.exited) !== 0) die(`\`bw get item "${BW_ITEM}"\` failed — is the folder/item name exact and the vault unlocked?`);
+  if ((await proc.exited) !== 0) return null;
+  return clientFrom([out]) ?? die(`the keychain item "${BW_ITEM}" holds no OAuth client JSON`);
+}
 
-  const item = JSON.parse(out);
-  const candidates: string[] = [];
-  if (item.notes) candidates.push(item.notes);
-  for (const f of item.fields ?? []) if (f?.value) candidates.push(f.value);
-
+/** The first candidate text that carries an OAuth client JSON, from its first `{` on. */
+function clientFrom(candidates: string[]): OAuthClient | null {
   for (const c of candidates) {
     const start = c.indexOf("{");
     if (start < 0) continue;
@@ -75,6 +86,24 @@ async function bwClient(): Promise<{ client_id: string; client_secret: string; t
       /* try the next candidate */
     }
   }
+  return null;
+}
+
+/** Fetch the OAuth client credentials from Bitwarden (bw-native, no shell interpolation). */
+async function bwClient(): Promise<OAuthClient> {
+  if (!process.env.BW_SESSION) {
+    die(`no keychain item "${BW_ITEM}" and BW_SESSION is not set. Add the keychain item: security add-generic-password -a axon -s "${BW_ITEM}" -U -w`);
+  }
+  const proc = Bun.spawn(["bw", "get", "item", BW_ITEM], { env: process.env, stdout: "pipe", stderr: "pipe" });
+  const out = await new Response(proc.stdout).text();
+  if ((await proc.exited) !== 0) die(`\`bw get item "${BW_ITEM}"\` failed — is the folder/item name exact and the vault unlocked?`);
+
+  const item = JSON.parse(out);
+  const candidates: string[] = [];
+  if (item.notes) candidates.push(item.notes);
+  for (const f of item.fields ?? []) if (f?.value) candidates.push(f.value);
+  const found = clientFrom(candidates);
+  if (found) return found;
   die(`could not find the OAuth client JSON inside the "${BW_ITEM}" item (checked notes + custom fields)`);
 }
 
@@ -96,7 +125,7 @@ function upsertEnv(env: string, key: string, value: string): string {
 }
 
 // --- 1. credentials from Bitwarden ---
-const { client_id, client_secret, token_uri } = await bwClient();
+const { client_id, client_secret, token_uri } = (await keychainClient()) ?? (await bwClient());
 
 // --- 2. build the consent URL (offline + forced consent → guarantees a refresh_token) ---
 const authUrl =
