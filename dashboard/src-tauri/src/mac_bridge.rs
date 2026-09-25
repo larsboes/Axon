@@ -88,6 +88,7 @@ pub const ALLOWED_PATHS: &[&str] = &[
     "/axon-status/",
     "/calendar/api/",
     "/comms/",
+    "/entities/api/",
     "/finance/api/",
     "/interior/api/",
     "/knowledge-graph/",

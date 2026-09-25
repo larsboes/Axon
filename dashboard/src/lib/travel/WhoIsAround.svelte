@@ -1,40 +1,53 @@
 <script lang="ts">
   /**
-   * Who you know near each leg, and the meetups the plan holds.
+   * Who you know near each leg, where you could stay, and the plan's meetups.
    *
-   * Confirmed companion-register rows only: a proposal is a guess until it is
-   * confirmed on /map. The join runs here, on this machine (who-is-around.ts).
+   * People come from capabilities/entities (PRD Q117): where each person is on the leg's
+   * day, from their home base or an away period. The join runs here, on this machine
+   * (who-is-around.ts).
    */
   import { link } from "$lib/nav";
   import Icon from "$lib/Icon.svelte";
-  import { places, type PeopleLayer, type PersonFacts, type PlanItem, type TripStage } from "$lib/api";
-  import { AROUND_RADIUS_KM, hostsAround, meetupsOf, staysOf, whoIsAround } from "$lib/travel/who-is-around";
+  import { entities, type Entity, type LocatedPerson, type PlanItem, type TripStage } from "$lib/api";
+  import { AROUND_RADIUS_KM, aroundFromLocated, meetupsOf, staysOf } from "$lib/travel/who-is-around";
 
   let {
     stages,
     items,
-    layer,
     coordinates,
+    locatedByDay,
     people = [],
     notice = null,
-    onStated,
+    onChanged,
   }: {
     stages: TripStage[];
     items: PlanItem[];
-    layer: PeopleLayer | null;
     /** Each leg's destination coordinate, by stage id; null when none resolved. */
     coordinates: Record<string, [number, number] | null>;
-    /** Atlas/People as vault reads it: names for the form, `host` for places to stay. */
-    people?: PersonFacts[];
+    /** entities' /api/located answer, by day. */
+    locatedByDay: Record<string, LocatedPerson[]>;
+    /** Every person, for the form's name list. */
+    people?: Entity[];
     notice?: string | null;
-    /** Called after a stated place is confirmed, so the page reloads the layer. */
-    onStated?: () => void;
+    /** Called after a fact is saved, so the page reloads. */
+    onChanged?: () => void;
   } = $props();
 
+  const meetups = $derived(meetupsOf(items));
   const stays = $derived(staysOf(items));
+  const legs = $derived(
+    stages.map((stage) => {
+      const located = stage.date ? (locatedByDay[stage.date] ?? []) : [];
+      return {
+        stage,
+        resolved: coordinates[stage.id] != null,
+        ...aroundFromLocated(coordinates[stage.id] ?? null, located),
+      };
+    }),
+  );
 
-  // "Where is someone": the operator states it, places writes it proposed, and this
-  // same action confirms it (capabilities/places/src/server.rs, state_person_place).
+  // "Where is someone": an away period (with dates) or a home base (without), written to
+  // entities. A name not yet known creates the person.
   let formPerson = $state("");
   let formCity = $state("");
   let formFrom = $state("");
@@ -44,45 +57,39 @@
 
   async function statePlace(event: SubmitEvent): Promise<void> {
     event.preventDefault();
+    const name = formPerson.trim();
+    const city = formCity.trim();
+    if (!name || !city) return;
     formBusy = true;
     formMessage = null;
     try {
-      const stated = await places.statePersonPlace({
-        person: formPerson.trim(),
-        city: formCity.trim(),
-        from: formFrom || undefined,
-        to: formTo || undefined,
+      const known = people.find((p) => p.name.toLowerCase() === name.toLowerCase());
+      const person = known ?? (await entities.create({ kind: "person", name }));
+      const away = Boolean(formFrom && formTo);
+      const saved = await entities.addFact(person.id, {
+        predicate: away ? "away" : "home_base",
+        place: city,
+        valid_from: formFrom || undefined,
+        valid_to: away ? formTo : undefined,
       });
-      await places.confirmProposal(stated.id).catch((caught: unknown) => {
-        // 409: already confirmed, which is the state this form wants.
-        if (!(caught instanceof Error && caught.message.includes("409"))) throw caught;
-      });
-      formMessage = `Saved: ${formPerson.trim()} in ${stated.place_name}.`;
+      formMessage =
+        `Saved: ${person.name} ${away ? `in ${city} ${formFrom} – ${formTo}` : `lives in ${city}`}.` +
+        (saved.geocode.status === "found" ? "" : ` No coordinate found, so no leg will match it.`);
       formCity = "";
       formFrom = "";
       formTo = "";
-      onStated?.();
+      onChanged?.();
     } catch (caught) {
       formMessage = caught instanceof Error ? caught.message : String(caught);
     } finally {
       formBusy = false;
     }
   }
-
-  const meetups = $derived(meetupsOf(items));
-  const legs = $derived(
-    stages.map((stage) => ({
-      stage,
-      resolved: coordinates[stage.id] != null,
-      around: layer ? whoIsAround(coordinates[stage.id] ?? null, stage.date, layer) : [],
-      hosts: layer ? hostsAround(coordinates[stage.id] ?? null, stage.date, layer, people) : [],
-    })),
-  );
 </script>
 
 <p class="rail-hint">
-  Confirmed people within {AROUND_RADIUS_KM} km of each leg's destination on its day, and
-  the meetups on this plan.
+  People within {AROUND_RADIUS_KM} km of each leg's destination on its day, where you could
+  stay, and the meetups on this plan.
 </p>
 
 {#if notice}
@@ -109,10 +116,12 @@
         <strong>{leg.stage.destination.name}</strong>
         <span>{leg.stage.date ?? "no date"}</span>
       </p>
-      {#if !leg.resolved}
+      {#if !leg.stage.date}
+        <p class="meta">No date yet, so nobody can be placed on this leg.</p>
+      {:else if !leg.resolved}
         <p class="meta">No coordinate for this destination, so nobody is matched.</p>
       {:else if leg.around.length === 0}
-        <p class="meta">Nobody confirmed nearby.</p>
+        <p class="meta">Nobody you know is nearby that day.</p>
       {:else}
         <p class="when">
           {leg.around.map((p) => `${p.person} (${p.distanceKm.toFixed(0)} km)`).join(", ")}
@@ -141,7 +150,7 @@
 {/if}
 
 <form class="state-form" onsubmit={statePlace}>
-  <p class="rail-hint">Where is someone? Saved as confirmed.</p>
+  <p class="rail-hint">Where is someone? With dates it is an away period; without, their home base.</p>
   <input aria-label="Person" placeholder="Person" list="people-names" bind:value={formPerson} required />
   <datalist id="people-names">
     {#each people as person (person.id)}
@@ -159,12 +168,11 @@
   {#if formMessage}<p class="meta" aria-live="polite">{formMessage}</p>{/if}
 </form>
 
-<a class="btn btn-outline rail-action" href={link("/map")}>
-  <Icon name="map-pin" size={13} /> Confirm people on the map
+<a class="btn btn-outline rail-action" href={link("/people")}>
+  <Icon name="users" size={13} /> All people
 </a>
 
 <style>
-  /* Local copies of the rail lines, for the reason CompanionRail.svelte states. */
   .rail-hint {
     margin: 0 0 0.4rem;
     color: var(--text-secondary);
@@ -178,7 +186,7 @@
     border-radius: var(--radius-sm);
     background: var(--primary-soft);
     color: var(--text-secondary);
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     line-height: 1.4;
   }
 
@@ -269,7 +277,7 @@
     gap: 0.35rem;
     margin-top: 0.5rem;
     padding: 0.3rem 0.5rem;
-    font-size: 0.72rem;
+    font-size: var(--text-xs);
     text-decoration: none;
   }
 </style>

@@ -58,11 +58,11 @@
     scouting,
     transit,
     trips,
-    vault,
+    entities,
     JOURNEY_PRIORITIES,
     type JourneyOverride,
-    type PeopleLayer,
-    type PersonFacts,
+    type Entity,
+    type LocatedPerson,
     type PersonPlaceProposal,
     type CalendarEntry,
     type CalendarCandidateVerdict,
@@ -321,22 +321,24 @@
     }
   }
 
-  // Who is around each leg: confirmed register rows, joined here (who-is-around.ts).
-  let peopleLayer = $state<PeopleLayer | null>(null);
+  // Who is around each leg: entities' /api/located for each leg's day (PRD Q117), joined
+  // here against the leg's coordinate (who-is-around.ts).
   let peopleNotice = $state<string | null>(null);
   let legCoordinates = $state<Record<string, [number, number] | null>>({});
-  let peopleFacts = $state<PersonFacts[]>([]);
+  let locatedByDay = $state<Record<string, LocatedPerson[]>>({});
+  let knownPeople = $state<Entity[]>([]);
   async function loadWhoIsAround(plan: TripPlan): Promise<void> {
-    // Vault is optional here: without it the form has no name list and nobody hosts.
-    void vault
-      .people()
-      .then((facts) => (peopleFacts = facts))
-      .catch(() => (peopleFacts = []));
     try {
-      peopleLayer = await places.peopleLayer();
+      const days = [...new Set(plan.stages.map((stage) => stage.date).filter((d): d is string => !!d))];
+      const [people, ...answers] = await Promise.all([
+        entities.list("person"),
+        ...days.map((day) => entities.located(day)),
+      ]);
+      knownPeople = people;
+      locatedByDay = Object.fromEntries(answers.map((answer) => [answer.day, answer.located]));
       peopleNotice = null;
     } catch (caught) {
-      peopleLayer = null;
+      locatedByDay = {};
       peopleNotice = caught instanceof Error ? caught.message : String(caught);
     }
     // A leg without its own coordinate borrows the registered city of that name,
@@ -2007,11 +2009,11 @@
       <WhoIsAround
         stages={activePlan.stages}
         {items}
-        layer={peopleLayer}
         coordinates={legCoordinates}
-        people={peopleFacts}
+        {locatedByDay}
+        people={knownPeople}
         notice={peopleNotice}
-        onStated={() => activePlan && void loadWhoIsAround(activePlan)}
+        onChanged={() => activePlan && void loadWhoIsAround(activePlan)}
       />
     </section>
   {/if}

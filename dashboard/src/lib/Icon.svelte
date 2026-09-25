@@ -14,11 +14,12 @@
     | "refresh" | "sun" | "moon" | "menu" | "close" | "clock" | "alert" | "wifi-off"
     | "check" | "loader" | "plus" | "search" | "swap" | "calendar" | "ticket"
     | "git-branch" | "thermometer" | "cpu" | "activity" | "chevron" | "mail" | "globe"
-    | "layout" | "wallet" | "history" | "sparkles" | "message" | "send";
+    | "layout" | "wallet" | "history" | "sparkles" | "message" | "send" | "users";
 
   let { name, size = 16 }: { name: Name; size?: number } = $props();
 
   const paths: Record<Name, string> = {
+    "users": "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2 M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8 M22 21v-2a4 4 0 0 0-3-3.87 M16 3.13a4 4 0 0 1 0 7.75",
     "home": "M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z M9 22V12h6v10",
     // Vier Felder statt eines Hauses: die Seite zeigt einen Grundriss, und /"/" ist schon home.
     "layout": "M3 3h7v9H3z M14 3h7v5h-7z M14 12h7v9h-7z M3 16h7v5H3z",

@@ -76,6 +76,8 @@ export const PRIMARY_NAV: NavItem[] = [
   // Ein Ziel in der Shell und nicht nur ein Panel: das ist der Unterschied, den PRD Q59
   // ausdruecklich nennt, und der Grund, aus dem die Capability nach core Axon gezogen ist.
   { href: "/interior", label: "Interior", icon: "layout", capability: "interior" },
+  // PRD Q117: Axon is the system of record for people; the page edits capabilities/entities.
+  { href: "/people", label: "People", icon: "users", capability: "entities" },
 ];
 
 /**

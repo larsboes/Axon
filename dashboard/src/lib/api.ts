@@ -3142,23 +3142,103 @@ export const vault = {
       `/vault/api/tasks${status ? `?status=${status}` : ''}`,
       signal ? { signal } : undefined,
     ).then((response) => response.tasks),
-  /** Atlas/People as vault reads it live (capabilities/vault/src/people.rs). C2: names. */
-  people: (signal?: AbortSignal) =>
-    request<{ facts: PersonFacts[] }>('/vault/api/people', signal ? { signal } : undefined).then(
-      (response) => response.facts,
-    ),
 };
 
-export interface PersonFacts {
-  id: string;
-  name: string;
-  mention_count: number;
-  last_contact: string | null;
-  met_at: string | null;
-  home: string | null;
-  host: boolean;
-  host_note: string | null;
+
+// ─── Entities (PRD Q117) ─────────────────────────────────────────────────────
+
+export type EntityKind = 'person' | 'organisation' | 'place' | 'self';
+
+export interface EntityField {
+  kind: EntityKind;
+  key: string;
+  label: string;
+  field_type: 'text' | 'bool' | 'date' | 'number' | 'enum' | 'emails' | 'phones' | 'url';
+  options: string[];
+  data_class: 'C0' | 'C1' | 'C2' | 'C3';
+  builtin: boolean;
 }
+
+export interface EntityFact {
+  id: string;
+  entity_id: string;
+  predicate: 'home_base' | 'away';
+  place: string;
+  latitude: number | null;
+  longitude: number | null;
+  valid_from: string | null;
+  valid_to: string | null;
+  note: string | null;
+  source: string;
+  created_at: string;
+}
+
+export interface Entity {
+  id: string;
+  kind: EntityKind;
+  name: string;
+  note_ref: string | null;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+  values: Record<string, { value: unknown; source: string; updated_at: string }>;
+  facts: EntityFact[];
+}
+
+export interface LocatedPerson {
+  entity_id: string;
+  name: string;
+  predicate: 'home_base' | 'away';
+  place: string;
+  latitude: number | null;
+  longitude: number | null;
+  sleeping_option: 'none' | 'ask' | 'yes' | null;
+  sleeping_note: string | null;
+}
+
+/** capabilities/entities. C2: names, places and contact details. */
+export const entities = {
+  fields: (kind?: EntityKind) =>
+    request<{ fields: EntityField[] }>(`/entities/api/fields${kind ? `?kind=${kind}` : ''}`).then(
+      (r) => r.fields,
+    ),
+  declareField: (field: Omit<EntityField, 'builtin'>) =>
+    request<EntityField>('/entities/api/fields', jsonInit('POST', field)),
+  list: (kind?: EntityKind, q?: string) => {
+    const query = new URLSearchParams();
+    if (kind) query.set('kind', kind);
+    if (q) query.set('q', q);
+    return request<{ entities: Entity[] }>(
+      `/entities/api/entities${query.size ? `?${query}` : ''}`,
+    ).then((r) => r.entities);
+  },
+  get: (id: string) => request<Entity>(`/entities/api/entities/${encodeURIComponent(id)}`),
+  create: (body: { kind: EntityKind; name: string; note_ref?: string; values?: Record<string, unknown> }) =>
+    request<Entity>('/entities/api/entities', jsonInit('POST', body)),
+  patch: (
+    id: string,
+    body: { name?: string; values?: Record<string, unknown>; expected_revision?: number },
+  ) => request<Entity>(`/entities/api/entities/${encodeURIComponent(id)}`, jsonInit('PATCH', body)),
+  remove: (id: string) =>
+    request<void>(`/entities/api/entities/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  addFact: (
+    id: string,
+    body: { predicate: 'home_base' | 'away'; place: string; valid_from?: string; valid_to?: string; note?: string },
+  ) =>
+    request<{ fact: EntityFact; geocode: { status: string; reason?: string } }>(
+      `/entities/api/entities/${encodeURIComponent(id)}/facts`,
+      jsonInit('POST', body),
+    ),
+  removeFact: (id: string, factId: string) =>
+    request<void>(
+      `/entities/api/entities/${encodeURIComponent(id)}/facts/${encodeURIComponent(factId)}`,
+      { method: 'DELETE' },
+    ),
+  located: (day?: string) =>
+    request<{ day: string; located: LocatedPerson[] }>(
+      `/entities/api/located${day ? `?day=${day}` : ''}`,
+    ),
+};
 
 // ─── Finance ─────────────────────────────────────────────────────────────────
 
@@ -3991,12 +4071,6 @@ export const places = {
     request<{ proposals: PersonPlaceProposal[] }>(
       '/places/api/people/proposals',
       signal ? { signal } : undefined,
-    ),
-  /** Where someone is, as you state it. Written proposed; confirm it with confirmProposal. */
-  statePersonPlace: (body: { person: string; city: string; from?: string; to?: string }) =>
-    request<{ id: string; state: 'proposed'; place_name: string }>(
-      '/places/api/people/places',
-      jsonInit('POST', body),
     ),
   confirmProposal: (id: string) =>
     request<{ ok: boolean; state: 'confirmed' }>(
