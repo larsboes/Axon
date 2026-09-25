@@ -24,14 +24,16 @@
 use std::net::SocketAddr;
 
 mod auth;
+/// The TLS listener for paired devices on the local network (PRD Q119).
+pub mod lan;
 /// The browser-origin refusal two capabilities apply to C2 surfaces.
 pub mod origin;
 /// The identity `tailscale serve` proves, for the caller that cannot hold a secret.
 pub mod tailnet;
 
 pub use auth::{
-    authenticated, device_signed_path, token_from_file, AdmittedDevice, DeviceVerifier,
-    InboundAuth, DEVICE_SIGNATURE_HEADER,
+    authenticated, device_signed_path, token_from_file, AdmittedDevice, AdmittedPairingClaim,
+    DeviceVerifier, InboundAuth, DEVICE_SIGNATURE_HEADER, PAIRING_CLAIM_PATH,
 };
 
 // Re-exported so a server binary that depends only on axon-server still gets the

@@ -370,6 +370,10 @@ async fn forward(proxy: &Proxy, route: Route, req: Request) -> Response {
         .extensions
         .get::<axon_server::AdmittedDevice>()
         .is_some()
+        || parts
+            .extensions
+            .get::<axon_server::AdmittedPairingClaim>()
+            .is_some()
     {
         if let Some(auth) = &proxy.device_authorization {
             headers.insert(axum::http::header::AUTHORIZATION, auth.clone());

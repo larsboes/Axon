@@ -25,6 +25,7 @@ use serde_json::{json, Value};
 use tower::Layer;
 
 mod device_gate;
+mod lan;
 mod proxy;
 mod status;
 
@@ -35,6 +36,7 @@ const ROUTES: &[route_manifest::Route] = &[
     r("GET", "/routes", "This manifest."),
     r("GET", "/api/axon-status/health", "Aggregate health across enabled capabilities."),
     r("GET", "/api/axon-status/routes", "Every enabled capability's route manifest, in one map."),
+    r("GET", "/api/axon-status/lan", "The local-network listener for paired devices: port, host and the certificate fingerprint a phone pins."),
     r("GET", "/api/axon-status/capabilities", "Enabled capabilities, their ports and whether each is up."),
     r("GET", "/api/axon-status/self", "This machine's resolved Axon model."),
     r("GET", "/api/axon-status/repos", "Axon and overlay repo state."),
@@ -109,11 +111,18 @@ async fn main() {
     // this machine only (axon_server binds loopback).
     // A paired device is admitted on its key as well as the operator's tailnet identity
     // (PRD Q119); the bind stays loopback.
-    let auth = match device_gate::RegistryVerifier::open() {
-        Some(verifier) => axon_server::InboundAuth::from_deployment()
-            .with_device_verifier(std::sync::Arc::new(verifier)),
+    let verifier = device_gate::RegistryVerifier::open().map(std::sync::Arc::new);
+    let auth = match &verifier {
+        Some(verifier) => {
+            axon_server::InboundAuth::from_deployment().with_device_verifier(verifier.clone())
+        }
         None => axon_server::InboundAuth::from_deployment(),
     };
+    // The same router on the local network, for paired devices only, when the deployment
+    // enabled it. Without the registry there is nothing to admit, so it does not start.
+    if let Some(verifier) = verifier {
+        lan::start(build_router(shell.clone()), verifier);
+    }
     axon_server::serve(
         "axon-status",
         axon_server::Reach::Loopback,
@@ -122,6 +131,15 @@ async fn main() {
         auth,
     )
     .await;
+}
+
+/// The local-network listener, for the pairing screen: its port, host and the certificate
+/// fingerprint a phone pins. `{"enabled": false}` when the deployment has not enabled it.
+async fn lan_handler() -> Json<Value> {
+    match lan::info() {
+        Some(info) => Json(json!({ "enabled": true, "lan": info })),
+        None => Json(json!({ "enabled": false })),
+    }
 }
 
 /// This capability's name, for the origin guard's env var
@@ -165,6 +183,7 @@ fn build_router(shell: proxy::Proxy) -> Router {
         .route("/health", get(health_handler))
         .route("/api/axon-status/health", get(axon_status_health_handler))
         .route("/api/axon-status/routes", get(routes_handler))
+        .route("/api/axon-status/lan", get(lan_handler))
         .route("/api/axon-status/capabilities", get(capabilities_handler))
         .route("/api/axon-status/self", get(self_model_handler))
         .route("/api/axon-status/links", get(links_handler))

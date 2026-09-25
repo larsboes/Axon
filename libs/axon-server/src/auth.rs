@@ -120,6 +120,15 @@ pub trait DeviceVerifier: Send + Sync {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AdmittedDevice(pub String);
 
+/// Set on the one unsigned request the LAN listener admits: a pairing claim, which a device sends
+/// before it has a registered key. The one-time code in its body is what protects it
+/// (`capabilities/devices`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmittedPairingClaim;
+
+/// The pairing claim as the shell mounts it (`capabilities/devices/README.md`, Contract).
+pub const PAIRING_CLAIM_PATH: &str = "/devices/api/pairing/claims";
+
 /// The target a device signs: the path the capability sees after the shell removes its mount.
 /// `/api/...` is not mounted and stays as it is. Mirrors `signed_path` in
 /// `dashboard/src-tauri/src/mac_bridge.rs`, which is the signing side.
@@ -149,6 +158,9 @@ pub struct InboundAuth {
     tailnet_operator: Option<String>,
     /// The device registry, when this server admits paired devices by their key (PRD Q119).
     device_verifier: Option<Arc<dyn DeviceVerifier>>,
+    /// Set on the LAN listener (`crate::lan`): a device signature is required, and a tailnet
+    /// identity header is removed rather than believed, because anyone on the Wi-Fi can write it.
+    lan_devices_only: bool,
 }
 
 /// Redacts the token. A capability that logs its own config must not turn this
@@ -163,6 +175,7 @@ impl std::fmt::Debug for InboundAuth {
             // worth seeing when the phone is answered 401.
             .field("tailnet_operator", &self.tailnet_operator)
             .field("device_verifier", &self.device_verifier.is_some())
+            .field("lan_devices_only", &self.lan_devices_only)
             .finish()
     }
 }
@@ -194,6 +207,7 @@ impl InboundAuth {
             refuse_without_token: false,
             tailnet_operator: crate::tailnet::deployment_operator(),
             device_verifier: None,
+            lan_devices_only: false,
         }
     }
 
@@ -207,6 +221,7 @@ impl InboundAuth {
             refuse_without_token: false,
             tailnet_operator: None,
             device_verifier: None,
+            lan_devices_only: false,
         }
     }
 
@@ -236,6 +251,12 @@ impl InboundAuth {
     /// Whether this gate admits paired devices by key.
     pub fn admits_devices(&self) -> bool {
         self.device_verifier.is_some()
+    }
+
+    /// The same gate for the LAN listener: paired devices only, plus the pairing claim.
+    pub fn lan_devices_only(mut self) -> Self {
+        self.lan_devices_only = true;
+        self
     }
 
     /// Answer `403` on the non-exempt routes when no token is configured,
@@ -270,6 +291,7 @@ impl InboundAuth {
     /// pays nothing per request.
     fn gates_anything(&self) -> bool {
         self.token.is_some()
+            || self.lan_devices_only
             || self.refuse_without_token
             || self.tailnet_operator.is_some()
             || self.device_verifier.is_some()
@@ -373,13 +395,35 @@ pub fn authenticated(router: Router, auth: InboundAuth) -> Router {
     router.layer(axum::middleware::from_fn_with_state(auth, gate))
 }
 
-async fn gate(State(auth): State<InboundAuth>, request: Request, next: Next) -> Response {
+async fn gate(State(auth): State<InboundAuth>, mut request: Request, next: Next) -> Response {
+    if auth.lan_devices_only {
+        let forged: Vec<_> = request
+            .headers()
+            .keys()
+            .filter(|name| name.as_str().starts_with("tailscale-"))
+            .cloned()
+            .collect();
+        for name in forged {
+            request.headers_mut().remove(name);
+        }
+    }
     let exempt =
         request.method() == Method::OPTIONS || EXEMPT_PATHS.contains(&request.uri().path());
     if let Some(verifier) = auth.device_verifier.as_ref() {
         if !exempt && request.headers().contains_key(DEVICE_SIGNATURE_HEADER) {
             return admit_device(&auth, verifier.as_ref(), request, next).await;
         }
+    }
+    if auth.lan_devices_only && !exempt {
+        if request.method() == Method::POST && request.uri().path() == PAIRING_CLAIM_PATH {
+            request.extensions_mut().insert(AdmittedPairingClaim);
+            return next.run(request).await;
+        }
+        return (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({ "error": "this listener admits paired devices only; pair this device first" })),
+        )
+            .into_response();
     }
     match auth.reject(request.method(), request.uri().path(), request.headers()) {
         Some(rejection) => rejection,
