@@ -69,7 +69,9 @@ else
 
 # A free port, taken from the kernel rather than guessed: a hardcoded number turns this test
 # into a flake on whatever machine already uses it.
-PORT="$(bun -e 'const s=Bun.listen({hostname:"127.0.0.1",port:0,socket:{data(){}}});console.log(s.port);s.stop(true)')"
+# NO_COLOR and FORCE_COLOR=0: with FORCE_COLOR set, bun colours a printed number and the
+# digits-only check below fails.
+PORT="$(NO_COLOR=1 FORCE_COLOR=0 bun -e 'const s=Bun.listen({hostname:"127.0.0.1",port:0,socket:{data(){}}});console.log(s.port);s.stop(true)')"
 case "$PORT" in ''|*[!0-9]*) echo "service-runner: could not obtain a free port" >&2; exit 1 ;; esac
 
 mkdir -p "$ROOT/capabilities/porthog"
