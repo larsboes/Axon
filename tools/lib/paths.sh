@@ -14,6 +14,8 @@
 # under zsh (e.g. sourced from ~/.zshrc) BASH_SOURCE is unset, so fall back to
 # $0, which zsh sets to the sourced file's path. POSIX ${:-} keeps this bash 3.2-safe.
 _lib="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck source=env-compat.sh
+source "$_lib/env-compat.sh"
 AXON_ROOT="$(cd "$_lib/../.." && pwd)"
 export AXON_ROOT
 source "$_lib/toml.sh"
@@ -95,6 +97,13 @@ unset _machine_name _host
 AXON_CAPS_DIR="$AXON_ROOT/capabilities"
 AXON_OVERLAY_CAPS_DIR="$AXON_OVERLAY_ROOT/capabilities"
 export AXON_CAPS_DIR AXON_OVERLAY_CAPS_DIR
+
+# The values computed above are this file's own, so they replace whatever either name held
+# before (env-compat.sh only fills a name that is unset, which would keep a stale inherited copy).
+for _v in ROOT OVERLAY_ROOT PERSONAL_ROOT MACHINE_TOML MACHINES_DIR CAPS_DIR OVERLAY_CAPS_DIR; do
+  eval "export SJEL_${_v}=\"\${AXON_${_v}}\""
+done
+unset _v
 
 # <name> -> its service.toml path on stdout. Exit 1 when the name has no manifest,
 # exit 2 when both roots declare it. A duplicate is refused rather than resolved by

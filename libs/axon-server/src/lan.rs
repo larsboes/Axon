@@ -11,7 +11,8 @@
 //!   it has a registered key; it is protected by the one-time code instead
 //!   (`capabilities/devices`, ten minutes, 50 bits).
 //!
-//! Opt-in per deployment: `AXON_LAN_PORT` in `<overlay>/config/deployment.env`.
+//! Opt-in per deployment: `SJEL_LAN_PORT` (or its earlier name `AXON_LAN_PORT`) in
+//! `<overlay>/config/deployment.env`.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -21,16 +22,14 @@ use sha2::{Digest, Sha256};
 /// The Bonjour service type the Mac advertises and the phone browses for.
 pub const SERVICE_TYPE: &str = "_axon._tcp";
 
-const PORT_KEY: &str = "AXON_LAN_PORT=";
+const PORT_KEY: &str = "SJEL_LAN_PORT";
 const CERT_FILE: &str = "lan-cert.der";
 const KEY_FILE: &str = "lan-key.der";
 
 /// The deployment's LAN port, or `None` when the listener is not enabled.
 pub fn deployment_port() -> Option<u16> {
     let body = std::fs::read_to_string(axon_config::overlay_config("deployment.env")?).ok()?;
-    body.lines()
-        .find_map(|line| line.strip_prefix(PORT_KEY))
-        .and_then(|value| value.trim().parse().ok())
+    axon_config::deployment_value(&body, PORT_KEY)?.parse().ok()
 }
 
 /// The listener's certificate and key, and the fingerprint a phone pins.

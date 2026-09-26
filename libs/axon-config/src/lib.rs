@@ -12,6 +12,9 @@
 //! has no such escaping trap, and `postgres::Client::connect` accepts both
 //! identically. One builder, the safe form, everywhere.
 
+pub mod env;
+pub use env::{deployment_value, env_var, env_var_os};
+
 use std::path::PathBuf;
 
 /// `~/foo` → `$HOME/foo`; absolute and relative paths pass through unchanged.
@@ -85,11 +88,7 @@ pub fn database_path() -> PathBuf {
 /// file or key is absent — callers refuse to guess rather than defaulting.
 pub fn deployment_home_timezone() -> Option<String> {
     let body = std::fs::read_to_string(overlay_config("deployment.env")?).ok()?;
-    body.lines().find_map(|l| {
-        l.strip_prefix("AXON_HOME_TIMEZONE=")
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-    })
+    deployment_value(&body, "SJEL_HOME_TIMEZONE")
 }
 
 /// Resolution order for the home timezone, one implementation shared by every

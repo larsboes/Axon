@@ -51,7 +51,7 @@ use axum::http::HeaderMap;
 const IDENTITY_HEADER: &str = "tailscale-user-login";
 
 /// The deployment key naming who may reach this machine from the tailnet.
-const OPERATOR_KEY: &str = "AXON_TAILNET_OPERATOR=";
+const OPERATOR_KEY: &str = "SJEL_TAILNET_OPERATOR";
 
 /// How a request reached this server.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -102,12 +102,7 @@ pub(crate) fn is_operator(login: &str, operator: &str) -> bool {
 /// it did before this module existed.
 pub fn deployment_operator() -> Option<String> {
     let body = std::fs::read_to_string(axon_config::overlay_config("deployment.env")?).ok()?;
-    body.lines().find_map(|l| {
-        l.strip_prefix(OPERATOR_KEY)
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-            .map(str::to_string)
-    })
+    axon_config::deployment_value(&body, OPERATOR_KEY)
 }
 
 #[cfg(test)]

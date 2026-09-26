@@ -413,6 +413,8 @@ process_init() {
   # adopted binary takes its port on argv (macmon serve --port N) and cannot. Without this
   # the number would be written twice, and a machine.toml override would move one of them.
   for _i in "${!COMMAND[@]}"; do
+    COMMAND[$_i]="${COMMAND[$_i]//\$\{SJEL_PORT\}/$PORT}"
+    # The pre-rename placeholder, still accepted in a manifest written before 2026-09-26.
     COMMAND[$_i]="${COMMAND[$_i]//\$\{AXON_PORT\}/$PORT}"
   done
 }

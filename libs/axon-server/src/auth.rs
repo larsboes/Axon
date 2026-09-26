@@ -507,16 +507,12 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         == 0
 }
 
-/// `AXON_INBOUND_TOKEN_FILE` from `<overlay>/config/deployment.env`, then that
+/// `SJEL_INBOUND_TOKEN_FILE` (or `AXON_INBOUND_TOKEN_FILE`) from `<overlay>/config/deployment.env`, then that
 /// file's contents.
 fn deployment_token() -> Option<String> {
     let body = std::fs::read_to_string(axon_config::overlay_config("deployment.env")?).ok()?;
-    let reference = body.lines().find_map(|l| {
-        l.strip_prefix("AXON_INBOUND_TOKEN_FILE=")
-            .map(str::trim)
-            .filter(|v| !v.is_empty())
-    })?;
-    token_from_file(&axon_config::expand_tilde(reference))
+    let reference = axon_config::deployment_value(&body, "SJEL_INBOUND_TOKEN_FILE")?;
+    token_from_file(&axon_config::expand_tilde(&reference))
 }
 
 /// Reads a token out of a private file: the trimmed contents, or `auth.api_key`
