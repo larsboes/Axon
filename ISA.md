@@ -166,15 +166,20 @@ commits, URLs and identifiers. Measured the same day: 757 tracked files and 5,88
 Mac, 104 overlay files, the `axon` skill, and the iPhone app still named "LifeOS" with bundle
 identifier `com.lifeos.mobile`. Lars chose "everything, staged" over a brand-only rename.
 
-- [ ] ISC-10 — what people see says Sjel: the GitHub repository, the README title, the app's
+- [x] ISC-10 — what people see says Sjel: the GitHub repository, the README title, the app's
   `productName` and the demo site URL. Falsifier: `gh repo view --json name` is not `Sjel`, or
-  `dashboard/src-tauri/tauri.conf.json` still says `LifeOS`.
-- [ ] ISC-11 — a `sjel` command runs every `axon` subcommand, and `axon` keeps working as an
+  `dashboard/src-tauri/tauri.conf.json` still says `LifeOS`. Evidence, 2026-09-26: repository
+  `larsboes/Sjel` (6be1ea8), app `Sjel.app`, README title Sjel, `larsboes.github.io/Sjel/`
+  answers 200 and `/Axon/` 404.
+- [x] ISC-11 — a `sjel` command runs every `axon` subcommand, and `axon` keeps working as an
   alias. Falsifier: `sjel help` fails, or an existing `axon` call in a tool or skill breaks.
+  Evidence, 2026-09-26: `axon` is a tracked symlink to `sjel` (902a7a7); both answer `help`,
+  the capability-probe, runargs, bootstrap, persistence and doctor tests pass.
 - [ ] ISC-12 — the iPhone app has a Sjel bundle identifier and the phone is paired again.
   Changing the identifier makes iOS treat it as a new app: its offline copy and its Keychain
   key are gone. Falsifier: `com.lifeos.mobile` remains in `tauri.conf.json`, or the new app
-  fails `devices/api/devices/me`.
+  fails `devices/api/devices/me`. Done in code (725e70f: `com.larsboes.sjel`, the IPA signs).
+  Open: install the Sjel app and pair it.
 - [ ] ISC-13 — internal names move with a fallback: crates, `AXON_*` variables (the old name
   still read), launchd labels and the overlay. Falsifier: a service that ran before the change
   does not start after it, or a variable is renamed with no fallback reader.

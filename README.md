@@ -8,7 +8,8 @@
 
 **Your life's data on your own devices, with one assistant that can act on it.**
 
-The code, the CLI and the repository still use the name Axon. Open work is in [ISA.md](ISA.md).
+The command is `sjel`, and `axon` still works. Crates, `AXON_*` variables and service labels
+still use the name Axon. Open work is in [ISA.md](ISA.md).
 The engineering doctrine starts at [Start here](#start-here).
 
 ## What it is
@@ -99,12 +100,12 @@ a DCO sign-off ([CONTRIBUTING.md](CONTRIBUTING.md#license-and-sign-off)).
 
 ## Start here
 
-Axon supports macOS and Linux. The guided installer detects the platform, creates or connects a
+Sjel supports macOS and Linux. The guided installer detects the platform, creates or connects a
 private deployment overlay, writes the local machine manifest, and leaves existing state alone.
 
 ~~~sh
 git clone https://github.com/larsboes/Sjel.git
-cd Axon
+cd Sjel
 tools/install.sh --help
 tools/install.sh
 tools/doctor
