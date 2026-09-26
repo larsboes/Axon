@@ -607,7 +607,7 @@ stops, so none of the three falls through now.
   all replaced by `config.rs` (that guessing logic was monorepo-structure-specific and has no
   place in a standalone crate).
 - User-Agent strings in `source.rs`, `adapters/cfp_conferences.rs`, `adapters/luma.rs` —
-  rebranded to `Axon-Scouting/0.1 (+https://github.com/larsboes/Axon)`. Axon has no public
+  rebranded to `Axon-Scouting/0.1 (+https://github.com/larsboes/Sjel)`. Axon has no public
   GitHub remote yet (see `PROJECTS.md`) — this is the intended future URL, update the comment
   once it's live.
 - The source's separate `server_main.rs` entrypoint collapsed into this port's single

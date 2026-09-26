@@ -56,7 +56,7 @@ jobs:
     env:
       # A GitHub Pages PROJECT site is served from /<repo>, and a static SPA has to be told:
       # its asset URLs and router links are baked in at build time.
-      AXON_PAGES_BASE: /Axon
+      AXON_PAGES_BASE: /Sjel
 
     steps:
       - name: Check out Axon

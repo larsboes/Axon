@@ -89,7 +89,7 @@ expect_pass "a CI runner home path"
 # Regression: the derived half used to fire on github.com, because an overlay's systems file
 # legitimately names it and every generated page links to it. Terms already present in this
 # public repository cannot be leaked by publishing them again, so they are filtered out.
-plant page.html '<a href="https://github.com/larsboes/Axon">Source</a>'
+plant page.html '<a href="https://github.com/larsboes/Sjel">Source</a>'
 expect_pass "a link to the repository the site is generated from"
 
 # A commit sha is uppercase-free, but a base32-ish token can look like an IBAN prefix. This is

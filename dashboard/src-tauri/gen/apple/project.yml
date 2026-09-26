@@ -10,7 +10,7 @@ configs:
 settingGroups:
   app:
     base:
-      PRODUCT_NAME: LifeOS
+      PRODUCT_NAME: Sjel
       PRODUCT_BUNDLE_IDENTIFIER: com.lifeos.mobile
 targetTemplates:
   app:
@@ -42,7 +42,7 @@ targets:
         LSRequiresIPhoneOS: true
         UILaunchStoryboardName: LaunchScreen
         UIRequiredDeviceCapabilities: [arm64, metal]
-        NSCameraUsageDescription: LifeOS uses the camera and LiDAR to capture room geometry offline.
+        NSCameraUsageDescription: Sjel uses the camera and LiDAR to capture room geometry offline.
         NSLocalNetworkUsageDescription: Axon looks for your Mac on this Wi-Fi so it can connect without a VPN.
         NSBonjourServices: [_axon._tcp]
         UISupportedInterfaceOrientations:

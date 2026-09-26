@@ -38,7 +38,7 @@ that need an option this crate does not decide: gzip, a cookie store, a redirect
 policy, and `scouting/adapters/meetup.rs`, which overrides the user-agent with a
 browser string because the site refuses anything else.
 
-The agent is `Axon-<purpose>/<version> (+https://github.com/larsboes/Axon)`. The
+The agent is `Axon-<purpose>/<version> (+https://github.com/larsboes/Sjel)`. The
 version is this crate's, which is the workspace version, so a server sees one
 product rather than nine. The URL is the intended remote, not a live one — Axon
 has no public GitHub remote yet (PROJECTS.md).

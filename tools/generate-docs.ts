@@ -41,7 +41,7 @@ const KIND_LABEL: Record<string, string> = {
   pack: "Pack",
 };
 
-const REPO = "https://github.com/larsboes/Axon/blob/main";
+const REPO = "https://github.com/larsboes/Sjel/blob/main";
 
 /** Where a unit's own source lives, by kind. The one piece of layout knowledge here, and it
  *  is the repository's own directory convention rather than a per-unit fact. */

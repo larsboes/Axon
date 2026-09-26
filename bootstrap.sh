@@ -2,7 +2,7 @@
 # bootstrap.sh — the one-line installer's entry point, and the only Axon script that runs
 # before there is a checkout. Decided in #2; everything it does is deliberately small.
 #
-#   curl -fsSL https://raw.githubusercontent.com/larsboes/Axon/<tag>/bootstrap.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/larsboes/Sjel/<tag>/bootstrap.sh | bash
 #
 # Fetch it BY TAG, never from main: a pipe-to-bash of a moving branch executes whatever that
 # branch says today, and the whole point of a release line is that an install is reproducible.
@@ -23,7 +23,7 @@
 # running one — the failure mode that makes piping a URL into a shell worth doing carefully.
 set -euo pipefail
 
-AXON_REPO="${AXON_REPO:-larsboes/Axon}"
+AXON_REPO="${AXON_REPO:-larsboes/Sjel}"
 # Split from AXON_REPO so the clone URL has one home. Overridable so bootstrap.test.sh can
 # point both profiles at a scratch remote and exercise the real cloning rather than a mock.
 AXON_REMOTE="${AXON_REMOTE:-https://github.com/$AXON_REPO.git}"

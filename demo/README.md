@@ -1,7 +1,7 @@
 # The demo
 
 A running copy of Axon, filled with data that was never real, published at
-`larsboes.github.io/Axon/` and reproducible on any machine with one command.
+`larsboes.github.io/Sjel/` and reproducible on any machine with one command.
 
 The dashboard IS the site. A visitor lands in the Axon shell and navigates from there; the
 generated reference, self-model included, lives under `/docs`.

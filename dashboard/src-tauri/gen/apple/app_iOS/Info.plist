@@ -21,7 +21,7 @@
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSCameraUsageDescription</key>
-	<string>LifeOS uses the camera and LiDAR to capture room geometry offline.</string>
+	<string>Sjel uses the camera and LiDAR to capture room geometry offline.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Axon looks for your Mac on this Wi-Fi so it can connect without a VPN.</string>
 	<key>NSBonjourServices</key>

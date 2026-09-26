@@ -103,7 +103,7 @@ Axon supports macOS and Linux. The guided installer detects the platform, create
 private deployment overlay, writes the local machine manifest, and leaves existing state alone.
 
 ~~~sh
-git clone https://github.com/larsboes/Axon.git
+git clone https://github.com/larsboes/Sjel.git
 cd Axon
 tools/install.sh --help
 tools/install.sh

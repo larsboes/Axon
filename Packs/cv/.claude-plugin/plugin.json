@@ -3,7 +3,7 @@
   "description": "Build job-tailored CV PDFs from one profile-tagged master file, via Typst.",
   "author": {
     "name": "Lars Boes",
-    "url": "https://github.com/larsboes/Axon"
+    "url": "https://github.com/larsboes/Sjel"
   },
   "license": "MIT"
 }

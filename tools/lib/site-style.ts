@@ -134,7 +134,7 @@ ${opts.footer}
   ${link("docs/index.html", "Reference", "docs")}
   ${link("docs/self-model.html", "Self-model", "overview")}
   <span class="sep"></span>
-  <a href="https://github.com/larsboes/Axon">Source</a>
+  <a href="https://github.com/larsboes/Sjel">Source</a>
 </p>
 </footer>
 </main>

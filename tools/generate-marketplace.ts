@@ -41,7 +41,7 @@ const config: DeployConfig = {
 // LICENSE's copyright line is the one tracked owner fact; every plugin.json's
 // author and the marketplace's owner point at it rather than inventing a
 // per-pack value pack.toml does not carry.
-const MARKETPLACE_OWNER = { name: "Lars Boes", url: "https://github.com/larsboes/Axon" };
+const MARKETPLACE_OWNER = { name: "Lars Boes", url: "https://github.com/larsboes/Sjel" };
 
 type PackManifest = { name: string; description: string; license?: string };
 

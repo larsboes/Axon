@@ -43,7 +43,7 @@
 # fixes, and the grouping below is what keeps that from being one pull request per crate.
 #
 # This file opens VERSION pull requests only. SECURITY updates are a repository setting, not a
-# file setting: `gh api --method PUT repos/larsboes/Axon/automated-security-fixes`. That was run
+# file setting: `gh api --method PUT repos/larsboes/Sjel/automated-security-fixes`. That was run
 # on 2026-09-02 and `security_and_analysis.dependabot_security_updates` now reads "enabled";
 # this file alone would have left the reactive half switched off.
 #

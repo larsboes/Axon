@@ -3,7 +3,7 @@
   "description": "Togglable agent-skill bundles mirrored from Axon's harness-neutral Packs (Packs/<name>/pack.toml).",
   "owner": {
     "name": "Lars Boes",
-    "url": "https://github.com/larsboes/Axon"
+    "url": "https://github.com/larsboes/Sjel"
   },
   "metadata": {
     "pluginRoot": "./Packs"

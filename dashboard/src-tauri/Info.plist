@@ -3,6 +3,6 @@
 <plist version="1.0">
 <dict>
   <key>NSCameraUsageDescription</key>
-  <string>LifeOS uses the camera and LiDAR to capture room geometry offline.</string>
+  <string>Sjel uses the camera and LiDAR to capture room geometry offline.</string>
 </dict>
 </plist>

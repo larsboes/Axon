@@ -52,7 +52,7 @@ use std::time::Duration;
 /// The URL is the intended one, not a live one: Axon has no public GitHub remote
 /// yet (PROJECTS.md). Three scouting adapters each carried that caveat beside their
 /// own copy of the string; it is one caveat in one place now.
-pub const UPSTREAM: &str = "https://github.com/larsboes/Axon";
+pub const UPSTREAM: &str = "https://github.com/larsboes/Sjel";
 
 /// What a client is for, in one hyphenated token: `"comms-digest"`, `"scouting-rss"`.
 ///
@@ -198,7 +198,7 @@ mod tests {
         let ua = user_agent(Purpose::new("comms-digest"));
         assert!(ua.starts_with("Axon-comms-digest/"), "{ua}");
         assert!(ua.ends_with(&format!("(+{UPSTREAM})")), "{ua}");
-        assert!(ua.contains("github.com/larsboes/Axon"), "{ua}");
+        assert!(ua.contains("github.com/larsboes/Sjel"), "{ua}");
     }
 
     #[test]

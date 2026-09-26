@@ -162,7 +162,7 @@ ${counts.map(([k, n]) => `    <li><strong>${n}</strong> ${esc(KIND_LABEL[k].toLo
   <ul class="cards">
     <li><a href="../"><strong>Dashboard →</strong><span>The actual shell, on ${demoed.length} capabilities seeded with generated data. Writing is disabled; nothing in it is real.</span></a></li>
     <li><a href="index.html"><strong>Reference →</strong><span>One page per unit: declared contract, what it is coupled to, and response shapes read out of the recording.</span></a></li>
-    <li><a href="https://github.com/larsboes/Axon"><strong>Source →</strong><span>The repository, its README, and the manifests every page here is generated from.</span></a></li>
+    <li><a href="https://github.com/larsboes/Sjel"><strong>Source →</strong><span>The repository, its README, and the manifests every page here is generated from.</span></a></li>
   </ul>
 </section>
 ${renderUnits(model.units)}
