@@ -124,3 +124,19 @@ remain easy to review or revert.
 
 Security findings follow [SECURITY.md](SECURITY.md); never report one in a public issue or pull
 request.
+
+## License and sign-off
+
+The project is licensed under the GNU Affero General Public License, version 3 only
+([LICENSE](LICENSE)). Anyone who runs a changed version as a service for other people must
+offer those people its source. Code that `Packs/` vendors from other projects keeps its own
+license; each such Pack reproduces the upstream notice in its `LICENSE` file.
+
+Every commit carries a Developer Certificate of Origin sign-off
+([developercertificate.org](https://developercertificate.org/)): a `Signed-off-by:` line that
+states you have the right to submit the change under this license. `git commit -s` adds it.
+A sign-off does not transfer copyright: a contributor keeps it in their change. A later license
+change (README, open question O2) therefore needs the consent of every contributor whose code
+remains, or a contributor license agreement introduced before outside contributions arrive.
+
+Releases before 2026-09-26 were published under the MIT license and stay available under it.

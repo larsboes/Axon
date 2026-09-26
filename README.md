@@ -1,9 +1,3 @@
-<!-- human-voice: ignore-start rule_of_three -->
-<!-- This file enumerates real sets constantly (the four things the spine owns, the three
-     surfaces of the control app, the log kinds security covers). Several flagged "triads" are
-     four-item lists the check reads as three. Shortening them would delete information to move
-     a score, so the category is muted here deliberately. Every other check stays live. -->
-
 # Selv
 
 **Your life's data on your own devices, with one assistant that can act on it.**
@@ -115,7 +109,7 @@ manages a trip: as data it can read, check and change with you.
 | iPhone app | Built (Tauri, iOS 16 and later). Works offline for admitted views. |
 | Web shell | Built. The same interface in a browser, served by the Mac. |
 | Assistant drawer | Built, keyword-routed. The model ladder is ready and not yet wired in. |
-| Mac app | Planned. It hosts the iCloud relay, pairing and setup, and later the notch panel from `machNotch`. |
+| Mac app | Planned. `machNotch` grows into it (D7). It hosts the iCloud relay, pairing and setup. |
 
 ## Connections
 
@@ -131,9 +125,10 @@ connection screen shows each with its pros and cons for the person who wants to 
 
 ## Open source and building in public
 
-The code is public. The license moves from MIT to AGPL-3.0 for the core, so anyone who hosts a
-changed Selv for others publishes their changes. I keep the copyright, and contributors sign
-off under a DCO. Whether some parts stay closed later (open core) is open question O2.
+The code is public under AGPL-3.0 since 2026-09-26 ([LICENSE](LICENSE)), so anyone who hosts
+a changed Selv for others publishes their changes. Earlier releases stay available under MIT.
+Contributors sign off under a DCO ([CONTRIBUTING.md](CONTRIBUTING.md#license-and-sign-off)).
+Whether some parts stay closed later (open core) is open question O2.
 
 Selv is also built in public. Every decision carries a date, an argument and a measurement,
 which makes it material for a series in the style of James Simo's
@@ -163,7 +158,7 @@ behind it, and what the measurement said.
 
 The root ISA sizes each step when it starts.
 
-1. **License.** Switch the core to AGPL-3.0 and add the DCO note.
+1. **License.** Done on 2026-09-26 (D8).
 2. **Name.** Check Selv against domains, the App Store and EUIPO/DPMA trademarks, then rename
    the repository, the CLI and the bundle identifiers.
 3. **Documents.** Move the engineering doctrine below into `CONTRIBUTING.md`, rewrite the 208
@@ -171,15 +166,15 @@ The root ISA sizes each step when it starts.
 4. **User number two.** Make the family deployment work without me.
 5. **Mac app and iCloud.** The Mac app hosts CloudKit. Q120's test proves the records are
    ciphertext.
-6. **The wedge.** Pick the one area a stranger sees first (O1).
+6. **The wedge.** Make travel and people the first thing a stranger sees (D6).
 
 ## Open questions
 
 | # | Question | State |
 |---|---|---|
-| O1 | Which area is the wedge a stranger sees first? | Open |
+| O1 | Which area is the wedge a stranger sees first? | Decided: travel and people (D6) |
 | O2 | Fully open source, or open core with some closed parts? | Open. AGPL-3.0 keeps both possible. |
-| O3 | Does the Mac app live in this repository, or does `machNotch` grow into it? | Open |
+| O3 | Does the Mac app live in this repository, or does `machNotch` grow into it? | Decided: `machNotch` grows into it (D7) |
 | O4 | How is Selv funded: support and sponsorship, hosting, or a company? | Open |
 
 ## Decisions made in this document
@@ -203,6 +198,20 @@ The root ISA sizes each step when it starts.
 
 > [!done] D5, 2026-09-26: **the documents say Selv now, and the code renames later.** The rename waits for
 > the availability check and the license switch.
+
+> [!done] D6, 2026-09-26: **the wedge is travel and people.** They are the areas used most, and
+> they answer what cloud assistants such as Instinct sell: bookings, plans and the people on a
+> trip. The other extensions stay, but a stranger meets these two first.
+
+> [!done] D7, 2026-09-26: **`machNotch` grows into the Mac app.** It already has the same
+> principle, a small host with plugins (`NotchPlugin`, `PluginRegistry`), an Axon tab that reads
+> the local ports, launch at login and a Developer ID release job
+> (`~/Developer/Projects/mach-mono`). Its Mac utility plugins stay optional, like any extension.
+> It moves into this repository before the Mac app ships.
+
+> [!done] D8, 2026-09-26: **the license is AGPL-3.0-only.** It keeps open source and a later open
+> core both possible. Releases before this date stay MIT. Code that `Packs/` vendors keeps its own
+> license.
 
 ---
 
@@ -1052,5 +1061,3 @@ flowchart TB
     AXON -.->|runtime injection only| OVERLAY
     AXON -->|contracts + state mounts| EXT["separate projects & services"]
 ```
-
-<!-- human-voice: ignore-end -->

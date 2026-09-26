@@ -44,7 +44,7 @@ edition = "2021"
 # A floor, not a pin: the oldest release this workspace compiles on. rust-toolchain.toml
 # rolls on `stable` (Q77), so what actually builds is newer than this on every machine.
 rust-version = "1.96"
-license = "MIT"
+license = "AGPL-3.0-only"
 
 # One version per crate, for the crates more than one member declares.
 #
