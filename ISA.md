@@ -190,9 +190,10 @@ curated place. The README is still 870 lines of doctrine below 230 of product.
   table of measured results (pseudonymizer 48/48, redaction recall 100% on the frozen corpus,
   Feed ranking 0.941 pairwise, the 1.5 s Same Wi-Fi fallback). Falsifier: a number in that
   table without a command or file that reproduces it.
-- [ ] ISC-15 — `research/` exists with three entries, each with its sources: the
-  pseudonymizer, the model selection, and the device key as the thing that admits a request. The demo site shows them. Falsifier: an entry that cites no source, or a claim in it
-  that its source does not support.
+- [ ] ISC-15 — `research/` states why the project exists: the problem it answers and the
+  sources that show the problem is real. It grows over time; the first version holds at least
+  one sourced entry, and the demo site shows it. Falsifier: an entry without a source, or a
+  claim its source does not support.
 - [ ] ISC-16 — the engineering doctrine lives in `CONTRIBUTING.md`, and no link points at a
   README anchor that no longer exists. About 208 links point into it today. Falsifier:
   `git grep "README.md#"` finds an anchor missing from `README.md`.
