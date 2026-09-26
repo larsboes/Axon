@@ -156,6 +156,8 @@ run Socket's scanner, and Cargo/actions keep the zero-day path.
   commit, and the version that ran is in `upstreams.toml`'s git history at that date (Q77
   deleted the field on 2026-09-02).
 
+Order, agreed 2026-09-26: F3, then F4 in the order of its claims, then F5.
+
 ### F3 · Axon becomes Sjel, staged
 
 Why: the product is named Sjel since 2026-09-26, and every day adds more "axon" to
@@ -183,7 +185,8 @@ Why: the top of the README is the product definition, and the sources behind the
 curated place. The README is still 870 lines of doctrine below 230 of product.
 
 - [ ] ISC-14 — the README opens like a large open-source project (Graphify, Ollama): logo,
-  badges, a screenshot of phone and dashboard, what it does, a three-command start, and a
+  badges, a screenshot of phone and dashboard showing travel and people first (the areas a
+  stranger meets first), what it does, a three-command start, and a
   table of measured results (pseudonymizer 48/48, redaction recall 100% on the frozen corpus,
   Feed ranking 0.941 pairwise, the 1.5 s Same Wi-Fi fallback). Falsifier: a number in that
   table without a command or file that reproduces it.
@@ -236,6 +239,11 @@ the phone. Each item below is built and unverified, or ruled and unbuilt.
   than a defect, and the repo's rule is that shared logic moves into the lib. Not swept in
   the run that added the helper, deliberately: that run was about the demo.
 
+- **Open source or open core.** AGPL-3.0 keeps both possible. Undecided whether parts stay
+  closed later.
+- **Funding.** Support and sponsorship with a build-in-public video series (decisions, papers,
+  measurements, in the style of James Simo's city-builder devlog), hosting, or a company.
+  Undecided.
 - **The pseudonymizer as its own library.** Grow the data classes and the reversible
   pseudonymizer into a standalone Rust crate with its own README. Performance work (unsafe Rust included)
   only after a benchmark says where the time goes.
