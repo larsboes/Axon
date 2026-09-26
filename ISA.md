@@ -158,7 +158,7 @@ run Socket's scanner, and Cargo/actions keep the zero-day path.
 
 ### F3 · Axon becomes Sjel, staged
 
-Why: README D10 (2026-09-26) names the product Sjel, and every day adds more "axon" to
+Why: the product is named Sjel since 2026-09-26, and every day adds more "axon" to
 commits, URLs and identifiers. Measured the same day: 757 tracked files and 5,884 mentions,
 138 distinct `AXON_*` variables, 19 `axon-*` crates, 15 `com.axon.*` launchd services on this
 Mac, 104 overlay files, the `axon` skill, and the iPhone app still named "LifeOS" with bundle
@@ -179,7 +179,7 @@ identifier `com.lifeos.mobile`. Lars chose "everything, staged" over a brand-onl
 
 ### F4 · The documents a stranger reads
 
-Why: README D2 to D4 make the README the product document and move the reasoning into one
+Why: the top of the README is the product definition, and the sources behind the design go into one
 curated place. The README is still 870 lines of doctrine below 230 of product.
 
 - [ ] ISC-14 — the README opens like a large open-source project (Graphify, Ollama): logo,
@@ -187,9 +187,8 @@ curated place. The README is still 870 lines of doctrine below 230 of product.
   table of measured results (pseudonymizer 48/48, redaction recall 100% on the frozen corpus,
   Feed ranking 0.941 pairwise, the 1.5 s Same Wi-Fi fallback). Falsifier: a number in that
   table without a command or file that reproduces it.
-- [ ] ISC-15 — `research/` exists with three entries, each with its sources: why Obhut is
-  built here and not adopted, the model ladder (Q118), and the device key as trust root
-  (Q119). The demo site shows them. Falsifier: an entry that cites no source, or a claim in it
+- [ ] ISC-15 — `research/` exists with three entries, each with its sources: the
+  pseudonymizer, the model selection, and the device key as the thing that admits a request. The demo site shows them. Falsifier: an entry that cites no source, or a claim in it
   that its source does not support.
 - [ ] ISC-16 — the engineering doctrine lives in `CONTRIBUTING.md`, and no link points at a
   README anchor that no longer exists. About 208 links point into it today. Falsifier:
@@ -207,11 +206,11 @@ the phone. Each item below is built and unverified, or ruled and unbuilt.
 - [ ] ISC-18 — the assistant drawer calls the model ladder (`dashboard/src/lib/intelligence`)
   for at least one task and shows which rung answered. Falsifier: `rg "intelligence/backends"
   dashboard/src` finds no caller outside the module and its test.
-- [ ] ISC-19 — `machNotch` moves into this repository and grows into the Mac app (D7). It hosts
+- [ ] ISC-19 — `machNotch` moves into this repository and grows into the Mac app. It hosts
   the CloudKit relay, and a test reads a record back as Apple stores it and finds ciphertext
-  (Q120). Falsifier: a field name or value of a C2 record readable in the stored record.
+  (README, rule 4). Falsifier: a field name or value of a C2 record readable in the stored record.
 - [ ] ISC-20 — the comms review queue sends pseudonymized jobs through `prepare_pseudonymized`
-  (Q114, answered by Q120). Falsifier: a queued job whose payload carries a raw C2 entity.
+  (README, rule 4). Falsifier: a queued job whose payload carries a raw C2 entity.
 - [ ] ISC-21 — the family deployment (`axon-family`) runs for a week without Lars touching it.
   Falsifier: any fix to it made by Lars in that week.
 
@@ -237,16 +236,14 @@ the phone. Each item below is built and unverified, or ruled and unbuilt.
   than a defect, and the repo's rule is that shared logic moves into the lib. Not swept in
   the run that added the helper, deliberately: that run was about the demo.
 
-- **Obhut as its own library.** Grow the data classes and the reversible pseudonymizer into a
-  standalone Rust crate with its own README and name. Performance work (unsafe Rust included)
+- **The pseudonymizer as its own library.** Grow the data classes and the reversible
+  pseudonymizer into a standalone Rust crate with its own README. Performance work (unsafe Rust included)
   only after a benchmark says where the time goes.
-- **Private Cloud Compute as a ladder rung**, for pseudonymized prompts only (Q120). The plugin
+- **Private Cloud Compute as a ladder rung**, for pseudonymized prompts only (README, rule 4). The plugin
   reports its availability today and never calls it.
 - **A fast structured-decision model as a rung**, the kind Jev is (typesafe.ai, 2026). Candidate,
   not measured.
-- **Generative interface from the typed core** (README principle 6). No design yet.
-- **Pronoia** as the name for the assistant's act-ahead behaviour. An idea from the naming round,
-  not decided (README D10).
+- **Generative interface from the typed core** (README, rule 6). No design yet.
 - **The on-device model path is untested on an eligible device.** The iPhone 14 Pro reports
   `deviceNotEligible`; a 15 Pro or later, or a Simulator, is needed.
 - **`self.json` cannot regenerate.** graphify's semantic step calls
@@ -306,5 +303,5 @@ the phone. Each item below is built and unverified, or ruled and unbuilt.
 
 - 2026-08-19 · Scaffolded. Carries Axon issues #172, #174, #180 and the tracker
   retirement itself; #185 and #186 went to `Packs/travel/ISA.md`.
-- 2026-09-26 · F3 to F5 and six Not-yet-specified entries added from the session that named
+- 2026-09-26 · F3 to F5 and five Not-yet-specified entries added from the session that named
   Sjel, switched the license and moved the product document into the README.
