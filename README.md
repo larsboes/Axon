@@ -220,8 +220,8 @@ The root ISA sizes each step when it starts.
 
 > [!done] D9, 2026-09-26, **superseded by D10**: **Selv stays, after the availability check.** Measured the same day:
 > an iOS app named exactly "Selv" exists (NSRALISA, a private chat-style notebook, released
-> 2026-08-13), and selv.com, selv.app and selv.ai are registered. selv.dev was free; .de was
-> not checkable with the tool used. Two rounds of alternatives (Vorda, Selvhus, Eigra, LifeKernel, OwnOS and others) were
+> 2026-08-13), and selv.com, selv.app and selv.ai are registered. selv.dev was free. The tool
+> used could not check .de. Two rounds of alternatives (Vorda, Selvhus, Eigra, LifeKernel, OwnOS and others) were
 > weaker. The consequences: the App Store name carries a qualifier (for example "Selv: Life OS"),
 > the web address is on selv.dev or selv.de, and a trademark search in classes 9 and 42 runs
 > before the rename. Apple requires a unique app name, and a same-category app with the bare

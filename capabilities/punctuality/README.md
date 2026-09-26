@@ -1,6 +1,4 @@
-<!-- human-voice: ignore em_dash -->
-<!-- The em dashes here separate a term from its definition, the idiom every other
-     capability README in this repo uses. -->
+
 
 # punctuality
 
@@ -314,9 +312,7 @@ backup set, safe to delete, rebuilt by re-running ingest.
 
 ## Considered and declined
 
-<!-- human-voice: ignore bold_bullets -->
-<!-- README.md#decisions-live-with-their-owner defines this section: the rejected option in bold, then why it
-     lost. The bold is the index into the list, not ornament. -->
+
 
 - **DuckDB via `duckdb-rs`** ([duckdb/duckdb-rs](https://github.com/duckdb/duckdb-rs),
   MIT) — bundled C++ in the crate graph for one aggregation. Declined on cost, not
@@ -330,8 +326,7 @@ backup set, safe to delete, rebuilt by re-running ingest.
 
 ## Considered and declined
 
-<!-- human-voice: ignore bold_bullets -->
-<!-- README.md#decisions-live-with-their-owner shape: the rejected option in bold, then why it lost. -->
+
 
 - **Calling the DB Timetables API directly** — real-time only, no history, and it needs
   an API key. It is what the upstream dataset is built from, so consuming the dataset

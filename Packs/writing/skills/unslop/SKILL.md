@@ -104,8 +104,8 @@ is the easy 40% of the job, not the job.
 
 **Respecting intentional choices.** A line containing `unslop-ignore` is skipped by both
 scanners. Use it when a flagged construct is a real decision, so the audit stays trustworthy.
-Note this is a different directive from the `human-voice: ignore` marker the sibling
-`human-writing` linter reads; neither honors the other's.
+The sibling `human-writing` linter has no inline ignore directives. Keep scanner configuration
+outside the prose files.
 
 ## Fixing well
 

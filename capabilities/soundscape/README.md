@@ -1,6 +1,4 @@
-<!-- human-voice: ignore em_dash -->
-<!-- The remaining em dashes separate an endpoint or a declined option from its
-     description, the same definition-list idiom the other capability READMEs use. -->
+
 
 # soundscape
 

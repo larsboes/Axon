@@ -1,8 +1,4 @@
-<!-- human-voice: ignore em_dash -->
-<!-- Every remaining em dash separates an endpoint or a declined-option label from its
-     description. That is the definition-list idiom this README and the rest of
-     capabilities/*/README.md already use; replacing it with commas would make
-     "- `GET /health`, basic liveness check" read as a list of two things. -->
+
 
 # axon-status
 

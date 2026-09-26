@@ -1,4 +1,3 @@
-<!-- human-voice: ignore bold_bullets -->
 
 # packs
 

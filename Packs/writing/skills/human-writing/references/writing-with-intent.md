@@ -67,12 +67,12 @@ first, so read the draft aloud. Use contractions and the plain word: `use` not `
 `look at` not `delve into`. Cut the antithesis cadence (`it's not just X, it's Y`) and the
 throat-clearing opener. The point goes in the first sentence, not after a warm-up.
 
-## The escape hatch
+## Deliberate choices
 
 A register chosen on purpose is not a tell. A legal brief is formal; an academic paper avoids
 contractions; a particular writer loves the em dash. The skill removes *unchosen defaults*, not
-deliberate choices. When a flagged word or form is a real decision, keep it and mark the line
-`<!-- human-voice: ignore <category> -->` so the audit stays honest.
+deliberate choices. When a flagged word or form is a real decision, record that decision in the
+project's writing policy instead of hiding it in the document.
 
 ## The one-line version
 

@@ -272,7 +272,6 @@ refusal. An all-digit input skips the lookup entirely.
 
 ## What a split-ticket chain does and does not promise
 
-<!-- human-voice: ignore em_dash -->
 
 The solver prices each stop pair with its own call to `search_connections` and takes the first
 journey that comes back. Nothing in that makes the returned journey the one the traveller is

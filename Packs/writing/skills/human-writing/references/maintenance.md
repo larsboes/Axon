@@ -10,7 +10,9 @@ SKILL.md.
   count >= 2`, so a lone em dash was never reported. That contradicts the absolute-tell rule in
   SKILL.md. Verified against the calibration corpus: 0 of 24 human and 0 of 10 ESL-formal files
   pick up a false positive. **Re-apply this delta if the linter is ever re-vendored.**
-- Additive entries in `ai_prose_patterns.json`. No other code changes.
+- Additive entries in `ai_prose_patterns.json`.
+- **Inline HTML ignore directives removed (2026-09-26).** The upstream linter supports
+  `human-voice` comments, but Axon does not. Keep scanner policy outside prose files.
 - **One user-facing string corrected in `patterns.py` (2026-09-17).** Its pattern-file-not-found
   message told the user to fall back to `references/ai-tells.md`, a path that has never existed in
   this repository. It now names `references/tells.md`, which is the catalog it means. A string, not
@@ -31,8 +33,8 @@ moved here from the `unslop` pack with its history preserved via `git mv`:
 
 - [stephenoffer/human-voice](https://github.com/stephenoffer/human-voice) pinned `9bcba2f` —
   the linter (`scripts/human_voice_linter/`, `detect_ai_prose.py`, `ai_prose_patterns.json`),
-  register profiles, over-correction catalog, anti-hallucination protocol. One local code delta
-  (above) plus additive pattern entries.
+  register profiles, over-correction catalog, anti-hallucination protocol. Local deltas are
+  listed above, plus additive pattern entries.
 - [ryanthedev/oberskills](https://github.com/ryanthedev/oberskills) pinned `5050537`, the
   `write` skill — the mode router, reader-job taxonomy, voice profiles, review protocol. MIT is
   declared in `.claude-plugin/plugin.json` only, with no LICENSE file at the repo root, so its

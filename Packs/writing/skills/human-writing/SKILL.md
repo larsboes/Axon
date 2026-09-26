@@ -148,12 +148,6 @@ signal is the catalog read against the piece, plus the density number, not the p
 is slop; six across a 5,000-word essay is how the person writes. Two tells are absolute and
 count on a single instance: the em dash, and leftover assistant boilerplate.
 
-**Escape hatch.** `<!-- human-voice: ignore <categories> -->` silences a line, with
-`ignore-start` and `ignore-end` for a block and a bare `ignore` for everything. Use it when a
-flagged form is a real decision, so the audit stays trustworthy. Note this is a different
-directive from the `unslop-ignore` marker the sibling `unslop` scanners read; this linter does
-not honor that one.
-
 ## Fix order
 
 Structure beats substance beats vocabulary. Do not start with diction.

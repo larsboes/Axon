@@ -1,6 +1,4 @@
-<!-- human-voice: ignore em_dash -->
-<!-- The remaining em dashes separate an endpoint or a table label from its description,
-     the definition-list idiom the rest of this repo's READMEs use. -->
+
 
 # Axon (dashboard)
 
@@ -663,10 +661,7 @@ accessibility and build parity.
 
 ## Considered and declined
 
-<!-- human-voice: ignore bold_bullets -->
-<!-- README.md#decisions-live-with-their-owner defines this section: one bolded thing evaluated, then why it lost.
-     The bold IS the index, so the linter's "convert some to prose" would remove the
-     structure the rule asks for. -->
+
 
 - **A CV tab** — the first attempt iframed a CV dev server that does not exist;
   `capabilities/cv` is CLI-only. Revisit once it grows a real server.

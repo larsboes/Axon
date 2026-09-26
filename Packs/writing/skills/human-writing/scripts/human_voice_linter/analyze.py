@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from .checks import *  # noqa: F401,F403
 from .defaults import *  # noqa: F401,F403
-from .directives import *  # noqa: F401,F403
 from .hit import *  # noqa: F401,F403
 from .patterns import *  # noqa: F401,F403
 from .score import *  # noqa: F401,F403
@@ -111,10 +110,6 @@ def analyze(text: str, register: str, dialect: str | None,
         check_dialect(code_stripped, dmap, hits, lm_code)
 
     hits = [h for h in hits if h.category not in muted]
-    # Inline ignore directives (HTML comments) suppress specific lines/categories.
-    ignored = parse_directives(text)
-    if ignored:
-        hits = [h for h in hits if not directive_suppresses(h, ignored)]
     report["word_count"] = word_count
     report["sentence_count"] = len(sents)
     return hits, report, word_count

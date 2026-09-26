@@ -147,10 +147,8 @@ def check_em_dash(text, words, threshold, hits, report, lm):
     # LOCAL DELTA vs upstream human-voice: upstream gated on
     # `per_1k > threshold and count >= 2`, so a lone em dash in a document was
     # never reported. The em dash is an absolute tell counted on a single
-    # instance (see references/tells.md entry 1); the
-    # `<!-- human-voice: ignore em_dash -->` directive is the escape hatch for a
-    # deliberate one. Density still drives the score; presence drives the
-    # finding.
+    # instance (see references/tells.md entry 1). Density still drives the score;
+    # presence drives the finding.
     if count:
         for m in matches[:8]:
             ctx = text[max(0, m.start() - 15):m.start() + 15].replace("\n", " ").strip()

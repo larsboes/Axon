@@ -1,6 +1,4 @@
-<!-- human-voice: ignore bold_bullets -->
-<!-- Definition-list idiom, same as the sibling pack READMEs: the bold span is the term, the
-     text after it the definition. -->
+
 
 # harness pack
 

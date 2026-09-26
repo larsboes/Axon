@@ -1,4 +1,4 @@
-<!-- Vendored from stephenoffer/human-voice (MIT), pinned 9bcba2f. Local edits are marked inline. See maintenance.md § Provenance. -->
+*Vendored from stephenoffer/human-voice (MIT), pinned 9bcba2f. Local edits are marked inline. See maintenance.md § Provenance.*
 
 # Discourse and Structure
 

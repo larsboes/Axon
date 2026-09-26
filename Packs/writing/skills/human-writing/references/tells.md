@@ -88,9 +88,8 @@ Models produce it constantly because their training favors "correct" typography.
 that signals polish now signals a machine.
 
 **Fix.** cut it. Use a comma, a period, or parentheses. Do not just swap in a colon, because
-people have started flagging that too. If you genuinely write with em dashes by choice, mark
-the line `<!-- human-voice: ignore em_dash -->`, but know that readers will still read it as a
-tell.
+people have started flagging that too. If you genuinely write with em dashes by choice, record
+that choice in the project's writing policy, but know that readers may still read it as a tell.
 
 ### 2. "It's not just X, it's Y" (the antithesis cadence)
 

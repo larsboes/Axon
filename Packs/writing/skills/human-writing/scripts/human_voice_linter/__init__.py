@@ -4,7 +4,7 @@ from __future__ import annotations
 import importlib
 
 # Submodules in dependency order (low layers first).
-_MODS = ["util", "defaults", "hit", "patterns", "textutil", "directives", "checks",
+_MODS = ["util", "defaults", "hit", "patterns", "textutil", "checks",
          "score", "analyze", "report", "autofix", "config", "schema", "api", "cli"]
 
 # Aggregate the public surface BEFORE the star-imports below clobber package
@@ -27,7 +27,6 @@ from .checks import *  # noqa: E402,F401,F403
 from .cli import *  # noqa: E402,F401,F403
 from .config import *  # noqa: E402,F401,F403
 from .defaults import *  # noqa: E402,F401,F403
-from .directives import *  # noqa: E402,F401,F403
 from .hit import *  # noqa: E402,F401,F403
 from .patterns import *  # noqa: E402,F401,F403
 from .report import *  # noqa: E402,F401,F403

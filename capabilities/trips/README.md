@@ -15,7 +15,6 @@ options, events, activities, places, stays, images, notes and option sets. The p
 text so provider-specific evidence can be preserved without making provider fields part of the
 durable plan contract.
 
-<!-- human-voice: ignore em_dash -->
 
 That freedom cost a caller the ability to know what to send: any JSON was accepted, so a
 guessed shape got a 201 and a row nobody could read back. Four item types now promise a shape,
@@ -430,7 +429,7 @@ The four points above survive with one correction. Point 3 said "a marked Axon-o
 section", which is right for a note a human already writes and wrong here: no human note
 exists per trip, so PRD Q31 (2026-08-23) ruled this pattern B — a whole generated file,
 in the one vault folder a human never edits. So the file carries an
-`<!-- axon:projection -->` header instead of region markers, and a file at that path
+`` header instead of region markers, and a file at that path
 without the header is refused rather than overwritten, which is Q31's promotion path.
 Points 1, 2 and 4 hold: one file per plan, `axon_trip_id`/`axon_schema`/`axon_revision` in
 frontmatter, and every path and personal value in the overlay.
