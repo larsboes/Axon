@@ -156,6 +156,65 @@ run Socket's scanner, and Cargo/actions keep the zero-day path.
   commit, and the version that ran is in `upstreams.toml`'s git history at that date (Q77
   deleted the field on 2026-09-02).
 
+### F3 · Axon becomes Sjel, staged
+
+Why: README D10 (2026-09-26) names the product Sjel, and every day adds more "axon" to
+commits, URLs and identifiers. Measured the same day: 757 tracked files and 5,884 mentions,
+138 distinct `AXON_*` variables, 19 `axon-*` crates, 15 `com.axon.*` launchd services on this
+Mac, 104 overlay files, the `axon` skill, and the iPhone app still named "LifeOS" with bundle
+identifier `com.lifeos.mobile`. Lars chose "everything, staged" over a brand-only rename.
+
+- [ ] ISC-10 — what people see says Sjel: the GitHub repository, the README title, the app's
+  `productName` and the demo site URL. Falsifier: `gh repo view --json name` is not `Sjel`, or
+  `dashboard/src-tauri/tauri.conf.json` still says `LifeOS`.
+- [ ] ISC-11 — a `sjel` command runs every `axon` subcommand, and `axon` keeps working as an
+  alias. Falsifier: `sjel help` fails, or an existing `axon` call in a tool or skill breaks.
+- [ ] ISC-12 — the iPhone app has a Sjel bundle identifier and the phone is paired again.
+  Changing the identifier makes iOS treat it as a new app: its offline copy and its Keychain
+  key are gone. Falsifier: `com.lifeos.mobile` remains in `tauri.conf.json`, or the new app
+  fails `devices/api/devices/me`.
+- [ ] ISC-13 — internal names move with a fallback: crates, `AXON_*` variables (the old name
+  still read), launchd labels and the overlay. Falsifier: a service that ran before the change
+  does not start after it, or a variable is renamed with no fallback reader.
+
+### F4 · The documents a stranger reads
+
+Why: README D2 to D4 make the README the product document and move the reasoning into one
+curated place. The README is still 870 lines of doctrine below 230 of product.
+
+- [ ] ISC-14 — the README opens like a large open-source project (Graphify, Ollama): logo,
+  badges, a screenshot of phone and dashboard, what it does, a three-command start, and a
+  table of measured results (pseudonymizer 48/48, redaction recall 100% on the frozen corpus,
+  Feed ranking 0.941 pairwise, the 1.5 s Same Wi-Fi fallback). Falsifier: a number in that
+  table without a command or file that reproduces it.
+- [ ] ISC-15 — `research/` exists with three entries, each with its sources: why Obhut is
+  built here and not adopted, the model ladder (Q118), and the device key as trust root
+  (Q119). The demo site shows them. Falsifier: an entry that cites no source, or a claim in it
+  that its source does not support.
+- [ ] ISC-16 — the engineering doctrine lives in `CONTRIBUTING.md`, and no link points at a
+  README anchor that no longer exists. About 208 links point into it today. Falsifier:
+  `git grep "README.md#"` finds an anchor missing from `README.md`.
+
+### F5 · The session's work, proven on real devices
+
+Why: the transports and the model ladder shipped on 2026-09-25 with tests, but nothing ran on
+the phone. Each item below is built and unverified, or ruled and unbuilt.
+
+- [ ] ISC-17 — a phone on the home Wi-Fi reaches the Mac's `:8443` listener, pins it after the
+  code comparison, and reads data with the tailnet off. Blocked by an operator act: the macOS
+  firewall must admit the signed `axon-status` once. Falsifier: `curl -k
+  https://<LAN address>:8443/health` from another device does not answer 200.
+- [ ] ISC-18 — the assistant drawer calls the model ladder (`dashboard/src/lib/intelligence`)
+  for at least one task and shows which rung answered. Falsifier: `rg "intelligence/backends"
+  dashboard/src` finds no caller outside the module and its test.
+- [ ] ISC-19 — `machNotch` moves into this repository and grows into the Mac app (D7). It hosts
+  the CloudKit relay, and a test reads a record back as Apple stores it and finds ciphertext
+  (Q120). Falsifier: a field name or value of a C2 record readable in the stored record.
+- [ ] ISC-20 — the comms review queue sends pseudonymized jobs through `prepare_pseudonymized`
+  (Q114, answered by Q120). Falsifier: a queued job whose payload carries a raw C2 entity.
+- [ ] ISC-21 — the family deployment (`axon-family`) runs for a week without Lars touching it.
+  Falsifier: any fix to it made by Lars in that week.
+
 ## Not yet specified
 
 - **knowledge-graph link prediction over the vault.** `knowledge-graph` serves the code
@@ -177,6 +236,24 @@ run Socket's scanner, and Cargo/actions keep the zero-day path.
   what was true when it was written. They work, so this is deduplication rather
   than a defect, and the repo's rule is that shared logic moves into the lib. Not swept in
   the run that added the helper, deliberately: that run was about the demo.
+
+- **Obhut as its own library.** Grow the data classes and the reversible pseudonymizer into a
+  standalone Rust crate with its own README and name. Performance work (unsafe Rust included)
+  only after a benchmark says where the time goes.
+- **Private Cloud Compute as a ladder rung**, for pseudonymized prompts only (Q120). The plugin
+  reports its availability today and never calls it.
+- **A fast structured-decision model as a rung**, the kind Jev is (typesafe.ai, 2026). Candidate,
+  not measured.
+- **Generative interface from the typed core** (README principle 6). No design yet.
+- **Pronoia** as the name for the assistant's act-ahead behaviour. An idea from the naming round,
+  not decided (README D10).
+- **The on-device model path is untested on an eligible device.** The iPhone 14 Pro reports
+  `deviceNotEligible`; a 15 Pro or later, or a Simulator, is needed.
+- **`self.json` cannot regenerate.** graphify's semantic step calls
+  `deepseek-ai/deepseek-v4-flash`, retired on 2026-08-07, so `tools/self generate` refuses. Commit
+  `2f0feb6` says it regenerated `self.json`; only `ARCHITECTURE.md` changed.
+- **Stale workflow worktrees under `.claude/worktrees/` fail `tools/doctor`** with "package.json
+  is not in the index". Local leftovers, not a repository defect.
 
 ## Test Strategy
 
@@ -229,3 +306,5 @@ run Socket's scanner, and Cargo/actions keep the zero-day path.
 
 - 2026-08-19 · Scaffolded. Carries Axon issues #172, #174, #180 and the tracker
   retirement itself; #185 and #186 went to `Packs/travel/ISA.md`.
+- 2026-09-26 · F3 to F5 and six Not-yet-specified entries added from the session that named
+  Sjel, switched the license and moved the product document into the README.

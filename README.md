@@ -1,15 +1,15 @@
-# Selv
+# Sjel
 
 **Your life's data on your own devices, with one assistant that can act on it.**
 
-Selv is the working name, chosen on 2026-09-26. The code, the CLI and the repository still say
+Sjel is the working name, chosen on 2026-09-26. The code, the CLI and the repository still say
 Axon until the rename step in [Order of work](#order-of-work). This file is the product
-document: what Selv is, for whom, and what it will not do. Open work lives in [ISA.md](ISA.md).
+document: what Sjel is, for whom, and what it will not do. Open work lives in [ISA.md](ISA.md).
 The engineering doctrine starts at [Start here](#start-here).
 
 ## What it is
 
-Selv keeps your people, places, trips, money, home and calendar as typed data on hardware you
+Sjel keeps your people, places, trips, money, home and calendar as typed data on hardware you
 control. An assistant reads that data and proposes actions. You confirm the actions that
 matter. Models run on the device when the device can run them, on your Mac when it cannot, and
 in the cloud only after [Obhut](#obhut-the-trust-layer) removes what identifies a person.
@@ -19,13 +19,13 @@ this one repository: you switch on travel and leave money off, or the other way 
 
 ## Who it is for
 
-1. **Me, first.** Selv runs my life today on one Mac, one iPhone and a Raspberry Pi.
+1. **Me, first.** Sjel runs my life today on one Mac, one iPhone and a Raspberry Pi.
 2. **One other household next.** The `axon-family` deployment is user number two. What breaks
    there sets the priorities, before any onboarding flow or public release.
 3. **People with little technical experience, later.** They get working defaults and never see
    a choice they did not ask for.
 4. **Developers, alongside.** The system side (your Macs, dotfiles and agent setup) is the way
-   in for someone who installs Selv for their machine and stays for their life.
+   in for someone who installs Sjel for their machine and stays for their life.
 
 ## Why another assistant
 
@@ -34,7 +34,7 @@ cloud desktop and needs "total delegation of session tokens, passwords, and mult
 authentication codes". It costs an estimated "$200 to $500 per month"
 ([Spinnable, 2026](https://www.spinnable.ai/blog/what-is-instinct-ai-guide)).
 
-Selv takes the opposite position. Your passwords stay yours. Each paired device holds one key
+Sjel takes the opposite position. Your passwords stay yours. Each paired device holds one key
 that never leaves it, and data about other people leaves your devices only encrypted or
 pseudonymized. That trade is only possible because the data is typed: the assistant acts
 through typed tools, not by driving a browser with your credentials.
@@ -48,13 +48,13 @@ frozen vault PRD (see [Where the reasoning lives](#where-the-reasoning-lives)).
    Apple model, then the Mac's, then deterministic rules. (Q118)
 2. **The device key admits, not the network.** Every connection carries the same signed
    requests, so a new connection type adds reach and no new security model. (Q119)
-3. **It works without setup.** Selv detects what your devices can do and chooses for you. Options exist for the
+3. **It works without setup.** Sjel detects what your devices can do and chooses for you. Options exist for the
    person who asks for them, behind Advanced.
 4. **Raw data about other people never leaves.** It leaves end-to-end encrypted with keys only
    your devices hold, or pseudonymized by Obhut. A test proves each path, and a failing test
    closes it. (Q120)
 5. **The assistant proposes.** Summaries and labels appear on their own. A reversible write
-   applies by itself only after a frozen corpus shows it is reliable. A write that leaves Selv
+   applies by itself only after a frozen corpus shows it is reliable. A write that leaves Sjel
    or cannot be undone always asks. (Q118)
 6. **Types first.** Screens and assistant tools come from the typed core, so the interface can
    be generated from the data rather than drawn per feature. (Q117)
@@ -99,7 +99,7 @@ other projects come in through `upstreams.toml`, with a verdict and a reason.
 | Your machines | `host-patch`, `host-watch`, `host-net`, `macmon`, `backup`, `container-refresh` |
 | Your agents | `Packs/`, `tools/harnesses`, `agentbox`, `shell` |
 
-The last two rows are the system side. Selv manages your Macs and your agent setup the way it
+The last two rows are the system side. Sjel manages your Macs and your agent setup the way it
 manages a trip: as data it can read, check and change with you.
 
 ## Surfaces
@@ -113,7 +113,7 @@ manages a trip: as data it can read, check and change with you.
 
 ## Connections
 
-A device reaches its Selv node in any of four ways, side by side. Selv picks for you. The
+A device reaches its Sjel node in any of four ways, side by side. Sjel picks for you. The
 connection screen shows each with its pros and cons for the person who wants to choose.
 
 | Connection | Needs | State |
@@ -121,16 +121,16 @@ connection screen shows each with its pros and cons for the person who wants to 
 | Same Wi-Fi | Nothing: Bonjour finds the Mac, you compare a 16-character code once | Built |
 | Tailscale | The Tailscale app on each device | Built |
 | Your server or a hosted node | A server with a real certificate | Built on the phone. Hosting a node is a deployment step. |
-| iCloud | An Apple account. Records in CloudKit, encrypted by Selv. | Not built. Needs the Mac app. |
+| iCloud | An Apple account. Records in CloudKit, encrypted by Sjel. | Not built. Needs the Mac app. |
 
 ## Open source and building in public
 
 The code is public under AGPL-3.0 since 2026-09-26 ([LICENSE](LICENSE)), so anyone who hosts
-a changed Selv for others publishes their changes. Earlier releases stay available under MIT.
+a changed Sjel for others publishes their changes. Earlier releases stay available under MIT.
 Contributors sign off under a DCO ([CONTRIBUTING.md](CONTRIBUTING.md#license-and-sign-off)).
 Whether some parts stay closed later (open core) is open question O2.
 
-Selv is also built in public. Every decision carries a date, an argument and a measurement,
+Sjel is also built in public. Every decision carries a date, an argument and a measurement,
 which makes it material for a series in the style of James Simo's
 [city-builder devlog](https://www.youtube.com/watch?v=BoqK5wOGpfU): the decision, the papers
 behind it, and what the measurement said.
@@ -146,27 +146,32 @@ behind it, and what the measurement said.
 
 ## Non-goals
 
-- Selv never asks for your passwords or MFA codes, and it does not run on a cloud desktop.
-- Selv has no third-party extension store. Only first-party extensions run next to your data.
-- Selv is not a second writing tool. Prose stays in Obsidian, and Selv links to it and owns
+- Sjel never asks for your passwords or MFA codes, and it does not run on a cloud desktop.
+- Sjel has no third-party extension store. Only first-party extensions run next to your data.
+- Sjel is not a second writing tool. Prose stays in Obsidian, and Sjel links to it and owns
   the structured facts. (Q117)
 - Not every device is an authority. One node accepts writes, and a multi-master peer mesh
   stays deferred (`dashboard/README.md`, "Device mesh boundary").
-- Android and Windows are out for now. Selv builds on Apple's on-device frameworks first.
+- Android and Windows are out for now. Sjel builds on Apple's on-device frameworks first.
 
 ## Order of work
 
 The root ISA sizes each step when it starts.
 
 1. **License.** Done on 2026-09-26 (D8).
-2. **Name.** Check Selv against domains, the App Store and EUIPO/DPMA trademarks, then rename
-   the repository, the CLI and the bundle identifiers.
-3. **Documents.** Move the engineering doctrine below into `CONTRIBUTING.md`, rewrite the 208
-   links into it, and create `research/`.
-4. **User number two.** Make the family deployment work without me.
-5. **Mac app and iCloud.** The Mac app hosts CloudKit. Q120's test proves the records are
-   ciphertext.
-6. **The wedge.** Make travel and people the first thing a stranger sees (D6).
+2. **Name.** Chosen and checked on 2026-09-26 (D10).
+3. **Rename, staged.** First what people see: the repository, the app, the bundle identifier
+   and a `sjel` command beside `axon`. Then the crates, the `AXON_*` variables, the launchd
+   labels and the overlay, each with a fallback. (ISA F3)
+4. **Landing README.** The pattern of large open-source projects: logo, badges, a screenshot,
+   what it does, a three-command start and a table of measured results. (ISA F4)
+5. **`research/`.** Seed three entries: why Obhut is built here, the model ladder, and the
+   device key as trust root. (ISA F4)
+6. **Doctrine to `CONTRIBUTING.md`**, with the 208 links into it rewritten. (ISA F4)
+7. **User number two.** Make the family deployment work without me. (ISA F5)
+8. **Mac app and iCloud.** `machNotch` grows into the Mac app (D7), which hosts CloudKit. Q120's
+   test proves the records are ciphertext. (ISA F5)
+9. **The wedge.** Make travel and people the first thing a stranger sees (D6).
 
 ## Open questions
 
@@ -175,11 +180,11 @@ The root ISA sizes each step when it starts.
 | O1 | Which area is the wedge a stranger sees first? | Decided: travel and people (D6) |
 | O2 | Fully open source, or open core with some closed parts? | Open. AGPL-3.0 keeps both possible. |
 | O3 | Does the Mac app live in this repository, or does `machNotch` grow into it? | Decided: `machNotch` grows into it (D7) |
-| O4 | How is Selv funded: support and sponsorship, hosting, or a company? | Open |
+| O4 | How is Sjel funded: support and sponsorship, hosting, or a company? | Open |
 
 ## Decisions made in this document
 
-> [!done] D1, 2026-09-26: **the name is Selv, and Obhut names the trust layer.** Axon and LifeOS are both
+> [!done] D1, 2026-09-26, **superseded by D10**: **the name is Selv, and Obhut names the trust layer.** Axon and LifeOS are both
 > taken, and a name close to LifeOS (for example LivOS) invites confusion with Daniel
 > Miessler's project. Selv (Norwegian and Danish: self) has no competitor in this field on
 > GitHub. Obhut had 2 repositories using the word.
@@ -196,7 +201,7 @@ The root ISA sizes each step when it starts.
 > over 45 ISAs and many READMEs are not read. One place with narrative, papers and episode
 > links serves the build-in-public series and the demo site.
 
-> [!done] D5, 2026-09-26: **the documents say Selv now, and the code renames later.** The rename waits for
+> [!done] D5, 2026-09-26: **the documents say Sjel now, and the code renames later.** The rename waits for
 > the availability check and the license switch.
 
 > [!done] D6, 2026-09-26: **the wedge is travel and people.** They are the areas used most, and
@@ -213,16 +218,27 @@ The root ISA sizes each step when it starts.
 > core both possible. Releases before this date stay MIT. Code that `Packs/` vendors keeps its own
 > license.
 
-> [!done] D9, 2026-09-26: **Selv stays, after the availability check.** Measured the same day:
+> [!done] D9, 2026-09-26, **superseded by D10**: **Selv stays, after the availability check.** Measured the same day:
 > an iOS app named exactly "Selv" exists (NSRALISA, a private chat-style notebook, released
-> 2026-08-13), and selv.com, selv.app and selv.ai are registered. selv.dev and selv.de are
-> free. Two rounds of alternatives (Vorda, Selvhus, Eigra, LifeKernel, OwnOS and others) were
+> 2026-08-13), and selv.com, selv.app and selv.ai are registered. selv.dev was free; .de was
+> not checkable with the tool used. Two rounds of alternatives (Vorda, Selvhus, Eigra, LifeKernel, OwnOS and others) were
 > weaker. The consequences: the App Store name carries a qualifier (for example "Selv: Life OS"),
 > the web address is on selv.dev or selv.de, and a trademark search in classes 9 and 42 runs
 > before the rename. Apple requires a unique app name, and a same-category app with the bare
 > name can object to a registered mark.
 
 ---
+
+> [!done] D10, 2026-09-26: **the name is Sjel.** A trademark search the same day found "Selv"
+> registered by IOTA Stiftung in Germany (filed 2021-07-08) and internationally (filed
+> 2022-01-07), both in classes 9 and 42, for a digital-identity app. That blocks Selv for
+> software. `tools/name-check` then screened 40 candidates on the App Store, domains, GitHub
+> and TMview. Sjel (Norwegian: soul, said like "shell") had no mark in classes 9 or 42, no app
+> of that name, no GitHub project of note, and sjel.app and sjel.dev were free (sjel.com,
+> sjel.de and sjel.io are registered). It holds the
+> brief in one word: a second self, and the shell around your life. Obhut stays the name of
+> the trust layer. Pronoia (Greek: forethought) is noted as a possible name for the
+> assistant's act-ahead behaviour, not decided.
 
 ## Start here
 

@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Screens product-name candidates before anyone gets attached to one.
+
+    tools/name-check <name> [<name>...]
+
+Per name: apps on the German App Store whose first word is the name, free domains among
+.app/.dev/.com (RDAP answers 404), trademarks in Nice classes 9 or 42 in the EU, German and
+WIPO registers that are live (exact name, and names that start with it), and the largest GitHub
+repository containing the name. TMview's search API answers only with browser-like headers.
+
+Written for the Axon to Sjel naming round (README D10, 2026-09-26): it found IOTA's registered
+"Selv" mark, which the App Store and domain checks alone had missed. RDAP does not serve every
+TLD: rdap.org answers 404 for registered .de and .io names too (measured on spiegel.de and
+github.io, 2026-09-26), so those two are not checked here. Use whois for them. Not legal advice.
+"""
+import json, sys, time, subprocess, urllib.request, urllib.parse
+UA={'user-agent':'Mozilla/5.0 (Macintosh) Safari/605.1.15'}
+def get(url, data=None, headers=None, timeout=15):
+    h=dict(UA); h.update(headers or {})
+    req=urllib.request.Request(url, data=data, headers=h)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r: return r.status, r.read()
+    except urllib.error.HTTPError as e: return e.code, b''
+    except Exception: return 0, b''
+def appstore(n):
+    s,b=get('https://itunes.apple.com/search?'+urllib.parse.urlencode({'term':n,'entity':'software','country':'de','limit':50}))
+    try: r=json.loads(b)['results']
+    except Exception: return '?'
+    return sum(1 for x in r if x['trackName'].lower().split()[0].strip(':.-,') == n)
+def domains(n):
+    free=[]
+    for t in ('app','dev','com'):
+        s,_=get(f'https://rdap.org/domain/{n}.{t}', timeout=10)
+        if s==404: free.append(t)
+    return ','.join(free) or '-'
+def github(n):
+    out=subprocess.run(['gh','api',f'search/repositories?q={n}+in:name&sort=stars&per_page=1','--jq','(.total_count|tostring)+" "+(.items[0].full_name//"")+" *"+((.items[0].stargazers_count//0)|tostring)'],capture_output=True,text=True)
+    return out.stdout.strip() or '?'
+def marks(n):
+    body=json.dumps({"page":"1","pageSize":"100","criteria":"C","basicSearch":n,"fOffices":["EM","DE","WO"]}).encode()
+    s,b=get('https://www.tmdn.org/tmview/api/search/results?translate=true',data=body,headers={'content-type':'application/json','accept':'application/json','origin':'https://www.tmdn.org','referer':'https://www.tmdn.org/tmview/'},timeout=30)
+    try: tms=json.loads(b)['tradeMarks']
+    except Exception: return '?','?'
+    live=lambda t: str(t.get('tradeMarkStatus','')).lower() in ('registered','filed','examined','published','opposed','application published')
+    soft=lambda t: {9,42} & {int(c) for c in (t.get('niceClass') or []) if str(c).isdigit()}
+    exact=[t for t in tms if (t.get('tmName') or '').strip().lower()==n and live(t) and soft(t)]
+    near=[t for t in tms if (t.get('tmName') or '').strip().lower().startswith(n) and (t.get('tmName') or '').strip().lower()!=n and live(t) and soft(t)]
+    fmt=lambda L: '; '.join(f"{t.get('tmName')}/{t.get('tmOffice')}" for t in L[:3])
+    return f"{len(exact)} {fmt(exact)}".strip(), f"{len(near)} {fmt(near)}".strip()
+for n in sys.argv[1:]:
+    n=n.lower(); ex,nr=marks(n)
+    print(f"{n:8} app:{appstore(n)!s:2} free:{domains(n):14} TM9/42 exact:{ex[:45]:45} near:{nr[:40]:40} gh:{github(n)[:45]}", flush=True)
+    time.sleep(1)
