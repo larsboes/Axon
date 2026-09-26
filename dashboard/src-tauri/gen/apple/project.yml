@@ -11,7 +11,7 @@ settingGroups:
   app:
     base:
       PRODUCT_NAME: Sjel
-      PRODUCT_BUNDLE_IDENTIFIER: com.lifeos.mobile
+      PRODUCT_BUNDLE_IDENTIFIER: com.larsboes.sjel
 targetTemplates:
   app:
     type: application

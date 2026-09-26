@@ -3,7 +3,7 @@ import Foundation
 import Security
 import Tauri
 
-private let keychainService = "com.lifeos.mobile.device-identity"
+private let keychainService = "com.larsboes.sjel.device-identity"
 private let keychainAccount = "axon-ed25519-signing-key"  // gitleaks:allow — a Keychain item label, not key material
 
 private struct IdentityPayload: Encodable {
