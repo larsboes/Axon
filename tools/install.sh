@@ -68,24 +68,27 @@ write_bun_global_hold() {
   echo "Bun install policy: ~/.bunfig.toml now holds new npm releases for 24h."
 }
 
-# `axon` is the public human/agent interface, so installation puts a stable launcher in the
-# conventional user bin directory. Never replace an unrelated command: an existing non-symlink
-# requires an explicit operator decision instead of silently changing their PATH behavior.
+# `sjel` is the public human/agent interface, and `axon` is its earlier name (a symlink in the
+# checkout), so installation puts both launchers in the conventional user bin directory. Never
+# replace an unrelated command: an existing non-symlink requires an explicit operator decision
+# instead of silently changing their PATH behavior.
 AXON_BIN_DIR="$HOME/.local/bin"
-AXON_BIN="$AXON_BIN_DIR/axon"
-if [ -L "$AXON_BIN" ] && [ "$(readlink "$AXON_BIN")" = "$AXON_ROOT/axon" ]; then
-  echo "Axon CLI: $AXON_BIN already points at this checkout."
-elif [ -e "$AXON_BIN" ] || [ -L "$AXON_BIN" ]; then
-  echo "Axon CLI: $AXON_BIN already exists and is not owned by this checkout — leaving it alone."
-  echo "  Run this checkout directly: $AXON_ROOT/axon help"
-else
-  mkdir -p "$AXON_BIN_DIR"
-  ln -s "$AXON_ROOT/axon" "$AXON_BIN"
-  echo "Axon CLI: linked $AXON_BIN -> $AXON_ROOT/axon"
-fi
+for cli in sjel axon; do
+  AXON_BIN="$AXON_BIN_DIR/$cli"
+  if [ -L "$AXON_BIN" ] && [ "$(readlink "$AXON_BIN")" = "$AXON_ROOT/$cli" ]; then
+    echo "Sjel CLI: $AXON_BIN already points at this checkout."
+  elif [ -e "$AXON_BIN" ] || [ -L "$AXON_BIN" ]; then
+    echo "Sjel CLI: $AXON_BIN already exists and is not owned by this checkout, leaving it alone."
+    echo "  Run this checkout directly: $AXON_ROOT/$cli help"
+  else
+    mkdir -p "$AXON_BIN_DIR"
+    ln -s "$AXON_ROOT/$cli" "$AXON_BIN"
+    echo "Sjel CLI: linked $AXON_BIN -> $AXON_ROOT/$cli"
+  fi
+done
 case ":$PATH:" in
   *":$AXON_BIN_DIR:"*) ;;
-  *) echo "Axon CLI: add $AXON_BIN_DIR to PATH to run 'axon' from any directory." ;;
+  *) echo "Sjel CLI: add $AXON_BIN_DIR to PATH to run 'sjel' from any directory." ;;
 esac
 
 # Where THIS machine's overlay location gets recorded. Gitignored and per-machine, so a
