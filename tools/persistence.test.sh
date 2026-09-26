@@ -63,8 +63,8 @@ cat > "$STUB_BIN/launchctl" <<'STUB'
 #!/bin/bash
 case "${1:-}" in
   list)   cat "$AXON_TEST_STUB_STATE" ;;
-  load)   printf '%s\t0\tcom.axon.%s\n' "$$" "$(basename "${2:-}" .plist | sed 's/^com\.axon\.//')" >> "$AXON_TEST_STUB_STATE" ;;
-  unload) label="com.axon.$(basename "${2:-}" .plist | sed 's/^com\.axon\.//')"
+  load)   printf '%s\t0\t%s\n' "$$" "$(basename "${2:-}" .plist)" >> "$AXON_TEST_STUB_STATE" ;;
+  unload) label="$(basename "${2:-}" .plist)"
           grep -v "$label\$" "$AXON_TEST_STUB_STATE" > "$AXON_TEST_STUB_STATE.new" || true
           mv "$AXON_TEST_STUB_STATE.new" "$AXON_TEST_STUB_STATE" ;;
 esac
@@ -152,7 +152,7 @@ done
 
 # --- macOS -----------------------------------------------------------------
 machine macos '["always", "ondemand", "gone"]'
-PLIST="$FAKE_HOME/Library/LaunchAgents/com.axon.always.plist"
+PLIST="$FAKE_HOME/Library/LaunchAgents/com.sjel.always.plist"
 
 # missing — the whole point of the issue: enabled, autostart, nothing installed.
 rm -f "$PLIST"
@@ -164,7 +164,7 @@ run always install-persistence
 expect_state "macos, freshly installed" always installed
 # ...and it actually asked the supervisor to load it. Writing the file without loading it is the
 # `installed-not-loaded` state, which install must not leave behind.
-grep -q "com\.axon\.always\$" "$STUB_STATE" || fail "install-persistence wrote the unit but never loaded it"
+grep -q "com\.sjel\.always\$" "$STUB_STATE" || fail "install-persistence wrote the unit but never loaded it"
 
 # stale — the unit exists but no longer matches what the declaration renders to. This is the case
 # a plain existence check cannot see, and it is how a moved runtime binary silently keeps a
@@ -199,7 +199,7 @@ machine macos '["always", "ondemand", "gone"]'
 # so the assertions here are as much about what a scheduled capability must NOT get (a KeepAlive
 # watchdog) as about what it must.
 machine macos '["sched", "both", "badsched"]'
-SCHED_PLIST="$FAKE_HOME/Library/LaunchAgents/com.axon.sched.plist"
+SCHED_PLIST="$FAKE_HOME/Library/LaunchAgents/com.sjel.sched.plist"
 rm -f "$SCHED_PLIST"
 
 # The heart of it: on-demand, and still owed a unit. Before #129 this answered `n/a` — the
@@ -262,10 +262,10 @@ mkcap minutely false 'schedule = "30m"'
 mkcap daily false 'schedule = "2d"'
 machine macos '["minutely", "daily"]'
 run minutely install-persistence
-grep -q "<integer>1800</integer>" "$FAKE_HOME/Library/LaunchAgents/com.axon.minutely.plist" \
+grep -q "<integer>1800</integer>" "$FAKE_HOME/Library/LaunchAgents/com.sjel.minutely.plist" \
   || fail "30m did not render as 1800s"
 run daily install-persistence
-grep -q "<integer>172800</integer>" "$FAKE_HOME/Library/LaunchAgents/com.axon.daily.plist" \
+grep -q "<integer>172800</integer>" "$FAKE_HOME/Library/LaunchAgents/com.sjel.daily.plist" \
   || fail "2d did not render as 172800s"
 
 # A scheduled CONTAINER capability still owes a unit. docker's --restart answers "bring it back
@@ -285,11 +285,21 @@ machine macos '["always", "ondemand", "gone"]'
 # The tool has to keep answering for a capability that is no longer enabled, or nothing can
 # report the leftover.
 run gone install-persistence
-GONE_PLIST="$FAKE_HOME/Library/LaunchAgents/com.axon.gone.plist"
+GONE_PLIST="$FAKE_HOME/Library/LaunchAgents/com.sjel.gone.plist"
 [ -f "$GONE_PLIST" ] || fail "could not install persistence for the to-be-disabled capability"
 machine macos '["always", "ondemand"]'
 expect_state "macos, unit left behind by a disable" gone installed
 [ -f "$GONE_PLIST" ] || fail "the leftover unit disappeared on its own — the disposition must be explicit"
+
+# A unit left under the pre-rename label (com.axon, until 2026-09-26) is unloaded and deleted
+# when the capability is installed again, so two watchdogs never run for one capability.
+LEGACY_PLIST="$FAKE_HOME/Library/LaunchAgents/com.axon.always.plist"
+printf '<plist/>\n' > "$LEGACY_PLIST"
+printf '%s\t0\tcom.axon.always\n' "$$" >> "$STUB_STATE"
+run always install-persistence
+[ ! -f "$LEGACY_PLIST" ] || fail "install-persistence left the legacy unit $LEGACY_PLIST behind"
+! grep -q "com\.axon\.always\$" "$STUB_STATE" || fail "install-persistence did not unload the legacy unit"
+grep -q "com\.sjel\.always\$" "$STUB_STATE" || fail "install-persistence did not load the new unit after the legacy cleanup"
 
 # remove-persistence is that explicit disposition, and it is idempotent.
 run gone remove-persistence

@@ -568,6 +568,18 @@ export function classifyArchiveAtTarget(input: {
 /// One row of `launchctl list`: `PID \t Status \t Label`, where Status is the job's last exit
 /// status and either column may be `-` for "no answer". A label that is absent from this output
 /// is not loaded, which for a timer means it will never fire.
+/**
+ * The capability a LaunchAgent file belongs to, under the current label prefix (com.sjel) or
+ * the one before the 2026-09-26 rename (com.axon), which install-persistence clears.
+ */
+export function launchdUnitCapability(file: string): string | null {
+  if (!file.endsWith(".plist")) return null;
+  for (const prefix of ["com.sjel.", "com.axon."]) {
+    if (file.startsWith(prefix)) return file.slice(prefix.length, -".plist".length);
+  }
+  return null;
+}
+
 export function parseLaunchdJobs(text: string): Map<string, { pid: number | null; lastExit: number | null }> {
   const jobs = new Map<string, { pid: number | null; lastExit: number | null }>();
   for (const line of text.split("\n")) {
@@ -1550,7 +1562,7 @@ const CHECKS: Check[] = [
       if (unitDir && existsSync(unitDir)) {
         for (const f of readdirSync(unitDir)) {
           const cap =
-            os === "macos" ? (f.startsWith("com.axon.") && f.endsWith(".plist") ? f.slice("com.axon.".length, -".plist".length) : null)
+            os === "macos" ? launchdUnitCapability(f)
             : (f.startsWith("axon-") && f.endsWith(".service") ? f.slice("axon-".length, -".service".length) : null);
           if (cap && !exempt.has(cap) && !enabled.has(cap)) orphans.push(cap);
         }
@@ -1612,7 +1624,10 @@ const CHECKS: Check[] = [
       const unitDir = join(process.env.HOME ?? "", "Library", "LaunchAgents");
       const now = Date.now() / 1000;
       for (const service of scheduled) {
-        const unitPath = join(unitDir, `com.axon.${service.name}.plist`);
+        const label = [`com.sjel.${service.name}`, `com.axon.${service.name}`].find(
+          (l) => existsSync(join(unitDir, `${l}.plist`)) || jobs.has(l),
+        ) ?? `com.sjel.${service.name}`;
+        const unitPath = join(unitDir, `${label}.plist`);
         const unitInstalled = existsSync(unitPath);
         const unit = unitInstalled
           ? parseLaunchdSchedule(readFileSync(unitPath, "utf8"))
@@ -1630,7 +1645,7 @@ const CHECKS: Check[] = [
             // absent, which is not the same as never ran — classifyScheduledProducer says so.
           }
         }
-        const job = jobs.get(`com.axon.${service.name}`);
+        const job = jobs.get(label);
         const verdict = classifyScheduledProducer({
           name: service.name,
           unitInstalled,

@@ -956,10 +956,15 @@ persistence_applicable() {
 # persistence_unit_path — where this OS keeps the unit. Non-zero, with the reason on stdout, for
 # an OS with no backend. One home for the path so status, install and remove cannot disagree
 # about which file they are talking about.
+# The launchd label prefix. It was com.axon until 2026-09-26, when the product became Sjel;
+# install-persistence and remove-persistence also clear a unit left under the old label.
+UNIT_LABEL_PREFIX="com.sjel"
+LEGACY_UNIT_LABEL_PREFIX="com.axon"
+
 persistence_unit_path() {
   local systemd_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
   case "$AXON_OS" in
-    macos) printf '%s\n' "$HOME/Library/LaunchAgents/com.axon.$CAP.plist" ;;
+    macos) printf '%s\n' "$HOME/Library/LaunchAgents/$UNIT_LABEL_PREFIX.$CAP.plist" ;;
     linux)
       # For a scheduled job the TIMER is the primary unit: it holds the interval, it is what gets
       # enabled, and it is therefore what `installed` has to mean. Its oneshot companion is
@@ -1119,7 +1124,7 @@ render_persistence_unit() {
   case "$AXON_OS:$mode" in
     macos:watchdog)
       tmpl="$TOOLS_DIR/templates/launchd-watchdog.plist.tmpl"
-      sed -e "s|__LABEL__|com.axon.$CAP|" \
+      sed -e "s|__LABEL__|$UNIT_LABEL_PREFIX.$CAP|" \
           -e "s|__WATCHDOG_PATH__|$watchdog|" \
           -e "s|__PATH__|$runtime_dir:/usr/bin:/bin:/usr/sbin:/sbin|" \
           -e "s|__CAPABILITY__|$CAP|" \
@@ -1141,7 +1146,7 @@ render_persistence_unit() {
       fi
       sed -e "s|__LAUNCHER__|$launcher_line|" \
           -e '/^$/d' \
-          -e "s|__LABEL__|com.axon.$CAP|" \
+          -e "s|__LABEL__|$UNIT_LABEL_PREFIX.$CAP|" \
           -e "s|__RUNNER_PATH__|$runner|" \
           -e "s|__INTERVAL_SECONDS__|$secs|" \
           -e "s|__PATH__|$runtime_dir:/usr/bin:/bin:/usr/sbin:/sbin|" \
@@ -1270,7 +1275,7 @@ persistence_loaded() {
       # into a failed pipeline. It reported the loaded axon-status agent as not loaded, and
       # whether it did so depended on where in the output the label happened to sit. -c consumes
       # the whole stream, so the producer always finishes.
-      hits="$(launchctl list 2>/dev/null | grep -cE "com\.axon\.${CAP}\$" || true)"
+      hits="$(launchctl list 2>/dev/null | grep -cE "${UNIT_LABEL_PREFIX//./\\.}\.${CAP}\$" || true)"
       if [ "${hits:-0}" -gt 0 ]; then echo yes; else echo no; fi
       ;;
     linux)
@@ -1304,6 +1309,16 @@ status_persistence() {
       ;;
     *) printf '%s\t%s\t%s\n' "$CAP" "$state" "$detail" ;;
   esac
+}
+
+# A unit under the pre-rename label keeps its watchdog running next to the new one, so it is
+# unloaded and deleted before the new unit loads, and on removal.
+remove_legacy_launchd_unit() {
+  local legacy="$HOME/Library/LaunchAgents/$LEGACY_UNIT_LABEL_PREFIX.$CAP.plist"
+  [ -f "$legacy" ] || return 0
+  launchctl unload "$legacy" 2>/dev/null || true
+  rm -f "$legacy"
+  echo "removed legacy unit $legacy"
 }
 
 install_persistence() {
@@ -1361,7 +1376,8 @@ install_persistence() {
       # that reports success while leaving a job disabled is the failure mode this file exists to
       # refuse everywhere else.
       launchctl unload "$unit" 2>/dev/null || true
-      launchctl enable "gui/$(id -u)/com.axon.$CAP" 2>/dev/null || true
+      remove_legacy_launchd_unit
+      launchctl enable "gui/$(id -u)/$UNIT_LABEL_PREFIX.$CAP" 2>/dev/null || true
       launchctl load "$unit"
       echo "installed $unit"
       ;;
@@ -1402,7 +1418,10 @@ remove_persistence() {
     return 0
   fi
   case "$AXON_OS" in
-    macos) launchctl unload "$unit" 2>/dev/null || true ;;
+    macos)
+      launchctl unload "$unit" 2>/dev/null || true
+      remove_legacy_launchd_unit
+      ;;
     linux)
       systemctl --user disable --now "$(basename "$unit")" 2>/dev/null || true
       ;;
