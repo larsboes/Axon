@@ -6,7 +6,7 @@
 //! documented output and not from a capture of a running machine. The README repeats that. The
 //! two things it will not do are return an empty list when `ss` is missing, and claim a
 //! firewall is clean when it could not read one — both of which read as "nothing is exposed"
-//! (Packs/axon/skills/axon/references/shared-failure-policy.md).
+//! (Packs/harness/skills/sjel/references/shared-failure-policy.md).
 //!
 //! `nft list ruleset` needs root. host-net never uses sudo, so `firewall` on Linux reports the
 //! layer as unavailable and exits rather than printing a half-answer.

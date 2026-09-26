@@ -104,7 +104,7 @@ pub fn verdict(found: &[Exposure]) -> u8 {
 /// failure. This is the step that refuses to score it as a clean host: without it, an operator
 /// who never wrote a policy gets exit 0 and a reassuring sentence, which is the failure shape
 /// the whole crate is built against
-/// (Packs/axon/skills/axon/references/shared-failure-policy.md).
+/// (Packs/harness/skills/sjel/references/shared-failure-policy.md).
 pub fn require(
     loaded: Option<(std::path::PathBuf, Policy)>,
 ) -> Result<(std::path::PathBuf, Policy), String> {

@@ -1,9 +1,9 @@
 ---
-name: axon
-description: Operates Axon and guides work on the Axon repository through dynamic discovery, bounded self-context, capability APIs, architecture placement, focused branches, and proportionate verification. Use when operating Axon services or feeds, diagnosing Axon, planning or coding inside the Axon repository, deciding where Axon code belongs, or handling Axon branches and PRs. Do not use for unrelated repositories, direct Home Assistant or device control, or generic prose and skill authoring with no Axon decision.
+name: sjel
+description: Operates Sjel (formerly Axon) and guides work on its repository through dynamic discovery, bounded self-context, capability APIs, architecture placement, focused branches, and proportionate verification. Use when operating Sjel or Axon services or feeds, diagnosing them, planning or coding inside the Sjel repository (~/Developer/Sjel, formerly Axon), deciding where code belongs there, or handling its branches and PRs. Do not use for unrelated repositories, direct Home Assistant or device control, or generic prose and skill authoring with no Sjel decision.
 ---
 
-# Axon
+# Sjel
 
 Route first, then load only the selected reference. Derive changing facts at runtime; never
 substitute a remembered port, inventory, issue state, service status, or graph count.

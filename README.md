@@ -888,7 +888,7 @@ One web app is the visible form of the gluing layer: **installer, maintainer, an
 | `profiles.toml` | named Pack sets (`tools/packs-codex use <profile>`). Tracked and shared: a profile says which Packs belong together, while which machine deploys them stays in the overlay |
 | `upstreams.toml` | every external project: url, verdict, license, why |
 | `README.md` | human-facing architecture and durable repository doctrine |
-| `AGENTS.md` | minimal cross-harness bootstrap that routes assistants into the `axon` skill |
+| `AGENTS.md` | minimal cross-harness bootstrap that routes assistants into the `sjel` skill |
 | `CLAUDE.md` | Claude Code adapter; imports `AGENTS.md` and adds no second doctrine |
 | `ARCHITECTURE.md` | generated snapshot of capabilities/Packs/upstreams/systems — never hand-edited, see `tools/generate-architecture.sh`. State mounts are machine-local and deliberately absent; `tools/doctor` reports those |
 | `capabilities/<name>/` | one dir per capability: curated README + its code as it lands; optional `ui/` panel served over its own HTTP surface |

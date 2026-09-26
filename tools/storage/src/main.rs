@@ -11,7 +11,7 @@
 //!
 //! Rust, not TypeScript. This replaced `tools/storage.ts` on 2026-09-03 under the owner's
 //! ruling that generalized tooling is built in Rust first
-//! (Packs/axon/skills/axon/references/on-dependencies-and-build.md, "add backend logic in
+//! (Packs/harness/skills/sjel/references/on-dependencies-and-build.md, "add backend logic in
 //! Rust"). The TypeScript version's argument for its own runtime was that the policy is
 //! array-of-tables and `tools/lib/toml.sh` cannot parse it — true, and an argument against
 //! bash, not against Rust. Every pure function it carried is here with its tests.

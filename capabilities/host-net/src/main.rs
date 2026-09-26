@@ -80,7 +80,7 @@ fn main() -> ExitCode {
 ///
 /// An unknown platform is an error, never an empty list. "No listeners found" and "I cannot
 /// look" are opposite answers and only one of them is reassuring
-/// (Packs/axon/skills/axon/references/shared-failure-policy.md).
+/// (Packs/harness/skills/sjel/references/shared-failure-policy.md).
 fn listeners() -> Result<Vec<Listener>, String> {
     match std::env::consts::OS {
         "macos" => listen::collect_macos(),

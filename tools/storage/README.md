@@ -6,8 +6,8 @@ unremarkable 230 MB cache blocks. No per-file view showed it.
 
 The crate is `axon-storage`, a member of the root Cargo workspace. Operator machinery lives
 in `tools/` and its backend logic is Rust, so `tools/` holds a Cargo member
-(`Packs/harness/skills/axon/references/on-placement.md`,
-`Packs/harness/skills/axon/references/on-dependencies-and-build.md`). Run it as
+(`Packs/harness/skills/sjel/references/on-placement.md`,
+`Packs/harness/skills/sjel/references/on-dependencies-and-build.md`). Run it as
 `axon storage <verb>`; `tools/storage/storage` is the launcher underneath, and
 `tools/sysmon storage` still delegates to it.
 
