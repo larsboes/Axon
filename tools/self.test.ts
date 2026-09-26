@@ -102,6 +102,24 @@ describe("unitForPath", () => {
 });
 
 describe("rollUp", () => {
+  test("a dangling relative import is foreign, while a deleted source stays stale", () => {
+    const tracked = tree("Packs/harness/pi-packages/accordion/extension/mock-server.mjs");
+    const r = rollUp(
+      [
+        {
+          id: "dangling",
+          label: "../core/ops.ts",
+          source_file: "Packs/harness/pi-packages/accordion/core/ops.ts",
+        },
+        { id: "deleted", label: "ops.ts", source_file: "Packs/harness/deleted.ts" },
+      ],
+      tracked,
+      tracked,
+    );
+    expect(r.buckets.stale).toEqual(["Packs/harness/deleted.ts"]);
+    expect(r.buckets.external).toBe(1);
+  });
+
   test("local Graphify artifacts do not change the public rollup", () => {
     const tracked = tree("capabilities/comms/src/main.rs");
     const local = "graphify-out/memory/private-query.md";

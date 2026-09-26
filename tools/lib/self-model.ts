@@ -160,6 +160,21 @@ export interface Rollup {
 export interface GraphNode {
   id: string;
   source_file?: string | null;
+  /** graphify's label. For an import target it is the specifier as written, e.g. `../core/ops.ts`. */
+  label?: string | null;
+}
+
+/**
+ * An import target graphify resolved against the importing file's directory to a path that does
+ * not exist: a relative specifier in a minified bundle, a build script or a tsconfig that names a
+ * file this tree never had. It is a dangling reference written in a tracked file, not a source a
+ * refactor deleted, so it is counted with the foreign specifiers and never reported as stale.
+ * Measured 2026-09-26: all 10 such nodes came from five files (a minified test mock, two pi-package
+ * build scripts, two tsconfig.json), and a fresh AST-only rebuild still produced them.
+ */
+export function isUnresolvedRelativeImport(node: GraphNode): boolean {
+  const label = node.label ?? "";
+  return label.startsWith("./") || label.startsWith("../");
 }
 
 /**
@@ -193,6 +208,10 @@ export function rollUp(
       continue;
     }
     if (c.cls === "external") {
+      buckets.external += 1;
+      continue;
+    }
+    if (c.cls === "stale" && isUnresolvedRelativeImport(node)) {
       buckets.external += 1;
       continue;
     }

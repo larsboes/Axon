@@ -38,8 +38,8 @@
       "name": "axon-server",
       "kind": "lib",
       "code": {
-        "files": 6,
-        "nodes": 84
+        "files": 7,
+        "nodes": 119
       }
     },
     {
@@ -51,8 +51,8 @@
         "port": "8082"
       },
       "code": {
-        "files": 13,
-        "nodes": 145
+        "files": 15,
+        "nodes": 160
       }
     },
     {
@@ -122,7 +122,7 @@
       },
       "code": {
         "files": 90,
-        "nodes": 1719
+        "nodes": 1724
       }
     },
     {
@@ -164,8 +164,8 @@
         "port": "47117"
       },
       "code": {
-        "files": 191,
-        "nodes": 1273
+        "files": 226,
+        "nodes": 1692
       }
     },
     {
@@ -174,6 +174,53 @@
       "code": {
         "files": 33,
         "nodes": 214
+      }
+    },
+    {
+      "name": "devices",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [],
+        "port": "8098"
+      },
+      "code": {
+        "files": 6,
+        "nodes": 75
+      }
+    },
+    {
+      "name": "entities",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [],
+        "port": "8097"
+      },
+      "code": {
+        "files": 12,
+        "nodes": 194
+      }
+    },
+    {
+      "name": "entities-google-sync",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [
+          "entities"
+        ]
+      }
+    },
+    {
+      "name": "entities-sync",
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [
+          "vault",
+          "entities"
+        ]
       }
     },
     {
@@ -320,8 +367,8 @@
         "port": "8092"
       },
       "code": {
-        "files": 34,
-        "nodes": 669
+        "files": 35,
+        "nodes": 680
       }
     },
     {
@@ -433,7 +480,7 @@
       },
       "code": {
         "files": 13,
-        "nodes": 330
+        "nodes": 336
       }
     },
     {
@@ -475,7 +522,17 @@
     },
     {
       "name": "punctuality-ingest",
-      "kind": "capability"
+      "kind": "capability",
+      "service": {
+        "kind": "process",
+        "requires": [
+          "punctuality"
+        ]
+      },
+      "code": {
+        "files": 1,
+        "nodes": 2
+      }
     },
     {
       "name": "roomplan-contract",
@@ -497,8 +554,8 @@
       "name": "schemas",
       "kind": "spine",
       "code": {
-        "files": 7,
-        "nodes": 927
+        "files": 11,
+        "nodes": 1165
       }
     },
     {
@@ -586,8 +643,8 @@
       "name": "tools",
       "kind": "spine",
       "code": {
-        "files": 204,
-        "nodes": 1607
+        "files": 210,
+        "nodes": 1644
       }
     },
     {
@@ -634,7 +691,7 @@
       },
       "code": {
         "files": 24,
-        "nodes": 699
+        "nodes": 702
       }
     },
     {
@@ -647,7 +704,7 @@
       },
       "code": {
         "files": 14,
-        "nodes": 183
+        "nodes": 191
       }
     },
     {
@@ -667,8 +724,8 @@
       "name": "writing",
       "kind": "pack",
       "code": {
-        "files": 73,
-        "nodes": 627
+        "files": 72,
+        "nodes": 617
       }
     }
   ],
@@ -706,6 +763,16 @@
     {
       "from": "axon-status",
       "to": "axon-store",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/axon-status/Cargo.toml"
+      ]
+    },
+    {
+      "from": "axon-status",
+      "to": "devices",
       "kinds": [
         "cargo-dep"
       ],
@@ -914,6 +981,106 @@
       ]
     },
     {
+      "from": "devices",
+      "to": "axon-config",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/devices/Cargo.toml"
+      ]
+    },
+    {
+      "from": "devices",
+      "to": "axon-server",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/devices/Cargo.toml"
+      ]
+    },
+    {
+      "from": "devices",
+      "to": "axon-store",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/devices/Cargo.toml"
+      ]
+    },
+    {
+      "from": "devices",
+      "to": "route-manifest",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/devices/Cargo.toml"
+      ]
+    },
+    {
+      "from": "entities",
+      "to": "axon-config",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/entities/Cargo.toml"
+      ]
+    },
+    {
+      "from": "entities",
+      "to": "axon-http",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/entities/Cargo.toml"
+      ]
+    },
+    {
+      "from": "entities",
+      "to": "axon-server",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/entities/Cargo.toml"
+      ]
+    },
+    {
+      "from": "entities",
+      "to": "axon-store",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/entities/Cargo.toml"
+      ]
+    },
+    {
+      "from": "entities",
+      "to": "civil-date",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/entities/Cargo.toml"
+      ]
+    },
+    {
+      "from": "entities",
+      "to": "route-manifest",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/entities/Cargo.toml"
+      ]
+    },
+    {
       "from": "extraction",
       "to": "inference",
       "kinds": [
@@ -1056,6 +1223,16 @@
     {
       "from": "interior",
       "to": "axon-store",
+      "kinds": [
+        "cargo-dep"
+      ],
+      "evidence": [
+        "capabilities/interior/Cargo.toml"
+      ]
+    },
+    {
+      "from": "interior",
+      "to": "devices",
       "kinds": [
         "cargo-dep"
       ],
@@ -1908,6 +2085,10 @@
       "verdict": "adopt"
     },
     {
+      "name": "rcgen",
+      "verdict": "adopt"
+    },
+    {
       "name": "research-paper-writing-skills",
       "verdict": "quarry"
     },
@@ -1921,6 +2102,10 @@
     },
     {
       "name": "rusqlite",
+      "verdict": "adopt"
+    },
+    {
+      "name": "rustls",
       "verdict": "adopt"
     },
     {
@@ -1965,6 +2150,10 @@
     },
     {
       "name": "tailscale",
+      "verdict": "adopt"
+    },
+    {
+      "name": "tauri-plugin-notification",
       "verdict": "adopt"
     },
     {
@@ -2034,18 +2223,9 @@
   ],
   "graph": {
     "present": true,
-    "nodes": 21399,
-    "external": 27,
-    "stale": [
-      "Packs/harness/pi-packages/accordion/app/src/lib/engine/parse.ts",
-      "Packs/harness/pi-packages/accordion/conductors/ws/triptych/app/src/lib/engine/parse.ts",
-      "Packs/harness/pi-packages/accordion/conductors/ws/triptych/core/ops.ts",
-      "Packs/harness/pi-packages/accordion/conductors/ws/triptych/core/protocol.ts",
-      "Packs/harness/pi-packages/accordion/conductors/ws/triptych/core/replica.ts",
-      "Packs/harness/pi-packages/accordion/conductors/ws/triptych/core/truth.ts",
-      "Packs/harness/pi-packages/accordion/conductors/ws/triptych/core/wire.ts",
-      "Packs/harness/pi-packages/core/conductor/remote.ts"
-    ],
+    "nodes": 23145,
+    "external": 36,
+    "stale": [],
     "unmatched": [
       ".github/ISSUE_TEMPLATE/bug_report.md",
       ".github/ISSUE_TEMPLATE/feature_request.md",
@@ -2061,6 +2241,30 @@
       "axon",
       "bootstrap.sh",
       "demo/README.md",
+      "plugins/device-identity/Cargo.toml",
+      "plugins/device-identity/README.md",
+      "plugins/device-identity/build.rs",
+      "plugins/device-identity/ios/Package.swift",
+      "plugins/device-identity/ios/Sources/DeviceIdentityPlugin/DeviceIdentityPlugin.swift",
+      "plugins/device-identity/permissions/autogenerated/reference.md",
+      "plugins/device-identity/permissions/schemas/schema.json",
+      "plugins/device-identity/src/lib.rs",
+      "plugins/foundation-models/Cargo.toml",
+      "plugins/foundation-models/README.md",
+      "plugins/foundation-models/build.rs",
+      "plugins/foundation-models/ios/Package.swift",
+      "plugins/foundation-models/ios/Sources/FoundationModelsPlugin/FoundationModelsPlugin.swift",
+      "plugins/foundation-models/permissions/autogenerated/reference.md",
+      "plugins/foundation-models/permissions/schemas/schema.json",
+      "plugins/foundation-models/src/lib.rs",
+      "plugins/local-network/Cargo.toml",
+      "plugins/local-network/README.md",
+      "plugins/local-network/build.rs",
+      "plugins/local-network/ios/Package.swift",
+      "plugins/local-network/ios/Sources/LocalNetworkPlugin/LocalNetworkPlugin.swift",
+      "plugins/local-network/permissions/autogenerated/reference.md",
+      "plugins/local-network/permissions/schemas/schema.json",
+      "plugins/local-network/src/lib.rs",
       "plugins/roomplan/.tauri/tauri-api/Package.swift",
       "plugins/roomplan/.tauri/tauri-api/README.md",
       "plugins/roomplan/.tauri/tauri-api/Sources/Tauri/Channel.swift",
